@@ -30,6 +30,7 @@ __all__ = [
     "absolute",
     "current_host",
     "dataset_overrides",
+    "is_relative_posix_path",
     "locate_dataset",
     "relativize",
     "require_root",
@@ -420,6 +421,12 @@ def require_root(name: RootName, roots: Mapping[RootName, ResolvedRoot]) -> Path
     return path
 
 
+def is_relative_posix_path(path: str) -> bool:
+    """True if ``path`` is non-empty, relative, POSIX, and has no ``..`` segment or backslash."""
+    pure = PurePosixPath(path)
+    return bool(path) and not pure.is_absolute() and ".." not in pure.parts and "\\" not in path
+
+
 @dataclass(frozen=True)
 class RelPath:
     """A path relative to a named root, e.g. ``RelPath("runs", "vit/2026-01-01-s42")``."""
@@ -432,13 +439,12 @@ class RelPath:
             raise ContractError(
                 f"unknown root {self.root!r}", hint="roots: " + ", ".join(ROOT_NAMES)
             )
-        pure = PurePosixPath(self.path)
-        if not self.path or pure.is_absolute() or ".." in pure.parts or "\\" in self.path:
+        if not is_relative_posix_path(self.path):
             raise ContractError(
                 f"{self.path!r} is not a relative POSIX path",
                 hint="store paths relative to a DFWB root, without '..'",
             )
-        object.__setattr__(self, "path", pure.as_posix())
+        object.__setattr__(self, "path", PurePosixPath(self.path).as_posix())
 
     def __str__(self) -> str:
         return f"{self.root}:{self.path}"

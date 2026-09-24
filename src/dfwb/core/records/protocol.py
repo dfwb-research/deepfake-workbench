@@ -17,6 +17,8 @@ __all__ = [
     "LabelVocab",
     "LicenseInfo",
     "PackCard",
+    "PackProvenance",
+    "PairRecord",
     "PaperRef",
     "SchemeCard",
     "SplitRow",
@@ -70,6 +72,8 @@ class SchemeCard(RecordModel):
     splits: list[Literal["train", "val", "test"]] | None = None
     sha256: Sha256
     rationale: str | None = None
+    counts: dict[Literal["train", "val", "test", "exclude"], int] | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class DatasetCard(RecordModel):
@@ -138,3 +142,22 @@ class SplitRow:
     key: str
     compression: str | None
     split: Split
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclass(slots=True, frozen=True)
+class PairRecord:
+    """One line of ``pairs.jsonl.gz``: a fake/real pairing produced by a pairing rule (J7)."""
+
+    fake_key: str
+    real_key: str
+    rule: str
+
+
+class PackProvenance(RecordModel):
+    """``PROVENANCE.json``: how a pack was built, for byte-identical rebuilds (J13)."""
+
+    builder: dict[str, str]
+    dfwb: str
+    source_listing_sha256: Sha256
+    rules: dict[str, dict[str, Any]]

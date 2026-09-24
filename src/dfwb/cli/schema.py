@@ -34,10 +34,12 @@ def _types(contract: str) -> tuple[str, list[Any]]:
 
         types = [
             records.PackCard,
+            records.PackProvenance,
             records.DatasetCard,
             records.LabelVocab,
             records.VideoRecord,
             records.SplitRow,
+            records.PairRecord,
             records.InventoryRecord,
             records.ProcessingProfile,
             records.ProcessedRecord,
