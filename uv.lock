@@ -226,6 +226,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+eval = [
+    { name = "scipy" },
+]
 rich = [
     { name = "rich" },
 ]
@@ -241,6 +244,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "types-pyyaml" },
 ]
 
@@ -252,8 +256,9 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.6,<3" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "rich", marker = "extra == 'rich'", specifier = ">=13" },
+    { name = "scipy", marker = "extra == 'eval'", specifier = ">=1.11" },
 ]
-provides-extras = ["rich"]
+provides-extras = ["eval", "rich"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -266,6 +271,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "types-pyyaml" },
 ]
 

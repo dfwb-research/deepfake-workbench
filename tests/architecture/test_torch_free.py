@@ -34,8 +34,9 @@ def test_torch_free_layers_import_with_torch_blocked(blocked):
 
 
 def test_eval_imports_with_torch_scipy_and_matplotlib_blocked(blocked):
-    code = IMPORT_ALL.format(packages=("dfwb.eval",), watch=("torch", "scipy", "matplotlib"))
-    done = blocked([sys.executable, "-c", code], block=("torch", "scipy", "matplotlib"))
+    watch = ("torch", "scipy", "matplotlib", "pyarrow")
+    code = IMPORT_ALL.format(packages=("dfwb.eval",), watch=watch)
+    done = blocked([sys.executable, "-c", code], block=watch)
     assert done.returncode == 0, done.stderr
     result = json.loads(done.stdout)
     assert "dfwb.eval" in result["imported"]

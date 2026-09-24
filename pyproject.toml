@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rich = ["rich>=13"]
+eval = ["scipy>=1.11"]
 
 [project.scripts]
 dfwb = "dfwb.cli.main:main"
@@ -60,6 +61,7 @@ dev = [
   "hypothesis",
   "import-linter",
   "scikit-learn",
+  "scipy",
   "pre-commit",
   "types-PyYAML",
 ]
@@ -91,6 +93,11 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 # torch is optional; the core names its types only for annotations.
 module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scipy is the optional `[eval]` extra; dfwb.eval imports it lazily, inside functions only.
+module = ["scipy", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

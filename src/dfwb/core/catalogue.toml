@@ -10,3 +10,4 @@ dfwb-protocols = "dfwb-protocols"
 # [imports] maps an import name to the deepfake-workbench extra that installs it.
 [imports]
 rich = "rich"
+scipy = "eval"
