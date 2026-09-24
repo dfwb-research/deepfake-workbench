@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import click
@@ -98,3 +99,50 @@ def info(ref: str, as_json: bool) -> None:
     click.echo("")
     rows = [[c["split"], c["compression"] or "-", c["label_key"], c["count"]] for c in counts]
     click.echo(table(["SPLIT", "COMPRESSION", "LABEL", "COUNT"], rows))
+
+
+@protocols.command("verify")
+@click.argument("ref")
+@click.option(
+    "--inventory",
+    "inventory",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Inventory file to check (default: <work root>/<dataset>/inventory.jsonl).",
+)
+@click.option(
+    "--split",
+    "splits",
+    multiple=True,
+    help="A split to require full coverage of (repeatable); default: every split this scheme "
+    "assigns, except exclude.",
+)
+@json_option
+def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: bool) -> int:
+    """Join the local inventory to a protocol's pack videos and report coverage.
+
+    Exits 0 on full coverage, 3 if any requested split is short a video, 4 if any video is
+    relabelled. A missing inventory is a usage error (exit 2).
+    """
+    from dfwb.core.paths import require_root, resolve_roots
+    from dfwb.protocols.verify import verify as run_verify
+    from dfwb.protocols.verify import write_report
+
+    work_root = require_root("work", resolve_roots())
+    report = run_verify(ref, inventory=inventory, splits=splits or None, work_root=work_root)
+    report_path = write_report(report, work_root)
+
+    if as_json:
+        emit_json({**report.to_json(), "report_path": str(report_path)})
+        return report.exit_code
+
+    click.echo(f"{report.dataset}/{report.scheme}  (pack {report.pack} {report.pack_version})")
+    click.echo("requested splits: " + ", ".join(report.requested_splits))
+    for bucket, count in report.counts.items():
+        click.echo(f"{bucket}: {count}")
+        for sample in report.samples.get(bucket, []):
+            click.echo(f"  {sample}")
+    for warning in report.warnings:
+        click.echo(f"warning: {warning}")
+    click.echo(f"report written to {report_path}")
+    return report.exit_code

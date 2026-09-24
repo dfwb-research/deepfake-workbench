@@ -36,7 +36,9 @@ __all__ = [
     "make_pack",
     "register_packs",
     "register_provider_packs",
+    "release_pack",
     "toyone_pack",
+    "write_release_mismatch_dataset",
     "write_toyone_dataset",
 ]
 
@@ -228,6 +230,39 @@ def write_toyone_dataset(dataset_dir: Path, dataset_id: str) -> None:
     write_jsonl(dataset_dir / "pairs.jsonl.gz", pairs)
 
 
+def write_release_mismatch_dataset(dataset_dir: Path, dataset_id: str) -> None:
+    """30 ``FAKE_A`` videos, all assigned to ``test`` (Task 6's release-mismatch fixture).
+
+    Big enough that a test inventory can drop 10 and add 10 differently-keyed ones under the same
+    task, to cross ``verify``'s release-mismatch heuristic (>=10 missing and >=10 extra sharing a
+    task prefix).
+    """
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "splits").mkdir()
+    label_key = f"{dataset_id.upper()}-FAKE_A"
+    videos = [
+        VideoRecord(f"FAKE_A/v{i:02d}", None, label_key, "FakeA", identity=f"v{i:02d}")
+        for i in range(1, 31)
+    ]
+    write_jsonl(dataset_dir / "videos.jsonl.gz", videos)
+    rows = [SplitRow(v.key, v.compression, "test") for v in videos]
+    sha256 = write_split_tsv(dataset_dir / "splits" / "official.tsv.gz", rows)
+    card = DatasetCard(
+        id=dataset_id,
+        name=dataset_id,
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only",
+        modalities=["video"],
+        key_rule="fixture",
+        schemes={"official": SchemeCard(kind="official", source="fixture", sha256=sha256)},
+        default_scheme="official",
+    )
+    (dataset_dir / "dataset.yaml").write_text(_dump(card))
+    labels = LabelVocab(vocab={label_key: {"binary": 1}}, mappings={"binary": {"from": "binary"}})
+    (dataset_dir / "labels.yaml").write_text(_dump(labels))
+
+
 def make_pack(
     tmp_path: Path,
     name: str,
@@ -355,3 +390,13 @@ def toyone_pack(fixture_packs: Callable[..., dict[str, Path]]) -> Path:
         {"toyone-pack": {"toyone": {}}}, builders={"toyone-pack": {"toyone": write_toyone_dataset}}
     )
     return roots["toyone-pack"] / "toyone"
+
+
+@pytest.fixture
+def release_pack(fixture_packs: Callable[..., dict[str, Path]]) -> Path:
+    """Install the 30-``FAKE_A``-video dataset (Task 6) in its own pack; returns the dataset dir."""
+    roots = fixture_packs(
+        {"release-pack": {"release": {}}},
+        builders={"release-pack": {"release": write_release_mismatch_dataset}},
+    )
+    return roots["release-pack"] / "release"

@@ -77,3 +77,11 @@ def test_config_and_lookup_commands_run_with_torch_blocked(blocked, tmp_path):
         assert "blocked by dfwb tests" not in done.stderr, (args, done.stderr)
         if code:
             assert "hint: " in done.stderr
+
+
+def test_protocols_verify_runs_with_torch_blocked(blocked, tmp_path):
+    # No roots configured and no pack installed: still exercises verify's own code path (root
+    # resolution, then load()) without importing torch.
+    done = blocked([str(DFWB), "protocols", "verify", "nope"], block=("torch",), cwd=tmp_path)
+    assert done.returncode == 2, done.stderr
+    assert "hint: " in done.stderr

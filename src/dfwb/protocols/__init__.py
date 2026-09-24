@@ -14,8 +14,20 @@ if TYPE_CHECKING:
     from dfwb.protocols.protocol import LabelMapping, Protocol, ProtocolInfo, load
     from dfwb.protocols.protocol import list_protocols as list
     from dfwb.protocols.refs import ProtocolRef, parse_ref
+    from dfwb.protocols.verify import CoverageReport, verify, write_report
 
-__all__ = ["LabelMapping", "Protocol", "ProtocolInfo", "ProtocolRef", "list", "load", "parse_ref"]
+__all__ = [
+    "CoverageReport",
+    "LabelMapping",
+    "Protocol",
+    "ProtocolInfo",
+    "ProtocolRef",
+    "list",
+    "load",
+    "parse_ref",
+    "verify",
+    "write_report",
+]
 
 # name -> the module holding it, for every export whose attribute name matches its own name there.
 _LAZY = {
@@ -25,6 +37,9 @@ _LAZY = {
     "load": "dfwb.protocols.protocol",
     "ProtocolRef": "dfwb.protocols.refs",
     "parse_ref": "dfwb.protocols.refs",
+    "CoverageReport": "dfwb.protocols.verify",
+    "verify": "dfwb.protocols.verify",
+    "write_report": "dfwb.protocols.verify",
 }
 # name -> (module, attribute), for exports whose public name differs from the underlying one
 # (``list`` would otherwise shadow the builtin inside ``protocol.py`` itself).
