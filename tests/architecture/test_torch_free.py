@@ -33,6 +33,15 @@ def test_torch_free_layers_import_with_torch_blocked(blocked):
     assert result["loaded"] == []
 
 
+def test_eval_imports_with_torch_scipy_and_matplotlib_blocked(blocked):
+    code = IMPORT_ALL.format(packages=("dfwb.eval",), watch=("torch", "scipy", "matplotlib"))
+    done = blocked([sys.executable, "-c", code], block=("torch", "scipy", "matplotlib"))
+    assert done.returncode == 0, done.stderr
+    result = json.loads(done.stdout)
+    assert "dfwb.eval" in result["imported"]
+    assert result["loaded"] == []
+
+
 def test_core_imports_with_torch_and_numpy_blocked(blocked):
     code = IMPORT_ALL.format(packages=("dfwb.core",), watch=("torch", "numpy"))
     done = blocked([sys.executable, "-c", code], block=("torch", "numpy"))

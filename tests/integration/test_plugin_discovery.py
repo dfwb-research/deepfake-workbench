@@ -46,7 +46,14 @@ def _check(exe: Path, **env: str) -> None:
     done = _dfwb("plugins", "list", "--all", "--json", exe=exe, **env)
     assert done.returncode == 0, done.stderr
     data = json.loads(done.stdout)
-    components = {f"{e['registry']}/{e['key']}": e["provider"] for e in data["entries"]}
+    # Only the fake distributions' own entries are asserted here: the framework's own builtins
+    # (provider "dfwb") grow as more of the framework is implemented, and are not this test's
+    # concern -- it is about entry-point discovery of installed distributions.
+    components = {
+        f"{e['registry']}/{e['key']}": e["provider"]
+        for e in data["entries"]
+        if e["provider"] != "dfwb"
+    }
     assert components == {
         "layers/fake-stem": "dfwb-fake-plugin-ok",
         "losses/fake-loss": "dfwb-fake-plugin-ok",
@@ -80,7 +87,9 @@ def test_fake_distributions_on_the_path(tmp_path):
             "plugins", "list", "--all", "--json", PYTHONPATH=pythonpath, DFWB_PLUGINS="none"
         ).stdout
     )
-    assert off["entries"] == []
+    # DFWB_PLUGINS=none disables discovered entry-point distributions, not the framework's own
+    # builtins (provider "dfwb"), so only the fake distributions' entries must be gone.
+    assert {e["provider"] for e in off["entries"]} <= {"dfwb"}
     assert {p["name"]: p["status"] for p in off["plugins"]} == {
         "dfwb": "ok",
         "fake-broken": "disabled",

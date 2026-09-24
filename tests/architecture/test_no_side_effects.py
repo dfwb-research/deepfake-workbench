@@ -1,5 +1,9 @@
 """Importing dfwb (every module of it) changes nothing: no .env loading, no env vars, no files,
-no logging handlers, no warning filters, no plugin loading and no heavy imports."""
+no logging handlers, no warning filters, no plugin loading and no optional-extra imports.
+
+numpy is excluded from that last check: it is a base, always-installed dependency (unlike torch,
+dotenv and rich, which are optional extras), and the layers that compute with it import it at
+module level like any other required library."""
 
 import json
 import os
@@ -8,6 +12,8 @@ import sys
 
 CODE = r"""
 import importlib, json, logging, os, pkgutil, sys, warnings
+import numpy  # noqa: F401 -- loaded first so its own import-time filter registration is not
+              # mistaken for a side effect of importing dfwb (see the module docstring)
 env = dict(os.environ)
 handlers = list(logging.getLogger().handlers)
 filters = list(warnings.filters)
@@ -22,7 +28,7 @@ print(json.dumps({
     "warning_filters_changed": warnings.filters != filters,
     "files_changed": sorted(os.listdir(".")) != files,
     "plugins_loaded": bool(plugins is not None and plugins._report is not None),
-    "heavy_modules": sorted(m for m in ("torch", "numpy", "dotenv", "rich") if m in sys.modules),
+    "heavy_modules": sorted(m for m in ("torch", "dotenv", "rich") if m in sys.modules),
 }))
 """
 
