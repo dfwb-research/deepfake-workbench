@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import tomllib
+import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +19,7 @@ _EXPECTED_FILES = {
     Path("pyproject.toml"),
     Path("README.md"),
     Path("NOTICE.md"),
+    Path("LICENSE"),
     Path("LICENSE-DATA"),
     Path("src/my_pack/__init__.py"),
     Path("src/my_pack/packs/pack.yaml"),
@@ -61,6 +65,17 @@ def test_pyproject_parses_and_the_entry_point_targets_register(tmp_path):
     assert data["project"]["license-files"] == ["LICENSE", "LICENSE-DATA"]
     assert data["project"]["dependencies"] == []
     assert data["project"]["entry-points"]["dfwb.plugins"] == {"my-pack": "my_pack:register"}
+
+
+def test_license_is_mit_with_the_author_and_current_year(tmp_path):
+    directory = tmp_path / "my-pack"
+
+    new_pack(directory, name="my-pack", author="Ada Lovelace")
+
+    text = (directory / "LICENSE").read_text("utf-8")
+    year = datetime.now(UTC).year
+    assert text.startswith("MIT License")
+    assert f"Copyright (c) {year} Ada Lovelace" in text
 
 
 class _RecordingRegistry:
@@ -131,3 +146,57 @@ def test_refuses_a_directory_that_is_only_a_stray_dotfile(tmp_path):
 def test_refuses_a_name_that_is_not_lower_kebab(tmp_path, name):
     with pytest.raises(ConfigError):
         new_pack(tmp_path / "out", name=name)
+
+
+@pytest.mark.parametrize(
+    "author",
+    [
+        "",
+        "   ",
+        "line one\nline two",
+        "x" * (100 + 1),
+        'Quote"Mark',
+        "Back\\Slash",
+        "Back`Tick",
+    ],
+)
+def test_refuses_a_bad_author(tmp_path, author):
+    directory = tmp_path / "out"
+
+    with pytest.raises(ConfigError):
+        new_pack(directory, name="my-pack", author=author)
+
+    assert not directory.exists()
+
+
+def test_refuses_a_bad_name_before_writing_anything(tmp_path):
+    directory = tmp_path / "out"
+
+    with pytest.raises(ConfigError):
+        new_pack(directory, name="Not Kebab")
+
+    assert not directory.exists()
+
+
+def test_scaffolded_package_builds_and_ships_its_pack_yaml(tmp_path):
+    # An end-to-end check that the generated pyproject.toml is not just well-formed but actually
+    # buildable, and that hatchling's default packaging really does carry the pack's data (the
+    # generated package has no ``.py``-only assumption to lean on -- ``pack.yaml`` is the only file
+    # under ``packs/``).
+    directory = tmp_path / "my-pack"
+    new_pack(directory, name="my-pack")
+    out_dir = tmp_path / "dist"
+
+    result = subprocess.run(
+        ["uv", "build", str(directory), "--out-dir", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stderr
+    wheels = list(out_dir.glob("*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as archive:
+        names = archive.namelist()
+    assert any(name.endswith("my_pack/packs/pack.yaml") for name in names), names

@@ -460,7 +460,7 @@ def test_new_pack_cli_json_reports_the_written_files(run, tmp_path):
 
     assert data["directory"] == "my-pack"
     assert "my-pack/pyproject.toml" in data["written"]
-    assert len(data["written"]) == 6
+    assert len(data["written"]) == 7
 
 
 def test_new_pack_cli_accepts_an_author(run, tmp_path):
@@ -488,3 +488,11 @@ def test_new_pack_cli_rejects_a_non_empty_directory_with_exit_2(run, tmp_path):
 
     assert result.code == 2
     assert "is not empty" in result.err
+
+
+def test_new_pack_cli_rejects_a_bad_author_with_exit_2(run, tmp_path):
+    result = run("protocols", "new-pack", "my-pack", "--name", "my-pack", "--author", 'bad"author')
+
+    assert result.code == 2
+    assert "hint: " in result.err
+    assert not (tmp_path / "my-pack").exists()
