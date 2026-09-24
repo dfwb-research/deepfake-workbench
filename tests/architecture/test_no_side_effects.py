@@ -61,3 +61,26 @@ def test_package_init_only_exposes_the_version():
     code = "import dfwb; print(sorted(n for n in vars(dfwb) if not n.startswith('__')))"
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert done.stdout.strip() == "['_version']"
+
+
+_ENVFILE_CODE = r"""
+import json, os
+env = dict(os.environ)
+import dfwb.cli.main
+import dfwb.core.envfile
+print(json.dumps(sorted(k for k in set(env) | set(os.environ) if env.get(k) != os.environ.get(k))))
+"""
+
+
+def test_importing_the_cli_and_envfile_never_loads_a_dotenv(tmp_path):
+    """Importing ``dfwb.cli.main`` and ``dfwb.core.envfile`` must never apply a ``.env``:
+    loading only happens when the CLI group callback runs, never at import."""
+    (tmp_path / ".env").write_text("DFWB_CANARY=1\n")
+    done = subprocess.run(
+        [sys.executable, "-c", _ENVFILE_CODE],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(done.stdout) == []

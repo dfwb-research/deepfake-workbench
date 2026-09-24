@@ -63,11 +63,13 @@ def _torch_status() -> dict[str, Any]:
 def collect() -> dict[str, Any]:
     """Everything ``dfwb doctor`` reports, as plain data."""
     from dfwb import __version__
+    from dfwb.core.envfile import last_applied
     from dfwb.core.paths import resolve_roots
     from dfwb.core.plugins import load_plugins
 
     roots = resolve_roots()
     report = load_plugins()
+    env_file = last_applied()
     return {
         "dfwb": __version__,
         "python": platform.python_version(),
@@ -80,8 +82,16 @@ def collect() -> dict[str, Any]:
                 "source": root.source,
                 "from": root.detail,
                 "warning": root.warning,
+                **({"paths": [str(p) for p in root.paths]} if name == "datasets" else {}),
             }
             for name, root in roots.items()
+        },
+        "env_file": None
+        if env_file is None
+        else {
+            "path": str(env_file.file),
+            "applied": list(env_file.applied),
+            "skipped": list(env_file.skipped),
         },
         "plugins": [
             {
@@ -126,6 +136,11 @@ def doctor(as_json: bool) -> None:
                 "note: DFWB_DATASETS_ROOT is unset; inventory and preprocess commands need it",
                 err=True,
             )
+    for path in data["roots"]["datasets"]["paths"]:
+        click.echo(f"datasets root: {path}")
+    if data["env_file"] is not None:
+        env_file = data["env_file"]
+        click.echo(f"env file: {env_file['path']} ({len(env_file['applied'])} keys applied)")
     click.echo("")
     plugin_rows = [
         [p["name"], p["provider"], p["version"], p["status"], p["reason"] or ""]

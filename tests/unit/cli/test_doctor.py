@@ -18,7 +18,9 @@ def test_doctor_json_reports_roots_and_sources(run, monkeypatch, tmp_path):
         "source": "env",
         "from": "DFWB_DATASETS_ROOT",
         "warning": None,
+        "paths": [str(tmp_path / "raw")],
     }
+    assert data["env_file"] is None
     assert data["roots"]["work"]["source"] == "default"
     assert "DFWB_WORK_ROOT is not set" in data["roots"]["work"]["warning"]
     assert data["torch"]["installed"] in (True, False)

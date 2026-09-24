@@ -13,6 +13,7 @@ import os
 import sys
 import traceback
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import click
@@ -90,10 +91,49 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     callback=_print_version,
     help="Show the dfwb version and the versions of installed plugins.",
 )
-def cli(debug: bool) -> None:
+@click.option(
+    "--env-file",
+    "env_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Load environment variables from this file instead of discovering one.",
+)
+@click.option(
+    "--no-env-file",
+    "no_env_file",
+    is_flag=True,
+    help="Never load a .env file, even one that would otherwise be discovered.",
+)
+def cli(debug: bool, env_file: Path | None, no_env_file: bool) -> None:
     from dfwb.core.log import setup_logging
 
     setup_logging("DEBUG" if debug else "WARNING")
+    _load_env_file(env_file, no_env_file)
+
+
+def _load_env_file(env_file: Path | None, no_env_file: bool) -> None:
+    """Find and apply this machine's ``.env`` before any subcommand runs (never at import)."""
+    from dfwb.core import envfile
+
+    if no_env_file:
+        envfile._remember(None)
+        return
+
+    path: Path | None
+    if env_file is not None:
+        if not env_file.is_file():
+            from dfwb.core.errors import ConfigError
+
+            raise ConfigError(f"{env_file}: no such file", hint="check --env-file")
+        path = env_file
+    else:
+        path = envfile.find_env_file(Path.cwd(), os.environ)
+
+    if path is None:
+        envfile._remember(None)
+        return
+
+    envfile._remember(envfile.apply_env_file(path, os.environ))
 
 
 def _debug_requested(args: Sequence[str]) -> bool:
