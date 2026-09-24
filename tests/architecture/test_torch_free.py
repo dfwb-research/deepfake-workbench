@@ -47,6 +47,7 @@ TORCH_FREE_COMMANDS = [
     ["completion", "bash"],
     ["doctor"],
     ["doctor", "--json"],
+    ["plugins", "list", "--all"],
 ]
 
 
