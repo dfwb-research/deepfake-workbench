@@ -1,0 +1,16 @@
+{
+  "schema": "dfwb.scores/1",
+  "detector": {"name": "chance", "version": "0.1.0", "source": "zoo:chance", "checkpoint_sha256": null, "contract_version": [1, 0]},
+  "protocol": {"id": "toyfake/official", "split": "test", "where": {}, "pack": "example-pack", "pack_version": "1.0.0",
+               "scheme_sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "labels": "binary",
+  "processing_profile": null,
+  "input_adaptation": {"derived_crop": false, "mismatch_override": false},
+  "aggregation": {"clip_to_video": "mean-prob", "clips_per_video": 1},
+  "coverage": {"expected": 2, "ok": 1, "missing": 1, "error": 0},
+  "seed": 0,
+  "env": {"dfwb": "0.1.0a1", "python": "3.12.14"},
+  "git": null,
+  "command": "dfwb score --detector zoo:chance --protocol toyfake/official --split test",
+  "created": "2026-09-24T00:00:00Z"
+}
