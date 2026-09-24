@@ -11,8 +11,9 @@ Keys are ``<task>/<legacy key>``. The same video id can appear under several tas
 method of a dataset may reuse the target's id), so the task prefix keeps keys unique and says
 which method a key belongs to, while the part after the first ``/`` stays the dataset's own id.
 
-This module imports only the standard library, :mod:`dfwb.core` and :mod:`dfwb.protocols.rules`:
-never torch, numpy or a media library.
+This module imports only the standard library, pydantic (for the dataset card and label
+vocabulary models), :mod:`dfwb.core` and :mod:`dfwb.protocols.rules`: never torch, numpy or a
+media library.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ __all__ = [
     "TaskSpec",
     "expand_compressions",
     "scan_videos",
+    "validate_compressions",
 ]
 
 VIDEO_SUFFIXES: frozenset[str] = frozenset({".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"})
@@ -83,8 +85,11 @@ class TaskSpec:
         kind: ``"real"`` or ``"fake"``.
         video_dir: Where the task's videos are, relative to the dataset folder; ``{cX}`` stands
             for the compression level.
-        method: The record's ``method`` (``"original"`` for reals).
+        method: The record's ``method`` (``"original"`` for reals); a builder may override it
+            per record.
         extras: Other per-task locations a builder needs, e.g. ``{"audio_dir": ...}``.
+        recursive: Whether the videos sit in sub-folders of ``video_dir`` (e.g. one folder per
+            actor); the default is a flat folder.
     """
 
     abbr: str
@@ -93,6 +98,7 @@ class TaskSpec:
     video_dir: str
     method: str
     extras: Mapping[str, str] = field(default_factory=dict)
+    recursive: bool = False
 
     def __post_init__(self) -> None:
         if not self.abbr or "/" in self.abbr or any(c.isspace() for c in self.abbr):
@@ -174,11 +180,29 @@ class SchemeSpec:
 
 @runtime_checkable
 class InventoryBuilder(Protocol):
-    """What the framework needs from any inventory builder (contract C3b)."""
+    """The minimal shape of an inventory builder (contract C3b).
 
-    dataset_id: str
-    version: str
-    expected_folder: str
+    This is the smallest interface an inventory builder has. The ``dfwb`` commands and pack
+    building need more (a task table, labels, schemes and the dataset hooks), so a builder
+    registered in ``inventory_builders`` subclasses :class:`BaseBuilder`. The three attributes are
+    read-only here, so a class attribute, an attribute set in ``__init__`` or a property all
+    satisfy the contract.
+    """
+
+    @property
+    def dataset_id(self) -> str:
+        """The registry key, e.g. ``"ffpp"``."""
+        ...
+
+    @property
+    def version(self) -> str:
+        """Bumped whenever discovery changes what it yields."""
+        ...
+
+    @property
+    def expected_folder(self) -> str:
+        """The dataset's folder name under a datasets root."""
+        ...
 
     def discover(
         self, root: Path, *, compressions: Sequence[str] | None = None
@@ -238,6 +262,27 @@ def scan_videos(directory: Path, *, recursive: bool = False) -> list[Path]:
     return sorted(path for path in directory.iterdir() if _is_video(path))
 
 
+def validate_compressions(
+    requested: Sequence[str] | None, known: Sequence[str]
+) -> list[str] | None:
+    """``requested`` checked against ``known``: in ``known`` order without repeats, or ``None``.
+
+    Raises:
+        ConfigError: a requested compression is not known (with a did-you-mean).
+    """
+    if requested is None:
+        return None
+    for value in requested:
+        if value not in known:
+            raise ConfigError(
+                f"unknown compression {value!r}{did_you_mean(value, known)}",
+                hint="known compressions: "
+                + (", ".join(known) or "none (this dataset has a single version)"),
+            )
+    wanted = set(requested)
+    return [c for c in known if c in wanted]
+
+
 def expand_compressions(
     video_dir: str, known: Sequence[str], requested: Sequence[str] | None
 ) -> list[str | None]:
@@ -250,18 +295,10 @@ def expand_compressions(
     Raises:
         ConfigError: a requested compression is not known (with a did-you-mean).
     """
-    if requested is not None:
-        for value in requested:
-            if value not in known:
-                raise ConfigError(
-                    f"unknown compression {value!r}{did_you_mean(value, known)}",
-                    hint="known compressions: "
-                    + (", ".join(known) or "none (this dataset has a single version)"),
-                )
+    wanted = validate_compressions(requested, known)
     if COMPRESSION_TOKEN not in video_dir:
         return [None]
-    wanted = set(known if requested is None else requested)
-    return [c for c in known if c in wanted]
+    return list(known) if wanted is None else list(wanted)
 
 
 def _concrete_dir(video_dir: str, compression: str | None) -> str:
@@ -277,10 +314,17 @@ def _concrete_dir(video_dir: str, compression: str | None) -> str:
 class BaseBuilder:
     """A table-driven builder: subclasses set the class attributes and override hooks as needed.
 
-    The default :meth:`discover` scans every task's ``video_dir`` (once per compression) and
-    turns each video into a record with :meth:`record_for_video`, whose default keys a video by
-    its file stem. Override ``record_for_video`` to parse identities from the file name, or
-    ``discover`` itself for a layout that is not one folder per task.
+    The default :meth:`discover` scans every task's ``video_dir`` (once per compression, and
+    into sub-folders for a ``recursive`` task) and turns each video into a record with
+    :meth:`record_for_video`, whose default keys a video by its file stem. Override
+    ``record_for_video`` to parse identities from the file name, or ``discover`` itself for a
+    layout that is not one folder per task.
+
+    A builder that needs a metadata file (a CSV or JSON listing labels, identities or sources)
+    reads it once per build in :meth:`prepare`, which the runner calls with the dataset folder
+    before :meth:`discover`, and keeps what it needs on ``self`` for ``discover`` and
+    ``record_for_video`` to use. A missing file should leave the builder with nothing to yield
+    rather than raise: an empty or partial download is reported by ``dfwb protocols verify``.
 
     Class attributes:
         dataset_id: The registry key, e.g. ``"ffpp"``.
@@ -317,10 +361,18 @@ class BaseBuilder:
 
     # ----------------------------------------------------------------------------- discovery
 
+    def prepare(self, root: Path) -> None:
+        """Load whatever the build needs once (e.g. a metadata file); the default does nothing.
+
+        Called by the runner with the dataset folder, once per build, before :meth:`discover`.
+        """
+
     def discover(
         self, root: Path, *, compressions: Sequence[str] | None = None
     ) -> Iterator[InventoryRecord]:
         """Yield a record for every video of every task, once per compression.
+
+        A ``recursive`` task's videos may sit in sub-folders; their relpath keeps that path.
 
         Raises:
             ConfigError: ``compressions`` names a compression this dataset does not have.
@@ -330,8 +382,9 @@ class BaseBuilder:
                 task.video_dir, self.known_compressions, compressions
             ):
                 video_dir = _concrete_dir(task.video_dir, compression)
-                for path in scan_videos(root / video_dir):
-                    relpath = f"{video_dir}/{path.name}"
+                base = root / video_dir
+                for path in scan_videos(base, recursive=task.recursive):
+                    relpath = f"{video_dir}/{path.relative_to(base).as_posix()}"
                     record = self.record_for_video(task, path, relpath, compression)
                     if record is not None:
                         yield record
@@ -358,25 +411,34 @@ class BaseBuilder:
         pair_key: str | None = None,
         attrs: Mapping[str, Any] | None = None,
         folder: str | None = None,
+        method: str | None = None,
     ) -> InventoryRecord:
         """Build one record: key ``<abbr>/<legacy_key>``, label key ``<prefix>-<abbr>``.
 
-        ``attrs`` always gets ``task_name``. ``relpath`` is relative to the dataset folder, or
-        to ``folder`` when the video lives in another dataset's folder.
+        ``attrs`` always gets ``task_name``. ``method`` defaults to the task's method.
+        ``relpath`` is relative to the dataset folder, or to ``folder`` -- the name of another
+        dataset's folder under the same datasets root -- when the video lives there.
 
         Raises:
-            ContractError: ``legacy_key`` is empty, or ``relpath`` is not a relative POSIX path.
+            ContractError: ``legacy_key`` is empty, ``folder`` is not a single folder name, or
+                ``relpath`` is not a relative POSIX path.
         """
         if not legacy_key:
             raise ContractError(
                 f"{self.dataset_id}: empty key for {relpath!r} in task {task.abbr}",
                 hint="every video needs a non-empty key",
             )
+        if folder is not None and (folder in ("", ".", "..") or "/" in folder or "\\" in folder):
+            raise ContractError(
+                f"{self.dataset_id}: folder {folder!r} of {task.abbr}/{legacy_key} is not a "
+                "single folder name",
+                hint="folder names another dataset's folder, e.g. 'FaceForensics++'",
+            )
         return InventoryRecord(
             key=f"{task.abbr}/{legacy_key}",
             compression=compression,
             label_key=self.label_key(task),
-            method=task.method,
+            method=task.method if method is None else method,
             relpath=relpath,
             builder=BuilderRef(self.dataset_id, self.version),
             identity=identity,
@@ -504,9 +566,12 @@ class BaseBuilder:
         ]
         width = max((len(task.abbr) for task in self.tasks), default=0)
         for task in self.tasks:
+            where = (
+                f"{task.video_dir}/**/<video>" if task.recursive else f"{task.video_dir}/<video>"
+            )
+            note = "; searched recursively" if task.recursive else ""
             lines.append(
-                f"  {task.abbr.ljust(width)}  {task.kind:<4}  {task.video_dir}/<video>"
-                f"  ({task.name})"
+                f"  {task.abbr.ljust(width)}  {task.kind:<4}  {where}  ({task.name}{note})"
             )
         if any(COMPRESSION_TOKEN in task.video_dir for task in self.tasks):
             known = ", ".join(self.known_compressions) or "none declared"

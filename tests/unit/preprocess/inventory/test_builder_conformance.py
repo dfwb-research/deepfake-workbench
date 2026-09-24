@@ -19,7 +19,7 @@ from dfwb.preprocess.inventory.base import (
     BaseBuilder,
     InventoryBuilder,
 )
-from dfwb.preprocess.inventory.runner import get_builder
+from dfwb.preprocess.inventory.runner import collect_records, get_builder
 
 BUILDERS = plugins.get_registry("inventory_builders").keys()
 
@@ -44,7 +44,7 @@ def check_conformance(dataset_id: str, empty_dir: Path) -> None:
     assert (builder.benchmark is not None) == has_benchmark
 
     assert builder.describe_layout().strip()
-    assert list(builder.discover(empty_dir)) == []
+    assert collect_records(builder, empty_dir) == []  # prepare() and discover() on nothing
 
     entry = plugins.get_registry("inventory_builders").entry(dataset_id)
     assert entry.meta.get("folder") == builder.expected_folder

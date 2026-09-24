@@ -32,7 +32,7 @@ from dfwb.core.paths import (
 )
 from dfwb.core.plugins import get_registry
 from dfwb.core.records import InventoryRecord, assert_no_absolute_paths, read_jsonl, write_jsonl
-from dfwb.preprocess.inventory.base import BaseBuilder
+from dfwb.preprocess.inventory.base import BaseBuilder, validate_compressions
 
 __all__ = [
     "INVENTORY_FILE",
@@ -143,7 +143,8 @@ def folder_status(
     return FolderStatus(dataset_id, folder, location, describe_location(location, roots))
 
 
-def _check_key(builder: BaseBuilder, record: object, task_order: Sequence[str]) -> None:
+def _check_record(builder: BaseBuilder, record: object, label_keys: Mapping[str, str]) -> None:
+    """The key is ``<task>/<id>`` with a task from the table, and the label key is that task's."""
     if not isinstance(record, InventoryRecord):
         raise ContractError(
             f"{builder.dataset_id}: the builder yielded a {type(record).__name__}",
@@ -155,11 +156,17 @@ def _check_key(builder: BaseBuilder, record: object, task_order: Sequence[str]) 
             f"{builder.dataset_id}: key {record.key!r} is not <task>/<id>",
             hint="build records with BaseBuilder.record, which adds the task prefix",
         )
-    if task not in task_order:
+    if task not in label_keys:
         raise ContractError(
             f"{builder.dataset_id}: key {record.key!r} has task {task!r}, which is not in the "
-            f"task table ({', '.join(task_order)})",
+            f"task table ({', '.join(label_keys)})",
             hint="every key starts with the abbr of one of the builder's tasks",
+        )
+    if record.label_key != label_keys[task]:
+        raise ContractError(
+            f"{builder.dataset_id}: {record.key!r} has label key {record.label_key!r}, but its "
+            f"task's label key is {label_keys[task]!r}",
+            hint="a record's label key is always its task's (BaseBuilder.record sets it)",
         )
 
 
@@ -168,16 +175,22 @@ def collect_records(
 ) -> list[InventoryRecord]:
     """Run ``builder`` over ``dataset_dir`` and return its records, checked and sorted.
 
+    ``compressions`` is checked against the builder's known compressions here, before the
+    builder runs, so a builder that overrides ``discover`` cannot silently ignore a typo. The
+    builder's :meth:`~BaseBuilder.prepare` runs once, before :meth:`~BaseBuilder.discover`.
+
     Raises:
-        ContractError: a key is not ``<task>/<id>`` with a task from the builder's table, or two
-            records share a ``(key, compression)``.
         ConfigError: ``compressions`` names a compression the dataset does not have.
+        ContractError: a key is not ``<task>/<id>`` with a task from the builder's table, a label
+            key is not its task's, or two records share a ``(key, compression)``.
     """
-    task_order = [task.abbr for task in builder.tasks]
+    wanted = validate_compressions(compressions, builder.known_compressions)
+    label_keys = {task.abbr: builder.label_key(task) for task in builder.tasks}
     seen: set[tuple[str, str | None]] = set()
     records: list[InventoryRecord] = []
-    for record in builder.discover(dataset_dir, compressions=compressions):
-        _check_key(builder, record, task_order)
+    builder.prepare(dataset_dir)
+    for record in builder.discover(dataset_dir, compressions=wanted):
+        _check_record(builder, record, label_keys)
         identity = (record.key, record.compression)
         if identity in seen:
             raise ContractError(
@@ -191,12 +204,18 @@ def collect_records(
     return records
 
 
-def _check_outside(out_dir: Path, dataset_dir: Path) -> None:
-    """Raw data is never written to: refuse an output folder inside the dataset folder."""
-    for out, data in ((out_dir, dataset_dir), (out_dir.resolve(), dataset_dir.resolve())):
-        if out.is_relative_to(data):
+def _is_inside(path: Path, parent: Path) -> bool:
+    return path.is_relative_to(parent) or path.resolve().is_relative_to(parent.resolve())
+
+
+def _check_outside(out_dir: Path, dataset_dir: Path, datasets_roots: Sequence[Path]) -> None:
+    """Raw data is never written to: refuse an output folder in the dataset or a datasets root."""
+    places = [("the dataset folder", dataset_dir)]
+    places += [("the datasets root", root) for root in datasets_roots]
+    for label, place in places:
+        if _is_inside(out_dir, place):
             raise ConfigError(
-                f"the work root puts the inventory inside the dataset folder {dataset_dir}",
+                f"the work root puts the inventory inside {label} {place}",
                 hint="set DFWB_WORK_ROOT to a folder outside every datasets root",
             )
 
@@ -262,7 +281,8 @@ def build_inventory(
         dataset_dir, source = location.path, describe_location(location, resolved)
 
     path = inventory_path(dataset_id, work_root)
-    _check_outside(path.parent, dataset_dir)
+    datasets = resolved.get("datasets")
+    _check_outside(path.parent, dataset_dir, datasets.paths if datasets is not None else ())
     records = collect_records(builder, dataset_dir, compressions=compressions)
 
     by_task = {task.abbr: 0 for task in builder.tasks}

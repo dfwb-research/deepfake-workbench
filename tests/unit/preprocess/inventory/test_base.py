@@ -315,3 +315,72 @@ def test_scan_follows_a_symlinked_dataset_folder(tmp_path):
     link.symlink_to(real)
     keys = [r.key for r in DemoBuilder().discover(link, compressions=["c23"])]
     assert keys == ["REAL/000", "REAL/001", "FS_SWAP/000_001", "FS_SWAP/001_000"]
+
+
+# ------------------------------------------------------------------------------ nested layouts
+
+
+class _Nested(BaseBuilder):
+    """A flat task next to a nested one (videos in per-actor sub-folders)."""
+
+    dataset_id = "nested"
+    expected_folder = "Nested"
+    label_prefix = "NE"
+    tasks = (
+        TaskSpec("REAL", "Real", "real", "real", "original"),
+        TaskSpec("FAKE", "Fake", "fake", "fake/{cX}", "swap", recursive=True),
+    )
+    known_compressions = ("c23",)
+    labels = {"REAL": LabelSpec(0, 0, 0, "real"), "FAKE": LabelSpec(1, 1, 1, "face-swap")}
+    schemes = {"all-test": SchemeSpec("all-test", "subset")}
+    default_scheme = "all-test"
+    card_info = {}
+
+
+def test_tasks_are_flat_by_default():
+    assert REAL.recursive is False
+    assert TaskSpec("X", "X", "fake", "x", "x", recursive=True).recursive is True
+
+
+def test_a_nested_task_scans_sub_folders_and_keeps_their_path(tmp_path):
+    for rel in ("fake/c23/actor1/a.mp4", "fake/c23/actor2/deep/b.mp4", "fake/c23/c.mp4"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).touch()
+    records = [r for r in _Nested().discover(tmp_path) if r.key.startswith("FAKE/")]
+    assert [(r.key, r.relpath, r.compression) for r in records] == [
+        ("FAKE/a", "fake/c23/actor1/a.mp4", "c23"),
+        ("FAKE/b", "fake/c23/actor2/deep/b.mp4", "c23"),
+        ("FAKE/c", "fake/c23/c.mp4", "c23"),
+    ]
+
+
+def test_a_builder_can_mix_flat_and_nested_tasks(tmp_path):
+    for rel in ("real/r1.mp4", "real/sub/ignored.mp4", "fake/c23/actor1/f1.mp4"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).touch()
+    records = list(_Nested().discover(tmp_path))
+    assert [(r.key, r.relpath) for r in records] == [
+        ("REAL/r1", "real/r1.mp4"),  # the flat task does not descend into real/sub
+        ("FAKE/f1", "fake/c23/actor1/f1.mp4"),
+    ]
+    assert "recursive" in _Nested().describe_layout()
+
+
+# ------------------------------------------------------------------------------ record options
+
+
+def test_record_can_override_the_task_method():
+    builder = DemoBuilder()
+    record = builder.record(FAKE, "000_001", "swapped/c23/000_001.mp4", "c23", method="Swapper-v2")
+    assert record.method == "Swapper-v2"
+    assert record.label_key == "DEMO-FS_SWAP"  # the label still comes from the task
+    assert builder.record(FAKE, "000_001", "swapped/c23/000_001.mp4", "c23").method == "Swapper"
+
+
+def test_record_folder_must_be_one_path_segment():
+    builder = DemoBuilder()
+    ok = builder.record(REAL, "000", "original/000.mp4", None, folder="FaceForensics++")
+    assert ok.folder == "FaceForensics++"
+    for bad in ("", "a/b", "a\\b", "..", ".", "/abs"):
+        with pytest.raises(ContractError, match="folder"):
+            builder.record(REAL, "000", "original/000.mp4", None, folder=bad)

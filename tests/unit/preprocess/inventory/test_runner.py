@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -23,9 +25,11 @@ from dfwb.core.errors import (
 )
 from dfwb.core.paths import resolve_roots
 from dfwb.core.records import InventoryRecord, read_jsonl
+from dfwb.preprocess.inventory.base import TaskSpec
 from dfwb.preprocess.inventory.runner import (
     InventoryResult,
     build_inventory,
+    collect_records,
     folder_status,
     get_builder,
     inventory_path,
@@ -275,3 +279,90 @@ def test_folder_status_never_raises(env, monkeypatch, tmp_path):
 
     override = folder_status("anon", None, roots, {"anon": (raw / "Demo", "env: Y")})
     assert override.source == "override (env: Y)"
+
+
+def test_the_inventory_is_never_written_under_a_datasets_root(env, monkeypatch, tmp_path):
+    raw, _ = env
+    install(monkeypatch)
+    make_demo_tree(raw / "Demo", compressions=("c23",))
+    monkeypatch.setenv("DFWB_WORK_ROOT", str(raw / "work"))
+    with pytest.raises(ConfigError, match="inside the datasets root"):
+        build_inventory("demo")
+    # the same holds when the dataset folder itself is given with --root, outside any root
+    chosen = make_demo_tree(tmp_path / "chosen", compressions=("c23",))
+    with pytest.raises(ConfigError, match="inside the datasets root"):
+        build_inventory("demo", root=chosen)
+    assert not (raw / "work").exists()
+
+
+# ------------------------------------------------------------------------------ collect_records
+
+
+class _Preparing(DemoBuilder):
+    """Loads a (pretend) metadata file once per build, then discovers from it."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.known: set[str] = set()
+
+    def prepare(self, root: Path) -> None:
+        self.calls.append("prepare")
+        listing = root / "listing.txt"
+        self.known = set(listing.read_text().split()) if listing.is_file() else set()
+
+    def discover(
+        self, root: Path, *, compressions: Sequence[str] | None = None
+    ) -> Iterator[InventoryRecord]:
+        self.calls.append("discover")
+        for record in super().discover(root, compressions=compressions):
+            if record.key.partition("/")[2] in self.known:
+                yield record
+
+
+def test_prepare_runs_once_before_discover(tmp_path):
+    make_demo_tree(tmp_path, compressions=("c23",))
+    (tmp_path / "listing.txt").write_text("000 000_001\n")
+    builder = _Preparing()
+    records = collect_records(builder, tmp_path)
+    assert builder.calls == ["prepare", "discover"]
+    assert [r.key for r in records] == ["FS_SWAP/000_001", "REAL/000"]
+    assert collect_records(_Preparing(), tmp_path / "empty") == []
+
+
+class _IgnoresCompressions(DemoBuilder):
+    """Overrides discover and never looks at ``compressions``."""
+
+    def __init__(self) -> None:
+        self.received: list[Sequence[str] | None] = []
+
+    def discover(
+        self, root: Path, *, compressions: Sequence[str] | None = None
+    ) -> Iterator[InventoryRecord]:
+        self.received.append(compressions)
+        return iter(())
+
+
+def test_compressions_are_validated_even_when_discover_is_overridden(tmp_path):
+    builder = _IgnoresCompressions()
+    with pytest.raises(ConfigError, match=r"unknown compression 'c32' \(did you mean 'c23'"):
+        collect_records(builder, tmp_path, compressions=["c32"])
+    assert builder.received == []
+    collect_records(builder, tmp_path, compressions=["c40", "c23", "c40"])
+    collect_records(builder, tmp_path)
+    assert builder.received == [["c23", "c40"], None]
+
+
+class _WrongLabel(DemoBuilder):
+    """Stamps every record with another task's label key."""
+
+    def record_for_video(
+        self, task: TaskSpec, path: Path, relpath: str, compression: str | None
+    ) -> InventoryRecord | None:
+        record = self.record(task, path.stem, relpath, compression)
+        return dataclasses.replace(record, label_key="DEMO-FS_SWAP")
+
+
+def test_a_label_key_that_does_not_match_the_task_is_a_contract_error(tmp_path):
+    make_demo_tree(tmp_path, fakes=(), compressions=("c23",))
+    with pytest.raises(ContractError, match=r"'REAL/000'.*'DEMO-FS_SWAP'.*'DEMO-REAL'"):
+        collect_records(_WrongLabel(), tmp_path)
