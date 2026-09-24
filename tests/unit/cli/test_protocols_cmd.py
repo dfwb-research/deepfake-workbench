@@ -1,6 +1,8 @@
 import gzip
 import json
+from pathlib import Path
 
+import yaml
 from tests.unit.protocols.conftest import (
     make_pack,
     register_packs,
@@ -8,7 +10,20 @@ from tests.unit.protocols.conftest import (
     write_toyone_dataset,
 )
 
-from dfwb.core.records import BuilderRef, InventoryRecord, VideoRecord, read_jsonl, write_jsonl
+from dfwb.core.records import (
+    BuilderRef,
+    DatasetCard,
+    InventoryRecord,
+    LabelVocab,
+    PackCard,
+    PackProvenance,
+    SplitRow,
+    VideoRecord,
+    read_jsonl,
+    write_jsonl,
+)
+from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+from dfwb.protocols.writer import scheme_card_for, write_dataset_files
 
 
 def _install_toyone(monkeypatch, tmp_path):
@@ -200,3 +215,206 @@ def test_verify_cli_rejects_unknown_split_with_suggestion(run, monkeypatch, tmp_
     assert "split 'tset' is not in this scheme" in result.err
     assert "did you mean 'test'" in result.err
     assert "hint: splits in this scheme: test, train, val" in result.err
+
+
+# -------------------------------------------------------------------------------------------
+# `dfwb protocols lint`: pack integrity checks. ``lint``/``diff`` take a pack directory path
+# directly, so no registry install is needed.
+# -------------------------------------------------------------------------------------------
+
+
+def _write_lint_pack(root: Path, *, distribution: str = "list") -> Path:
+    dataset_dir = root / "toy"
+    rows = [SplitRow("REAL/r1", None, "train"), SplitRow("REAL/r2", None, "test")]
+    scheme = scheme_card_for(rows, kind="official", rule="official")
+    card = DatasetCard(
+        id="toy",
+        name="toy",
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only; never media",
+        distribution=distribution,
+        modalities=["video"],
+        key_rule="<task>/<stem>",
+        schemes={"official": scheme},
+        default_scheme="official",
+    )
+    labels = LabelVocab(
+        vocab={"TOY-REAL": {"binary": 0}}, mappings={"binary": LabelMappingSpec(from_="binary")}
+    )
+    provenance = PackProvenance(
+        builder={"id": "toy", "version": "1"},
+        dfwb="0.1.0",
+        source_listing_sha256="0" * 64,
+        rules={"official": {"rule": "official", "params": {}}},
+    )
+    write_dataset_files(
+        dataset_dir,
+        videos=[
+            VideoRecord("REAL/r1", None, "TOY-REAL", "original", identity="r1"),
+            VideoRecord("REAL/r2", None, "TOY-REAL", "original", identity="r2"),
+        ],
+        schemes={"official": rows},
+        pairs=[],
+        card=card,
+        labels=labels,
+        provenance=provenance,
+        notice="# toy\n\nSynthetic fixture; never real media.\n",
+    )
+    pack_card = PackCard(schema_version=1, name="lint-pack", version="1.0.0", datasets=["toy"])
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pack.yaml").write_text(
+        yaml.safe_dump(pack_card.model_dump(mode="json", by_alias=True), sort_keys=True)
+    )
+    return root
+
+
+def test_lint_cli_warns_on_undecided_distribution_and_exits_0(run, tmp_path):
+    root = _write_lint_pack(tmp_path, distribution="undecided")
+
+    result = run("protocols", "lint", str(root))
+
+    assert result.code == 0
+    assert "warning: toy/dataset.yaml: distribution is undecided" in result.out
+
+
+def test_lint_cli_release_flag_turns_the_warning_into_an_error(run, tmp_path):
+    root = _write_lint_pack(tmp_path, distribution="undecided")
+
+    result = run("protocols", "lint", str(root), "--release")
+
+    assert result.code == 4
+    assert "error: toy/dataset.yaml: distribution is undecided" in result.out
+
+
+def test_lint_cli_exits_4_when_any_error_is_found(run, tmp_path):
+    root = _write_lint_pack(tmp_path)
+    (root / "toy" / "NOTICE.md").unlink()
+
+    result = run("protocols", "lint", str(root))
+
+    assert result.code == 4
+    assert "error: toy/NOTICE.md: file is missing" in result.out
+
+
+def test_lint_cli_json_output(run, tmp_path):
+    root = _write_lint_pack(tmp_path)
+
+    data = json.loads(run("protocols", "lint", str(root), "--json").out)
+
+    assert data == []
+
+
+# -------------------------------------------------------------------------------------------
+# `dfwb protocols diff`: the required SemVer bump between two pack directories.
+# -------------------------------------------------------------------------------------------
+
+
+def _diff_rows() -> list[SplitRow]:
+    return [
+        SplitRow("REAL/r1", None, "train"),
+        SplitRow("REAL/r2", None, "test"),
+        SplitRow("FAKE/f1", None, "train"),
+        SplitRow("FAKE/f2", None, "test"),
+    ]
+
+
+def _write_diff_pack(root: Path, version: str, rows: list[SplitRow]) -> Path:
+    dataset_dir = root / "diffcli"
+    scheme = scheme_card_for(rows, kind="official", rule="official")
+    card = DatasetCard(
+        id="diffcli",
+        name="diffcli",
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only; never media",
+        distribution="list",
+        modalities=["video"],
+        key_rule="<task>/<stem>",
+        schemes={"official": scheme},
+        default_scheme="official",
+    )
+    labels = LabelVocab(
+        vocab={"DIFFCLI-REAL": {"binary": 0}, "DIFFCLI-FAKE": {"binary": 1}},
+        mappings={"binary": LabelMappingSpec(from_="binary")},
+    )
+    provenance = PackProvenance(
+        builder={"id": "diffcli", "version": "1"},
+        dfwb="0.1.0",
+        source_listing_sha256="0" * 64,
+        rules={"official": {"rule": "official", "params": {}}},
+    )
+    write_dataset_files(
+        dataset_dir,
+        videos=[
+            VideoRecord("REAL/r1", None, "DIFFCLI-REAL", "original", identity="r1"),
+            VideoRecord("REAL/r2", None, "DIFFCLI-REAL", "original", identity="r2"),
+            VideoRecord("FAKE/f1", None, "DIFFCLI-FAKE", "FakeA", identity="f1", target_id="r1"),
+            VideoRecord("FAKE/f2", None, "DIFFCLI-FAKE", "FakeA", identity="f2", target_id="r2"),
+        ],
+        schemes={"official": rows},
+        pairs=[],
+        card=card,
+        labels=labels,
+        provenance=provenance,
+        notice="# diffcli\n\nSynthetic fixture; never real media.\n",
+    )
+    pack_card = PackCard(schema_version=1, name="diff-pack", version=version, datasets=["diffcli"])
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pack.yaml").write_text(
+        yaml.safe_dump(pack_card.model_dump(mode="json", by_alias=True), sort_keys=True)
+    )
+    return root
+
+
+def _moved_rows() -> list[SplitRow]:
+    return [SplitRow("REAL/r1", None, "test") if r.key == "REAL/r1" else r for r in _diff_rows()]
+
+
+def test_diff_cli_prints_the_table_and_required_bump(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.0.1", _diff_rows())
+
+    result = run("protocols", "diff", str(old), str(new))
+
+    assert result.code == 0
+    assert "diffcli" in result.out
+    assert "official" in result.out
+    assert "required bump: patch" in result.out
+
+
+def test_diff_cli_json_reports_a_moved_video_as_a_major_bump(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _moved_rows())
+
+    data = json.loads(run("protocols", "diff", str(old), str(new), "--json").out)
+
+    assert data["required_bump"] == "major"
+    assert data["schemes"] == [
+        {
+            "dataset": "diffcli",
+            "scheme": "official",
+            "status": "changed",
+            "added": 0,
+            "removed": 0,
+            "moved": 1,
+        }
+    ]
+
+
+def test_diff_cli_expect_bump_exits_4_when_the_actual_bump_is_smaller_than_required(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _moved_rows())  # an actual 1.0.0 -> 1.1.0
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "minor")
+
+    assert result.code == 4
+
+
+def test_diff_cli_expect_bump_passes_when_the_version_was_bumped_enough(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "2.0.0", _moved_rows())
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "major")
+
+    assert result.code == 0
