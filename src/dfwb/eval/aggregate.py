@@ -14,7 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dfwb.core.errors import ConfigError, did_you_mean
-from dfwb.eval.metrics import parse_metric_spec
+from dfwb.eval.metrics import parse_metric_spec, validate_scores
 
 __all__ = ["aggregate"]
 
@@ -45,12 +45,13 @@ def _vote(scores: FloatArray, *, thr: float = 0.5) -> float:
     return float(np.mean(scores >= thr))
 
 
-_MODES: dict[str, tuple[Callable[..., float], frozenset[str]]] = {
-    "mean-prob": (_mean_prob, frozenset()),
-    "mean-logit": (_mean_logit, frozenset()),
-    "max": (_max_score, frozenset()),
-    "median": (_median_score, frozenset()),
-    "vote": (_vote, frozenset({"thr"})),
+_MODES: dict[str, tuple[Callable[..., float], frozenset[str], bool]] = {
+    # (function, accepted parameters, whether scores must be probabilities in [0, 1])
+    "mean-prob": (_mean_prob, frozenset(), True),
+    "mean-logit": (_mean_logit, frozenset(), True),
+    "max": (_max_score, frozenset(), False),
+    "median": (_median_score, frozenset(), False),
+    "vote": (_vote, frozenset({"thr"}), True),
 }
 
 
@@ -67,11 +68,16 @@ def aggregate[K: Hashable](frame_rows: Iterable[tuple[K, float]], mode: str) -> 
     - ``vote@thr=T`` (default ``T=0.5``): the fraction of frames with a score at or above ``T``.
 
     Rows for the same key need not be adjacent; every row is read once, in whatever order
-    ``frame_rows`` yields them.
+    ``frame_rows`` yields them. Every score must be finite; ``mean-prob``, ``mean-logit`` and
+    ``vote`` additionally require scores to be probabilities in ``[0, 1]`` (``max`` and
+    ``median``, being order statistics, do not) -- see
+    :func:`~dfwb.eval.metrics.validate_scores`.
 
     Raises:
         ConfigError: ``mode``'s name is not one of the above, or gives it a parameter it does
             not accept.
+        ContractError: a frame score is not finite, or (for a mode that requires it) not in
+            ``[0, 1]``.
     """
     name, params = parse_metric_spec(mode)
     if name not in _MODES:
@@ -79,7 +85,7 @@ def aggregate[K: Hashable](frame_rows: Iterable[tuple[K, float]], mode: str) -> 
             f"aggregate: unknown mode {name!r}{did_you_mean(name, _MODES)}",
             hint="modes: " + ", ".join(sorted(_MODES)),
         )
-    fn, allowed = _MODES[name]
+    fn, allowed, bounded = _MODES[name]
     for param_name in params:
         if param_name not in allowed:
             raise ConfigError(
@@ -91,5 +97,9 @@ def aggregate[K: Hashable](frame_rows: Iterable[tuple[K, float]], mode: str) -> 
     for key, score in frame_rows:
         groups.setdefault(key, []).append(float(score))
     return {
-        key: fn(np.asarray(values, dtype=np.float64), **params) for key, values in groups.items()
+        key: fn(
+            validate_scores(np.asarray(values), name=f"aggregate/{name}", bounded=bounded),
+            **params,
+        )
+        for key, values in groups.items()
     }

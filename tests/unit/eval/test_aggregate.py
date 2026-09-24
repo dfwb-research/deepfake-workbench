@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from dfwb.core.errors import ConfigError
+from dfwb.core.errors import ConfigError, ContractError
 from dfwb.eval.aggregate import aggregate
 
 _FRAMES = [
@@ -95,3 +95,27 @@ def test_unknown_parameter_for_a_mode_raises_config_error():
 def test_max_and_median_reject_parameters():
     with pytest.raises(ConfigError):
         aggregate(_FRAMES, "max@thr=0.5")
+
+
+# ------------------------------------------------------------------- input validation
+
+
+@pytest.mark.parametrize("mode", ["mean-prob", "mean-logit", "vote"])
+def test_bounded_modes_reject_scores_outside_unit_interval(mode):
+    with pytest.raises(ContractError) as info:
+        aggregate([("vid-a", 1.3)], mode)
+    assert "scores must be probabilities in [0, 1]; found 1.3" in info.value.message
+
+
+@pytest.mark.parametrize("mode", ["max", "median"])
+def test_order_statistic_modes_accept_scores_outside_unit_interval(mode):
+    # max/median only ever compare scores to each other, so an out-of-range value is harmless.
+    result = aggregate([("vid-a", -3.0), ("vid-a", 7.0)], mode)
+    assert isinstance(result["vid-a"], float)
+
+
+def test_all_modes_reject_non_finite_scores():
+    for mode in ("mean-prob", "mean-logit", "max", "median", "vote"):
+        with pytest.raises(ContractError) as info:
+            aggregate([("vid-a", float("nan"))], mode)
+        assert "scores must be finite; found 1 NaN" in info.value.message

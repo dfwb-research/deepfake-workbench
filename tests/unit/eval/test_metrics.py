@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dfwb.core.errors import ConfigError, UnknownKeyError
+from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
 from dfwb.core.plugins import get_registry
 from dfwb.eval.metrics import (
     MetricUndefined,
@@ -17,10 +17,12 @@ from dfwb.eval.metrics import (
     compute,
     ece,
     eer,
+    eer_point,
     fpr,
     nll,
     parse_metric_spec,
     tpr,
+    validate_scores,
 )
 
 # ------------------------------------------------------------------- parameter syntax
@@ -186,6 +188,31 @@ def test_eer_zero_for_perfect_separation():
     assert eer(y, p) == pytest.approx(0.0)
 
 
+def test_eer_point_reports_the_threshold_at_an_exact_grid_crossing():
+    # The tie fixture used above for tpr@fpr/fpr@tpr: the FPR=FNR crossing lands exactly on the
+    # ROC point (fpr, tpr) = (0.5, 0.5) (t=1.0 in the interpolation, i.e. no interpolation is
+    # actually needed), one step before the tied score's diagonal segment begins. That point's
+    # threshold is the real score 0.6, not the tied score 0.5.
+    assert eer_point(_Y, _P) == pytest.approx((0.5, 0.6))
+
+
+def test_eer_point_interpolates_the_threshold_fractionally():
+    # Same fixture as test_eer_interpolated_agrees_with_the_old_approximation_within_the_step_size:
+    # the crossing falls 4/5 of the way from threshold 0.75 to 0.65 (no ties, so a real fractional
+    # interpolation, not just a boundary case): 0.75 + 0.8*(0.65-0.75) = 0.67.
+    y = np.array([1, 0, 0, 1, 0, 1, 0, 0])
+    p = np.array([0.95, 0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25])
+    eer_value, threshold = eer_point(y, p)
+    assert eer_value == pytest.approx(0.4)
+    assert threshold == pytest.approx(0.67)
+
+
+def test_eer_matches_eer_points_first_element():
+    y = np.array([1, 0, 0, 1, 0, 1, 0, 0])
+    p = np.array([0.95, 0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25])
+    assert eer(y, p) == eer_point(y, p)[0]
+
+
 # ------------------------------------------------------------------- ece, hand-computed
 
 
@@ -310,3 +337,95 @@ def test_acc_at_default_and_custom_threshold():
     p = np.array([0.1, 0.9, 0.6, 0.4])
     assert acc(y, p) == pytest.approx(0.5)  # thr=0.5: predictions [0,1,1,0] vs [0,1,0,1]
     assert acc(y, p, thr=0.65) == pytest.approx(0.75)  # predictions [0,1,0,0] vs [0,1,0,1]
+
+
+# ------------------------------------------------------------------- input validation
+
+
+_ALL_METRICS = [auc, ap, eer, tpr, fpr, acc, ece, brier, nll, aurc]
+# auc/ap/eer/tpr/fpr are rank-only (any finite real score); acc/ece/brier/nll/aurc need [0, 1].
+_BOUNDED_METRICS = [acc, ece, brier, nll, aurc]
+_RANK_ONLY_METRICS = [auc, ap, eer, tpr, fpr]
+
+
+def _call(metric_fn, y, p):
+    if metric_fn in (tpr,):
+        return metric_fn(y, p, fpr=0.5)
+    if metric_fn in (fpr,):
+        return metric_fn(y, p, tpr=0.5)
+    return metric_fn(y, p)
+
+
+@pytest.mark.parametrize("metric_fn", _ALL_METRICS)
+def test_labels_outside_zero_one_are_rejected(metric_fn):
+    y = np.array([0, 1, 2, 1])
+    p = np.array([0.1, 0.9, 0.5, 0.7])
+    with pytest.raises(ContractError) as info:
+        _call(metric_fn, y, p)
+    assert "labels must be 0 or 1; found 2" in info.value.message
+    assert info.value.exit_code == 4
+    assert info.value.hint
+
+
+@pytest.mark.parametrize("metric_fn", _ALL_METRICS)
+def test_nan_scores_are_rejected(metric_fn):
+    y = np.array([0, 1, 0, 1])
+    p = np.array([0.1, np.nan, 0.5, 0.7])
+    with pytest.raises(ContractError) as info:
+        _call(metric_fn, y, p)
+    assert "scores must be finite; found 1 NaN" in info.value.message
+    assert info.value.exit_code == 4
+
+
+@pytest.mark.parametrize("metric_fn", _ALL_METRICS)
+def test_inf_scores_are_rejected(metric_fn):
+    y = np.array([0, 1, 0, 1])
+    p = np.array([0.1, np.inf, 0.5, -np.inf])
+    with pytest.raises(ContractError) as info:
+        _call(metric_fn, y, p)
+    assert "scores must be finite; found 2 inf" in info.value.message
+
+
+@pytest.mark.parametrize("metric_fn", _ALL_METRICS)
+def test_mismatched_lengths_are_rejected(metric_fn):
+    y = np.array([0, 1, 0])
+    p = np.array([0.1, 0.9])
+    with pytest.raises(ContractError) as info:
+        _call(metric_fn, y, p)
+    assert "same length" in info.value.message
+
+
+@pytest.mark.parametrize("metric_fn", _BOUNDED_METRICS)
+def test_bounded_metrics_reject_scores_outside_unit_interval(metric_fn):
+    y = np.array([0, 1, 0, 1])
+    p = np.array([0.1, 1.3, 0.5, 0.7])
+    with pytest.raises(ContractError) as info:
+        _call(metric_fn, y, p)
+    assert "scores must be probabilities in [0, 1]; found 1.3" in info.value.message
+
+
+@pytest.mark.parametrize("metric_fn", _RANK_ONLY_METRICS)
+def test_rank_only_metrics_accept_scores_outside_unit_interval(metric_fn):
+    # A score of 2.0 would break acc/ece/brier/nll/aurc's arithmetic, but rank-only metrics only
+    # ever compare scores to each other, so any finite real value is fine.
+    y = np.array([0, 1, 0, 1])
+    p = np.array([-3.0, 2.0, -1.0, 5.0])
+    result = _call(metric_fn, y, p)
+    assert isinstance(result, float)
+
+
+def test_bool_and_int_label_dtypes_are_both_accepted():
+    p = np.array([0.1, 0.9, 0.2, 0.8])
+    assert auc(np.array([False, True, False, True]), p) == auc(
+        np.array([0, 1, 0, 1], dtype=np.int64), p
+    )
+
+
+def test_validate_scores_rejects_non_1d_arrays():
+    with pytest.raises(ContractError, match="1-D"):
+        validate_scores(np.zeros((2, 2)), name="x", bounded=False)
+
+
+def test_non_1d_labels_are_rejected():
+    with pytest.raises(ContractError, match="1-D"):
+        auc(np.zeros((2, 2), dtype=np.int64), np.array([0.1, 0.2, 0.3, 0.4]))

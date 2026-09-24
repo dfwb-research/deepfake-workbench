@@ -18,7 +18,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-from dfwb.eval.metrics import MetricUndefined, ap, auc, brier, eer, fpr, nll, tpr
+from dfwb.eval.metrics import MetricUndefined, ap, auc, brier, eer, eer_point, fpr, nll, tpr
 
 # Coarse (2-decimal) scores make ties common, so a single strategy exercises both the generic
 # random case and the tied-score case hypothesis is asked for separately.
@@ -76,6 +76,15 @@ def test_eer_brackets_a_sign_change_of_fpr_minus_fnr(case):
     hi = min(idx, len(diff) - 1)
     result = eer(y, p)
     assert min(fpr_arr[lo], fpr_arr[hi]) - 1e-9 <= result <= max(fpr_arr[lo], fpr_arr[hi]) + 1e-9
+
+
+@given(_LABELLED_SCORES.filter(_both_classes))
+@settings(max_examples=200, deadline=None)
+def test_eer_point_first_element_matches_eer(case):
+    y_list, p_list = case
+    y = np.array(y_list, dtype=np.int64)
+    p = np.array(p_list, dtype=np.float64)
+    assert eer_point(y, p)[0] == eer(y, p)
 
 
 @given(_LABELLED_SCORES.filter(_both_classes), st.floats(min_value=0.0, max_value=1.0))
