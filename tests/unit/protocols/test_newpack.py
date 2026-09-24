@@ -178,11 +178,29 @@ def test_refuses_a_bad_name_before_writing_anything(tmp_path):
     assert not directory.exists()
 
 
+def test_declared_license_files_all_exist(tmp_path):
+    # Fast, hermetic regression cover for the LICENSE/license-files mismatch: no network or build
+    # tooling needed, just that every path pyproject.toml's ``license-files`` names is really on
+    # disk in the scaffold -- the exact thing that was wrong before ``LICENSE.tmpl`` was added.
+    directory = tmp_path / "my-pack"
+    new_pack(directory, name="my-pack")
+
+    data = tomllib.loads((directory / "pyproject.toml").read_text("utf-8"))
+
+    license_files = data["project"]["license-files"]
+    assert license_files  # not empty -- an empty list would vacuously "pass" the check below
+    for relative in license_files:
+        assert (directory / relative).is_file(), f"declared license-files entry missing: {relative}"
+
+
+@pytest.mark.network
 def test_scaffolded_package_builds_and_ships_its_pack_yaml(tmp_path):
     # An end-to-end check that the generated pyproject.toml is not just well-formed but actually
     # buildable, and that hatchling's default packaging really does carry the pack's data (the
     # generated package has no ``.py``-only assumption to lean on -- ``pack.yaml`` is the only file
-    # under ``packs/``).
+    # under ``packs/``). Marked ``network``: on a cold ``uv`` cache / offline machine, the isolated
+    # build environment ``uv build`` creates for the generated package must resolve ``hatchling``
+    # (its own build-system requirement) from PyPI, which is unavailable in CI.
     directory = tmp_path / "my-pack"
     new_pack(directory, name="my-pack")
     out_dir = tmp_path / "dist"
