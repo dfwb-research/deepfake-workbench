@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 import shutil
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from tests.unit.protocols.conftest import write_toyone_dataset
@@ -10,6 +14,20 @@ from tests.unit.protocols.conftest import write_toyone_dataset
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
 from dfwb.core.records import SplitRow, read_split_tsv, write_split_tsv
 from dfwb.protocols.protocol import LabelMapping, Protocol, list_protocols, load
+
+
+def _rewrite_lines(path: Path, transform: Callable[[list[str]], list[str]]) -> None:
+    """Decompress ``path`` (gzipped JSONL), apply ``transform`` to its lines, and recompress it.
+
+    Used to inject a malformed row into an otherwise-valid ``videos.jsonl.gz`` fixture, to pin
+    ``records()``'s per-line error handling (fix round 1: it must match io.py's ``iter_jsonl``,
+    not lose the line number or raise a raw ``KeyError``/``TypeError``).
+    """
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    lines = transform(lines)
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
 
 
 def test_load_defaults_to_the_default_scheme(toyone_pack):
@@ -52,6 +70,52 @@ def test_records_by_split_and_where(toyone_pack):
         "FAKE_A/a4",
         "FAKE_B/b4",
     }  # REAL/r4 is also "fr" but unassigned in "official", so it is absent
+
+
+def test_records_reports_a_row_with_no_key(toyone_pack):
+    def _drop_key(lines: list[str]) -> list[str]:
+        first = json.loads(lines[0])
+        del first["key"]
+        lines[0] = json.dumps(first)
+        return lines
+
+    _rewrite_lines(toyone_pack / "videos.jsonl.gz", _drop_key)
+
+    protocol = load("toyone/official")
+    with pytest.raises(ContractError, match=r"videos\.jsonl\.gz:1: missing 'key'"):
+        protocol.records()
+
+
+def test_records_reports_an_unexpected_field_on_a_matched_row(toyone_pack):
+    def _add_bogus_field(lines: list[str]) -> list[str]:
+        for i, line in enumerate(lines):
+            row = json.loads(line)
+            if row["key"] == "REAL/r1" and row.get("compression") == "c23":
+                row["bogus"] = 1
+                lines[i] = json.dumps(row)
+                return lines
+        raise AssertionError("REAL/r1 (c23) row not found in the fixture")
+
+    _rewrite_lines(toyone_pack / "videos.jsonl.gz", _add_bogus_field)
+
+    protocol = load("toyone/official")
+    with pytest.raises(
+        ContractError,
+        match=r"videos\.jsonl\.gz:\d+: not a valid VideoRecord: unexpected field\(s\) \['bogus'\]",
+    ):
+        protocol.records()  # REAL/r1 (c23) is assigned in "official", so it reaches construction
+
+
+def test_records_reports_a_corrupt_json_line(toyone_pack):
+    def _corrupt_first_line(lines: list[str]) -> list[str]:
+        lines[0] = "not json"
+        return lines
+
+    _rewrite_lines(toyone_pack / "videos.jsonl.gz", _corrupt_first_line)
+
+    protocol = load("toyone/official")
+    with pytest.raises(ContractError, match=r"videos\.jsonl\.gz:1: invalid JSON"):
+        protocol.records()
 
 
 def test_where_rejects_unknown_fields_with_suggestion(toyone_pack):

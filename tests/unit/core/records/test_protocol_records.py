@@ -12,6 +12,7 @@ from dfwb.core.records import (
     SplitRow,
     VideoRecord,
     assert_no_absolute_paths,
+    iter_jsonl_dicts,
     read_jsonl,
     read_split_tsv,
     split_sha256,
@@ -142,6 +143,24 @@ def test_reader_errors_are_contract_errors(tmp_path):
     assert read_jsonl(path, VideoRecord)[0].key == 1  # fast path does not check types...
     with pytest.raises(ContractError, match="key: Input should be a valid string"):
         read_jsonl(path, VideoRecord, strict=True)  # ...strict mode does
+
+
+def test_iter_jsonl_dicts_yields_lineno_and_raw_dict(tmp_path):
+    path = tmp_path / "v.jsonl"
+    path.write_text('{"key": "a"}\n\n{"key": "b"}\n')  # a blank line in between is skipped
+    assert list(iter_jsonl_dicts(path)) == [(1, {"key": "a"}), (3, {"key": "b"})]
+
+
+def test_iter_jsonl_dicts_shares_iter_jsonls_error_mapping(tmp_path):
+    path = tmp_path / "v.jsonl"
+    path.write_text('{"key": "a"}\nnot json\n')
+    with pytest.raises(ContractError, match=r"v\.jsonl:2: invalid JSON"):
+        list(iter_jsonl_dicts(path))
+    path.write_text("[1, 2]\n")
+    with pytest.raises(ContractError, match=r"v\.jsonl:1: expected a JSON object"):
+        list(iter_jsonl_dicts(path))
+    with pytest.raises(ContractError, match="file not found"):
+        list(iter_jsonl_dicts(tmp_path / "missing.jsonl"))
 
 
 def test_writer_refuses_absolute_paths(tmp_path):

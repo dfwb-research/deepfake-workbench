@@ -2,6 +2,7 @@
 
 from dfwb.core.records._base import assert_no_absolute_paths
 from dfwb.core.records.io import (
+    iter_jsonl_dicts,
     read_jsonl,
     read_split_tsv,
     split_sha256,
@@ -48,6 +49,7 @@ __all__ = [
     "TrackStats",
     "VideoRecord",
     "assert_no_absolute_paths",
+    "iter_jsonl_dicts",
     "read_jsonl",
     "read_scores",
     "read_split_tsv",

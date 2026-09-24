@@ -1,3 +1,4 @@
+import gzip
 import json
 
 from tests.unit.protocols.conftest import make_pack, register_packs, write_toyone_dataset
@@ -8,6 +9,7 @@ def _install_toyone(monkeypatch, tmp_path):
         tmp_path, "toyone-pack", {"toyone": {}}, builders={"toyone": write_toyone_dataset}
     )
     register_packs(monkeypatch, {"toyone-pack": root})
+    return root
 
 
 def test_list_empty(run):
@@ -52,4 +54,21 @@ def test_info_human_and_json(run, monkeypatch, tmp_path):
 def test_info_unknown_dataset_exits_2_with_hint(run):
     result = run("protocols", "info", "nope")
     assert result.code == 2
+    assert "hint: " in result.err
+
+
+def test_info_exits_4_on_a_malformed_video_row(run, monkeypatch, tmp_path):
+    root = _install_toyone(monkeypatch, tmp_path)
+    videos_path = root / "toyone" / "videos.jsonl.gz"
+    with gzip.open(videos_path, "rt", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    del_data = json.loads(lines[0])
+    del del_data["key"]
+    lines[0] = json.dumps(del_data)
+    with gzip.open(videos_path, "wt", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+    result = run("protocols", "info", "toyone/official")
+    assert result.code == 4
+    assert "videos.jsonl.gz:1: missing 'key'" in result.err
     assert "hint: " in result.err

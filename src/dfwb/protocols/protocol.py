@@ -9,15 +9,13 @@ scheme of every dataset of every installed pack, without reading any split file 
 
 from __future__ import annotations
 
-import gzip
-import json
+import dataclasses
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
@@ -27,6 +25,7 @@ from dfwb.core.records import (
     SchemeCard,
     SplitRow,
     VideoRecord,
+    iter_jsonl_dicts,
     read_jsonl,
     read_split_tsv,
     split_sha256,
@@ -130,37 +129,46 @@ class Protocol:
         equality (``None`` matches a null value), a list means membership.
 
         Builds a ``(key, compression) -> split`` dict from the split rows and walks
-        ``videos.jsonl.gz`` once, filtering each row (as a plain dict) before building a
-        ``VideoRecord`` for it, so a selective query stays linear without paying to construct rows
-        it is about to discard (the 250k-row performance budget, protocols.md).
+        ``videos.jsonl.gz`` once (:func:`~dfwb.core.records.iter_jsonl_dicts`, which owns the
+        file's open/gzip/decode/JSON-error handling), filtering each row as a plain dict before
+        building a ``VideoRecord`` for it, so a selective query stays linear without paying to
+        construct rows it is about to discard (the 250k-row performance budget, protocols.md).
 
         Raises:
             ConfigError: a ``where`` key is not one of those, with a did-you-mean suggestion.
+            ContractError: a row has no string ``"key"``, or a matched row does not build a
+                ``VideoRecord`` (both name ``videos.jsonl.gz:<lineno>``).
         """
         wanted = None if split is None else ({split} if isinstance(split, str) else set(split))
         where = where or {}
         attr_keys = self._check_where_fields(where)
         split_index = {(row.key, row.compression): row.split for row in self._rows}
+        name = self._videos_path.name
 
         result: list[VideoRecord] = []
         seen_attrs: set[str] = set()
-        for data in _iter_video_dicts(self._videos_path):
+        for lineno, data in iter_jsonl_dicts(self._videos_path):
             if attr_keys:
                 seen_attrs.update(data.get("attrs") or {})
-            row_split = split_index.get((data["key"], data.get("compression")))
+            key = data.get("key")
+            if not isinstance(key, str):
+                raise ContractError(
+                    f"{name}:{lineno}: missing 'key'", hint="the file is corrupt; rebuild it"
+                )
+            row_split = split_index.get((key, data.get("compression")))
             if row_split is None:
                 continue
             if wanted is not None and row_split not in wanted:
                 continue
             if _matches_where(data, where):
-                result.append(VideoRecord(**data))
+                result.append(_build_video_record(data, name, lineno))
 
         unknown_attrs = attr_keys - seen_attrs
         if unknown_attrs:
-            name = sorted(unknown_attrs)[0]
+            attr_name = sorted(unknown_attrs)[0]
             raise ConfigError(
-                f"unknown attribute {name!r} for dataset {self.dataset!r}"
-                f"{did_you_mean(name, seen_attrs)}",
+                f"unknown attribute {attr_name!r} for dataset {self.dataset!r}"
+                f"{did_you_mean(attr_name, seen_attrs)}",
                 hint=f"run `dfwb protocols info {self.ref}` to see this dataset's attrs",
             )
         return result
@@ -244,31 +252,24 @@ class Protocol:
         }
 
 
-@contextmanager
-def _open_read(path: Path) -> Iterator[IO[str]]:
-    """Open ``path`` for text reading; a ``.gz`` suffix means gzip (mirrors M1's ``_open_text``)."""
-    if path.suffix == ".gz":
-        with gzip.open(path, "rt", encoding="utf-8", newline="\n") as handle:
-            yield handle
-    else:
-        with path.open(encoding="utf-8", newline="\n") as handle:
-            yield handle
+_VIDEO_RECORD_FIELDS = frozenset(f.name for f in dataclasses.fields(VideoRecord))
 
 
-def _iter_video_dicts(path: Path) -> Iterator[dict[str, Any]]:
-    """Yield each line of ``videos.jsonl(.gz)`` as a plain dict, without building a VideoRecord."""
+def _build_video_record(data: Mapping[str, Any], name: str, lineno: int) -> VideoRecord:
+    """Build a ``VideoRecord`` from an already-matched row.
+
+    Raises the same :class:`ContractError` shape as ``io.py``'s ``iter_jsonl`` for a row that does
+    not fit the dataclass (an unknown, missing or extra field), naming ``name:lineno``. ``name``
+    and ``lineno`` are formatted only on this (rare) error path, not on every matched row.
+    """
     try:
-        with _open_read(path) as handle:
-            for line in handle:
-                stripped = line.strip()
-                if stripped:
-                    yield json.loads(stripped)
-    except FileNotFoundError:
-        raise ContractError(f"file not found: {path}", hint="check the path") from None
-    except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return VideoRecord(**data)
+    except TypeError as exc:
+        unknown = sorted(set(data) - _VIDEO_RECORD_FIELDS)
+        detail = f"unexpected field(s) {unknown}" if unknown else str(exc).split(") ", 1)[-1]
         raise ContractError(
-            f"{path.name}: cannot read ({type(exc).__name__}: {exc})",
-            hint="the file is truncated, corrupt or misnamed (.gz means gzip); rebuild it",
+            f"{name}:{lineno}: not a valid VideoRecord: {detail}",
+            hint="a file written by a newer dfwb needs a newer dfwb; otherwise rebuild it",
         ) from None
 
 
