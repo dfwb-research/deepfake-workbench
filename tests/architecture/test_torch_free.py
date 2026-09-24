@@ -2,6 +2,11 @@
 
 import json
 import sys
+from pathlib import Path
+
+import pytest
+
+DFWB = Path(sys.executable).parent / "dfwb"  # the console script of this environment
 
 TORCH_FREE = ("dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess", "dfwb.cli")
 
@@ -33,3 +38,17 @@ def test_core_imports_with_torch_and_numpy_blocked(blocked):
     done = blocked([sys.executable, "-c", code], block=("torch", "numpy"))
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["loaded"] == []
+
+
+# Every torch-free command; each CLI task adds its own lines.
+TORCH_FREE_COMMANDS = [
+    ["--help"],
+    ["--version"],
+    ["completion", "bash"],
+]
+
+
+@pytest.mark.parametrize("args", TORCH_FREE_COMMANDS, ids=" ".join)
+def test_cli_commands_run_with_torch_blocked(blocked, args):
+    done = blocked([str(DFWB), *args], block=("torch",))
+    assert done.returncode == 0, done.stderr
