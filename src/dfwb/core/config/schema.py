@@ -227,29 +227,40 @@ def check_components(config: ConfigModel, registries: Mapping[str, Any]) -> None
     """Check every component's ``name`` and params against the installed registries.
 
     Raises one error listing every problem, each at its full config path (for example
-    ``model.backbone.freeze.mode: …``). It is an :class:`InstallationError` when every problem is
-    a missing installation, and a :class:`ConfigError` otherwise.
+    ``model.backbone.freeze.mode: …``). When the problems have different hints, each problem keeps
+    its own ``hint:`` line, so a hint naming a failed plugin is never lost. It is an
+    :class:`InstallationError` when every problem is a missing installation, and a
+    :class:`ConfigError` otherwise.
     """
-    problems: list[str] = []
-    hints: list[str] = []
-    missing_installs: list[bool] = []
+    found: list[tuple[list[str], str, bool]] = []  # (problem lines, hint, missing install)
     for loc, registry_name, spec in _walk_components(config, ()):
         try:
             registries[registry_name].validate(spec.name, **spec.params)
         except ConfigError as exc:
-            found: tuple[tuple[Loc, str], ...] = exc.problems or (((), exc.message),)
-            problems.extend(f"{format_loc((*loc, *where))}: {text}" for where, text in found)
-            hints.append(exc.hint)
-            missing_installs.append(False)
+            pairs: tuple[tuple[Loc, str], ...] = exc.problems or (((), exc.message),)
+            lines = [f"{format_loc((*loc, *where))}: {text}" for where, text in pairs]
+            found.append((lines, exc.hint, False))
         except DFWBError as exc:
-            problems.append(f"{format_loc(loc)}: {exc.message}")
-            hints.append(exc.hint)
-            missing_installs.append(isinstance(exc, InstallationError))
-    if problems:
-        kind = InstallationError if all(missing_installs) else ConfigError
-        raise kind(
-            f"{len(problems)} invalid component value(s)\n  " + "\n  ".join(problems),
-            hint=hints[0]
-            if len(set(hints)) == 1
-            else "run `dfwb plugins list` to see what is installed",
-        )
+            found.append(
+                (
+                    [f"{format_loc(loc)}: {exc.message}"],
+                    exc.hint,
+                    isinstance(exc, InstallationError),
+                )
+            )
+    if not found:
+        return
+    hints = {hint for _, hint, _ in found}
+    body: list[str] = []
+    for lines, hint, _ in found:
+        body.extend(f"  {line}" for line in lines)
+        if len(hints) > 1:
+            body.append(f"    hint: {hint}")
+    count = sum(len(lines) for lines, _, _ in found)
+    kind = InstallationError if all(missing for _, _, missing in found) else ConfigError
+    raise kind(
+        f"{count} invalid component value(s)\n" + "\n".join(body),
+        hint=found[0][1]
+        if len(hints) == 1
+        else "fix each problem above; `dfwb plugins list --all` shows installed and failed plugins",
+    )

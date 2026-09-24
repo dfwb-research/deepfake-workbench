@@ -169,3 +169,19 @@ def test_errors_under_data_test_name_one_real_path(experiment):
     assert info.value.message.splitlines()[1:] == [
         "  data.test[0].split: 'tets' is not one of ['train', 'val', 'test'] (did you mean 'test'?)"
     ]
+
+
+def test_each_problem_keeps_its_own_hint_when_hints_differ(experiment):
+    # A key that only a failed plugin provided, next to an unrelated bad component.
+    failed_hint = "heads 'half' comes from plugin 'broken' (broken-dist), which failed to load"
+    registries = _registries(skip={("heads", "linear"), ("losses", "bce")})
+    registries["heads"] = Registry("heads", unknown_hint=lambda registry, key: failed_hint)
+    data = _valid(experiment)
+    data["model"]["head"] = {"name": "half"}
+    with pytest.raises(ConfigError) as info:
+        check_components(validate_config(data, source="x"), registries)
+    lines = info.value.message.splitlines()
+    assert "  model.head: heads: unknown key 'half'" in lines
+    assert f"    hint: {failed_hint}" in lines
+    assert "  loss: losses: unknown key 'bce'" in lines
+    assert "--all" in info.value.hint
