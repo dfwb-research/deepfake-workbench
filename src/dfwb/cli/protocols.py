@@ -230,6 +230,7 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         payload: dict[str, Any] = {
             "schemes": [_scheme_diff_row(s) for s in result.schemes],
             "labels_changed": result.labels_changed,
+            "labels_added": result.labels_added,
             "required_bump": result.required_bump,
         }
         if actual_bump is not None:
@@ -241,6 +242,8 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
     click.echo(table(["DATASET", "SCHEME", "STATUS", "ADDED", "REMOVED", "MOVED"], rows))
     if result.labels_changed:
         click.echo("labels changed: " + ", ".join(result.labels_changed))
+    if result.labels_added:
+        click.echo("labels added: " + ", ".join(result.labels_added))
     click.echo(f"required bump: {result.required_bump}")
     if actual_bump is not None:
         click.echo(f"actual bump (pack.yaml version change): {actual_bump}")

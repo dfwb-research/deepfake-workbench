@@ -418,3 +418,23 @@ def test_diff_cli_expect_bump_passes_when_the_version_was_bumped_enough(run, tmp
     result = run("protocols", "diff", str(old), str(new), "--expect-bump", "major")
 
     assert result.code == 0
+
+
+def test_diff_cli_expect_bump_exits_4_on_a_version_downgrade(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.2.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _diff_rows())
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "patch")
+
+    assert result.code == 4
+    assert "downgrade" in result.err
+
+
+def test_diff_cli_expect_bump_exits_4_on_a_malformed_version(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _diff_rows())
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "minor")
+
+    assert result.code == 4
+    assert "is not MAJOR.MINOR.PATCH" in result.err

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
+from dfwb.core.errors import ContractError
 from dfwb.core.records import (
     DatasetCard,
     LabelVocab,
@@ -68,6 +70,8 @@ def _write_dataset(
     schemes: dict[str, list[SplitRow]],
     *,
     mappings: dict[str, LabelMappingSpec] | None = None,
+    vocab_extra: dict[str, dict[str, object]] | None = None,
+    extra_videos: list[VideoRecord] | None = None,
 ) -> None:
     scheme_cards = {
         name: scheme_card_for(rows, kind="official" if name == "official" else "subset", rule=name)
@@ -86,6 +90,8 @@ def _write_dataset(
         default_scheme=next(iter(scheme_cards)),
     )
     labels = _labels()
+    if vocab_extra is not None:
+        labels = labels.model_copy(update={"vocab": {**labels.vocab, **vocab_extra}})
     if mappings is not None:
         labels = labels.model_copy(update={"mappings": mappings})
     provenance = PackProvenance(
@@ -97,7 +103,7 @@ def _write_dataset(
     notice = f"# {dataset_id}\n\nSynthetic fixture; never real media.\n"
     write_dataset_files(
         dataset_dir,
-        videos=_videos(),
+        videos=[*_videos(), *(extra_videos or [])],
         schemes=schemes,
         pairs=[],
         card=card,
@@ -114,11 +120,30 @@ def _write_pack(
     dataset_schemes: dict[str, dict[str, list[SplitRow]]],
     *,
     mappings: dict[str, dict[str, LabelMappingSpec]] | None = None,
+    vocab_extra: dict[str, dict[str, dict[str, object]]] | None = None,
+    extra_videos: dict[str, list[VideoRecord]] | None = None,
+    withheld: list[str] | None = None,
 ) -> Path:
     mappings = mappings or {}
+    vocab_extra = vocab_extra or {}
+    extra_videos = extra_videos or {}
+    withheld_ids = set(withheld or []) & set(dataset_schemes)
     for dataset_id, schemes in dataset_schemes.items():
-        _write_dataset(root / dataset_id, dataset_id, schemes, mappings=mappings.get(dataset_id))
-    card = PackCard(schema_version=1, name=name, version=version, datasets=sorted(dataset_schemes))
+        _write_dataset(
+            root / dataset_id,
+            dataset_id,
+            schemes,
+            mappings=mappings.get(dataset_id),
+            vocab_extra=vocab_extra.get(dataset_id),
+            extra_videos=extra_videos.get(dataset_id),
+        )
+    card = PackCard(
+        schema_version=1,
+        name=name,
+        version=version,
+        datasets=sorted(set(dataset_schemes) - withheld_ids),
+        withheld=sorted(withheld_ids),
+    )
     root.mkdir(parents=True, exist_ok=True)
     (root / "pack.yaml").write_text(
         yaml.safe_dump(card.model_dump(mode="json", by_alias=True), sort_keys=True)
@@ -223,7 +248,8 @@ def test_new_label_mapping_requires_a_minor_bump(tmp_path):
     result = diff_packs(old, new)
 
     assert result.required_bump == "minor"
-    assert result.labels_changed == [f"{DATASET_ID}/family"]
+    assert result.labels_changed == []
+    assert result.labels_added == [f"{DATASET_ID}/family"]
 
 
 def test_removed_label_mapping_requires_a_major_bump(tmp_path):
@@ -311,6 +337,70 @@ def test_changed_label_mapping_requires_a_major_bump(tmp_path):
 
     assert result.required_bump == "major"
     assert result.labels_changed == [f"{DATASET_ID}/binary"]
+    assert result.labels_added == []
+
+
+def test_vocab_growth_alone_is_a_minor_bump_not_a_major_one(tmp_path):
+    # A new scheme, a new video and a new vocab entry, with every existing value untouched: the
+    # new vocab entry makes every mapping's *resolved table* bigger (it gains one more label_key),
+    # but that is an addition, not a change to anything already published.
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new_schemes = {DATASET_ID: {"official": _official_rows(), "all-test": _all_test_rows()}}
+    extra_video = VideoRecord("FAKE2/f4", None, "DIFFDS-FAKE2", "FakeB", identity="f4")
+    new = _write_pack(
+        tmp_path / "new",
+        "pack",
+        "1.1.0",
+        new_schemes,
+        extra_videos={DATASET_ID: [extra_video]},
+        vocab_extra={
+            DATASET_ID: {"DIFFDS-FAKE2": {"binary": 1, "family": "face-swap", "task": "FAKE2"}}
+        },
+    )
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "minor"
+    assert result.labels_changed == []
+    assert result.labels_added == [f"{DATASET_ID}/binary"]
+
+
+# -------------------------------------------------------------------------------------------
+# Deciding (or un-deciding) a dataset: publish status alone, independent of scheme content.
+# -------------------------------------------------------------------------------------------
+
+
+def test_deciding_a_withheld_dataset_requires_at_least_a_minor_bump(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only(), withheld=[DATASET_ID])
+    new = _write_pack(tmp_path / "new", "pack", "1.1.0", _official_only())  # byte-identical scheme
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "minor"
+    statuses = {s.scheme: s.status for s in result.schemes}
+    assert statuses == {"official": "same"}
+
+
+def test_withholding_a_published_dataset_requires_a_major_bump(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(
+        tmp_path / "new", "pack", "2.0.0", _official_only(), withheld=[DATASET_ID]
+    )  # byte-identical scheme, just no longer published
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "major"
+    statuses = {s.scheme: s.status for s in result.schemes}
+    assert statuses == {"official": "same"}
+
+
+def test_withdrawing_a_published_dataset_entirely_requires_a_major_bump(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "2.0.0", {})
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "major"
 
 
 # -------------------------------------------------------------------------------------------
@@ -323,6 +413,27 @@ def test_version_bump_reports_the_highest_differing_component():
     assert version_bump("1.0.0", "1.1.0") == "minor"
     assert version_bump("1.0.0", "1.0.1") == "patch"
     assert version_bump("1.0.0", "1.0.0") == "none"
+
+
+def test_version_bump_ignores_a_semver_prerelease_suffix():
+    assert version_bump("1.0.0-rc1", "1.0.0") == "none"
+    assert version_bump("1.0.0-rc1", "1.0.0-rc2") == "none"
+    assert version_bump("1.0.0", "1.1.0-alpha.2") == "minor"
+
+
+def test_version_bump_rejects_a_version_with_too_few_parts():
+    with pytest.raises(ContractError, match=r"is not MAJOR\.MINOR\.PATCH"):
+        version_bump("1.0", "1.0.1")
+
+
+def test_version_bump_rejects_a_non_version_string():
+    with pytest.raises(ContractError, match=r"is not MAJOR\.MINOR\.PATCH"):
+        version_bump("not-a-version", "1.0.0")
+
+
+def test_version_bump_rejects_a_downgrade():
+    with pytest.raises(ContractError, match="downgrade"):
+        version_bump("1.2.0", "1.1.0")
 
 
 def test_bump_rank_orders_major_over_minor_over_patch_over_none():

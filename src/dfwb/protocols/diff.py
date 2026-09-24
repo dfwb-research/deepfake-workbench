@@ -11,10 +11,13 @@ both packs are read straight off disk, exactly as a pack author would have them 
 
 from __future__ import annotations
 
+import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from dfwb.core.errors import ContractError
 from dfwb.core.records import (
     DatasetCard,
     LabelVocab,
@@ -54,25 +57,58 @@ class SchemeDiff:
 
 @dataclass(frozen=True)
 class DiffResult:
-    """The full comparison: every scheme touched, every label mapping changed, and the bump."""
+    """The full comparison: every scheme touched, every label change, addition, and the bump."""
 
     schemes: list[SchemeDiff]
     labels_changed: list[str]
+    labels_added: list[str]
     required_bump: Bump
 
 
+# ``MAJOR.MINOR.PATCH``, with an optional SemVer pre-release suffix (``-rc1``, ``-alpha.2``): the
+# suffix is accepted but plays no part in the comparison, since it says nothing about the numeric
+# core two packs are actually ordered by.
+_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$")
+
+
+def _parse_semver_core(value: str) -> tuple[int, int, int]:
+    match = _SEMVER_RE.match(value)
+    if match is None:
+        raise ContractError(
+            f"pack.yaml version {value!r} is not MAJOR.MINOR.PATCH",
+            hint="use plain SemVer, e.g. 1.2.3 or 1.2.3-rc1",
+        )
+    major, minor, patch = (int(part) for part in match.groups())
+    return major, minor, patch
+
+
 def version_bump(old: str, new: str) -> Literal["major", "minor", "patch", "none"]:
-    """The highest-order SemVer component that differs between two ``X.Y.Z`` versions."""
-    old_parts = tuple(int(part) for part in old.split("."))
-    new_parts = tuple(int(part) for part in new.split("."))
+    """The highest-order SemVer component that differs between two ``X.Y.Z[-pre]`` versions.
+
+    The pre-release suffix, if any, is accepted but ignored: two versions with the same numeric
+    core (``1.0.0`` and ``1.0.0-rc1``, or two packs at exactly the same version) give ``"none"``,
+    a bump level below ``"patch"``.
+
+    Raises:
+        ContractError: either version is not ``MAJOR.MINOR.PATCH`` (with an optional pre-release
+            suffix), or ``new``'s numeric core is lower than ``old``'s (a downgrade).
+    """
+    old_core = _parse_semver_core(old)
+    new_core = _parse_semver_core(new)
+    if new_core < old_core:
+        raise ContractError(
+            f"pack.yaml version went from {old!r} to {new!r}, which is a downgrade",
+            hint="the new pack's version must be the same as, or later than, the old pack's",
+        )
     names: tuple[Literal["major", "minor", "patch"], ...] = ("major", "minor", "patch")
     for index, name in enumerate(names):
-        if old_parts[index] != new_parts[index]:
+        if old_core[index] != new_core[index]:
             return name
     return "none"
 
 
 def _dataset_ids(card: PackCard) -> set[str]:
+    """Every dataset id this pack knows about, published or withheld."""
     return set(card.datasets) | set(card.withheld)
 
 
@@ -92,10 +128,14 @@ def _row_diff(old_rows: list[SplitRow], new_rows: list[SplitRow]) -> tuple[int, 
     return added, removed, moved
 
 
-def _resolve_mapping(labels: LabelVocab, name: str) -> dict[str, object]:
+def _resolve_mapping(
+    labels: LabelVocab, name: str, keys: Collection[str] | None = None
+) -> dict[str, object]:
+    """``label_key -> value`` for this mapping, restricted to ``keys`` (default: every key)."""
     spec = labels.mappings[name]
+    wanted = labels.vocab if keys is None else {k: labels.vocab[k] for k in keys}
     values: dict[str, object] = {}
-    for label_key, attrs in labels.vocab.items():
+    for label_key, attrs in wanted.items():
         values[label_key] = spec.override.get(label_key, attrs.get(spec.from_))
     return values
 
@@ -143,33 +183,51 @@ def _diff_schemes(
 
 def _diff_labels(
     dataset_id: str, old_labels: LabelVocab | None, new_labels: LabelVocab | None
-) -> tuple[list[str], bool, bool]:
-    """Identifiers ``<dataset>/<mapping>`` whose resolved values changed, plus major/minor flags."""
+) -> tuple[list[str], list[str], bool, bool]:
+    """``<dataset>/<mapping>`` identifiers split into changed (major) and added (minor).
+
+    Growing the vocab with a wholly new ``label_key`` changes what every mapping built over it
+    resolves to (it gains one more entry), but that is an addition, not a change: a mapping counts
+    as *changed* only when a ``label_key`` present in **both** vocabs now resolves to a different
+    value, or when the new vocab dropped a ``label_key`` the old one had. A wholly new mapping name
+    is likewise an addition, not a change.
+    """
     changed: list[str] = []
+    added: list[str] = []
     major = False
     minor = False
     if old_labels is None and new_labels is None:
-        return changed, major, minor
+        return changed, added, major, minor
 
     old_names = set(old_labels.mappings) if old_labels is not None else set()
     new_names = set(new_labels.mappings) if new_labels is not None else set()
+    old_vocab_keys = set(old_labels.vocab) if old_labels is not None else set()
+    new_vocab_keys = set(new_labels.vocab) if new_labels is not None else set()
+    shared_keys = old_vocab_keys & new_vocab_keys
+    vocab_shrank = bool(old_vocab_keys - new_vocab_keys)
+    vocab_grew = bool(new_vocab_keys - old_vocab_keys)
 
     for name in sorted(new_names & old_names):
         assert old_labels is not None  # both sets are non-empty only when their vocab is too
         assert new_labels is not None
-        if _resolve_mapping(old_labels, name) != _resolve_mapping(new_labels, name):
+        old_shared = _resolve_mapping(old_labels, name, shared_keys)
+        new_shared = _resolve_mapping(new_labels, name, shared_keys)
+        if old_shared != new_shared or vocab_shrank:
             changed.append(f"{dataset_id}/{name}")
             major = True
+        elif vocab_grew:
+            added.append(f"{dataset_id}/{name}")
+            minor = True
 
     for name in sorted(new_names - old_names):
-        changed.append(f"{dataset_id}/{name}")
+        added.append(f"{dataset_id}/{name}")
         minor = True
 
     for name in sorted(old_names - new_names):
         changed.append(f"{dataset_id}/{name}")
         major = True
 
-    return changed, major, minor
+    return changed, added, major, minor
 
 
 def diff_packs(old: Path, new: Path) -> DiffResult:
@@ -183,16 +241,25 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
     -- and, when it changed, by their actual rows, to report how many were added, removed or moved
     to a different split. Label mappings are compared by their fully resolved ``label_key -> value``
     table (vocab entries plus overrides), not just the mapping's own spec, so a mapping whose
-    source attribute values changed is still caught.
+    source attribute values changed is still caught -- but only over the ``label_key``s the two
+    vocabs share, so growing the vocab is an addition (minor), not a change (major).
+
+    Separately from scheme membership, a dataset id moving from ``withheld`` to ``datasets`` --
+    deciding to publish it, even with byte-identical scheme data -- is at least a minor change (it
+    is new to anyone installing the pack); moving the other way, or dropping it outright, having
+    been published before, is a major change (something that was public no longer is).
     """
     old_card = read_model(old / "pack.yaml", PackCard)
     new_card = read_model(new / "pack.yaml", PackCard)
-    dataset_ids = sorted(_dataset_ids(old_card) | _dataset_ids(new_card))
+    old_all, new_all = _dataset_ids(old_card), _dataset_ids(new_card)
+    old_published, new_published = set(old_card.datasets), set(new_card.datasets)
+    dataset_ids = sorted(old_all | new_all)
 
     schemes: list[SchemeDiff] = []
     labels_changed: list[str] = []
-    major = bool(_dataset_ids(old_card) - _dataset_ids(new_card))
-    minor = bool(_dataset_ids(new_card) - _dataset_ids(old_card))
+    labels_added: list[str] = []
+    major = bool(old_all - new_all) or bool(old_published - new_published)
+    minor = bool(new_all - old_all) or bool(new_published - old_published)
 
     for dataset_id in dataset_ids:
         old_dataset_card = read_card(old / dataset_id) if (old / dataset_id).is_dir() else None
@@ -207,10 +274,18 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
 
         old_labels = read_labels(old / dataset_id) if old_dataset_card is not None else None
         new_labels = read_labels(new / dataset_id) if new_dataset_card is not None else None
-        label_changes, labels_major, labels_minor = _diff_labels(dataset_id, old_labels, new_labels)
-        labels_changed.extend(label_changes)
+        label_changed, label_added, labels_major, labels_minor = _diff_labels(
+            dataset_id, old_labels, new_labels
+        )
+        labels_changed.extend(label_changed)
+        labels_added.extend(label_added)
         major = major or labels_major
         minor = minor or labels_minor
 
     required_bump: Bump = "major" if major else "minor" if minor else "patch"
-    return DiffResult(schemes=schemes, labels_changed=labels_changed, required_bump=required_bump)
+    return DiffResult(
+        schemes=schemes,
+        labels_changed=labels_changed,
+        labels_added=labels_added,
+        required_bump=required_bump,
+    )
