@@ -46,9 +46,9 @@ def test_a_broken_pack_does_not_hide_the_others(fixture_packs, tmp_path):
         find_dataset("toytwo", pack="broken")
 
 
-# The tests above are the brief's Step 1, verbatim. The rest pin the remaining documented
-# interface (Pack.version, read_card/read_labels, and find_dataset's other error branches) that
-# the brief's Interfaces section specifies but its literal test code does not exercise.
+# The tests above cover the documented interface's primary example flow, verbatim. The rest pin
+# the remaining documented interface (Pack.version, read_card/read_labels, and find_dataset's
+# other error branches) that is specified elsewhere but not exercised by that flow.
 
 
 def test_pack_version(fixture_packs):

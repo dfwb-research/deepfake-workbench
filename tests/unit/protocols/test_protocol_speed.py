@@ -1,7 +1,7 @@
-"""Performance budget (protocols.md): load and filter 250k rows in under a second.
+"""Performance budget: load and filter 250k rows in under a second.
 
 The fixture build (writing 250,000 ``VideoRecord``s and split rows to disk) is not timed -- only
-``load(...).records(...)``, per the brief.
+``load(...).records(...)`` is.
 """
 
 from __future__ import annotations

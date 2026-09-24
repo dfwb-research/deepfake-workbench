@@ -1,4 +1,4 @@
-"""The benchmark rule (J6): a seeded, stratified test subset with balanced reals.
+"""The benchmark rule: a seeded, stratified test subset with balanced reals.
 
 The rule assertions are ported from the reference benchmark selector's tests and those of its
 sampling helpers; the ones about its source files, output files and folders are not.

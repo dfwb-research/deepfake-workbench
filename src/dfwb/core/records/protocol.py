@@ -147,7 +147,7 @@ class SplitRow:
 @with_config(ConfigDict(extra="forbid"))
 @dataclass(slots=True, frozen=True)
 class PairRecord:
-    """One line of ``pairs.jsonl.gz``: a fake/real pairing produced by a pairing rule (J7)."""
+    """One line of ``pairs.jsonl.gz``: a fake/real pairing produced by a pairing rule."""
 
     fake_key: str
     real_key: str
@@ -155,7 +155,7 @@ class PairRecord:
 
 
 class PackProvenance(RecordModel):
-    """``PROVENANCE.json``: how a pack was built, for byte-identical rebuilds (J13)."""
+    """``PROVENANCE.json``: how a pack was built, for byte-identical rebuilds."""
 
     builder: dict[str, str]
     dfwb: str

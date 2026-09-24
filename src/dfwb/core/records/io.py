@@ -98,7 +98,7 @@ def iter_jsonl_dicts(path: str | os.PathLike[str]) -> Iterator[tuple[int, dict[s
 def _iter_jsonl_dicts(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
     # ``f"{path.name}:{lineno}"`` is built only on the (rare) error paths below, not per line: it
     # is pure string formatting on the hot path otherwise, and this loop must stay comfortably
-    # linear for 250k-row files (protocols.md's performance budget).
+    # linear for 250k-row files (the read-performance budget).
     with _open_text(path, "r") as handle:
         for lineno, line in enumerate(handle, start=1):
             if not line.strip():

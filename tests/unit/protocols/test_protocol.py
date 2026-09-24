@@ -1,4 +1,4 @@
-"""Tests for the ``Protocol`` object, ``load`` and ``list_protocols`` (Task 5)."""
+"""Tests for the ``Protocol`` object, ``load`` and ``list_protocols``."""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ def test_pairs_by_split(toyone_pack):
 
     train_pairs = protocol.pairs(split="train")
     # r1 is train -> included; r2 is val -> excluded; r3 is test -> excluded;
-    # r4 is unassigned -> falls back to its fake (b4), which is train -> included (J7)
+    # r4 is unassigned -> falls back to its fake (b4), which is train -> included
     assert set(train_pairs) == {("REAL/r1", "FAKE_A/a1"), ("REAL/r4", "FAKE_B/b4")}
 
     val_pairs = protocol.pairs(split="val")

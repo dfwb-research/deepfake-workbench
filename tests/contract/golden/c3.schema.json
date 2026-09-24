@@ -516,7 +516,7 @@
     },
     "PackProvenance": {
       "additionalProperties": false,
-      "description": "``PROVENANCE.json``: how a pack was built, for byte-identical rebuilds (J13).",
+      "description": "``PROVENANCE.json``: how a pack was built, for byte-identical rebuilds.",
       "properties": {
         "builder": {
           "additionalProperties": {
@@ -554,7 +554,7 @@
     },
     "PairRecord": {
       "additionalProperties": false,
-      "description": "One line of ``pairs.jsonl.gz``: a fake/real pairing produced by a pairing rule (J7).",
+      "description": "One line of ``pairs.jsonl.gz``: a fake/real pairing produced by a pairing rule.",
       "properties": {
         "fake_key": {
           "title": "Fake Key",

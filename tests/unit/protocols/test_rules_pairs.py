@@ -1,4 +1,4 @@
-"""The pairing rule (J7): fakes resolved to reals by a real's local key or by identity fan-out.
+"""The pairing rule: fakes resolved to reals by a real's local key or by identity fan-out.
 
 The rule assertions are ported from the reference pairs builder's tests; the ones about its output
 files, folders and per-dataset rule table are not (each dataset's rule lives on its builder).

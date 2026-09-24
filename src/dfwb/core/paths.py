@@ -107,8 +107,8 @@ def _dataset_env_var(dataset_id: str) -> str:
 def _read_roots(table: object, path: Path, label: str = "roots") -> dict[str, str | list[str]]:
     """Validate a ``[roots]``-shaped table. ``datasets`` may be a string or list of strings.
 
-    ``label`` anchors error messages: ``"roots"`` for the top-level table (the M1 wording,
-    unchanged), or ``"hosts.<host>.roots"`` when validating a host table.
+    ``label`` anchors error messages: ``"roots"`` for the top-level table (its original wording,
+    kept unchanged), or ``"hosts.<host>.roots"`` when validating a host table.
     """
     if not isinstance(table, dict):
         raise ConfigError(

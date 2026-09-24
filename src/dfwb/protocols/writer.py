@@ -1,6 +1,6 @@
 """Write one dataset of a protocol pack (contract C3a), byte for byte reproducibly.
 
-The same inputs always give the same bytes, whatever order they arrive in (J13): records and rows
+The same inputs always give the same bytes, whatever order they arrive in: records and rows
 are sorted, gzip members carry mtime 0, YAML and JSON keys are sorted, and nothing holds a
 timestamp. Each file is written atomically (a hidden sibling, then a rename).
 """

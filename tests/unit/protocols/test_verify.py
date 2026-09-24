@@ -1,4 +1,4 @@
-"""Tests for ``dfwb.protocols.verify``: coverage reports (Task 6)."""
+"""Tests for ``dfwb.protocols.verify``: coverage reports."""
 
 from __future__ import annotations
 

@@ -2,17 +2,17 @@
 
 Every published scheme hash depends on the exact behaviour of these functions, so the details
 below are part of the contract, not implementation choices: the md5 carve formula and its
-thresholds (J5), the benchmark's pool order, group order and single shared random draw (J6), and
-the pairing rule's resolution order (J7). Changing any of them changes a scheme's membership and
-therefore needs a new major pack version.
+thresholds, the benchmark's pool order, group order and single shared random draw, and the pairing
+rule's resolution order. Changing any of them changes a scheme's membership and therefore needs a
+new major pack version.
 
 The rules work on any record with ``key``, ``compression``, ``identity``, ``target_id`` and
 ``source_id`` -- a :class:`~dfwb.core.records.VideoRecord` or, by duck typing, an
-:class:`~dfwb.core.records.InventoryRecord`. Keys are ``<task>/<local key>`` (J1): the task is the
-part before the first ``/`` and the local key is the rest.
+:class:`~dfwb.core.records.InventoryRecord`. Keys are ``<task>/<local key>``: the task is the part
+before the first ``/`` and the local key is the rest.
 
 An :data:`Assignment` maps ``(key, compression)`` to a split. Records a rule does not assign are
-simply absent (J4); ``exclude`` is reserved for explicit exclusions.
+simply absent; ``exclude`` is reserved for explicit exclusions.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def task_of(key: str) -> str:
 
 
 def carve_key(record: RuleRecord) -> str:
-    """What the carves hash: the record's identity if it has one, else its local key (J5).
+    """What the carves hash: the record's identity if it has one, else its local key.
 
     Hashing the identity keeps every video of one person on the same side of a carve; the local
     key (not the full key) keeps the same video under two tasks on the same side too.
@@ -289,7 +289,7 @@ def assign_benchmark[R: RuleRecord](
     task_rank: Mapping[str, int],
     pool_keys: Collection[str] | None,
 ) -> Assignment:
-    """A seeded test subset: stratified fakes, then as many reals as fakes (J6).
+    """A seeded test subset: stratified fakes, then as many reals as fakes.
 
     The steps, in this exact order, share one ``random.Random(spec.seed)``:
 
@@ -358,7 +358,7 @@ def resolve_pairs[R: RuleRecord](
     rule: str,
     task_rank: Mapping[str, int] | None = None,
 ) -> list[PairRecord]:
-    """Pair each fake with its real(s) (J7).
+    """Pair each fake with its real(s).
 
     ``candidates(fake)`` returns a value, several values, or ``None``. Each non-empty value is
     resolved on its own:

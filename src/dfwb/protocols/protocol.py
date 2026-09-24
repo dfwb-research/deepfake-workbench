@@ -4,7 +4,7 @@ A :class:`Protocol` is one hash-checked ``dataset/scheme`` inside one installed 
 resolves the reference (defaulting the scheme, checking a pin, and hashing the split file to catch
 drift between an installed pack and its card), falling back to a materialized recipe scheme under
 the work root when the pack itself carries no split file. ``list_protocols`` enumerates every
-scheme of every dataset of every installed pack, without reading any split file (J17, J4).
+scheme of every dataset of every installed pack, without reading any split file.
 """
 
 from __future__ import annotations
@@ -123,8 +123,9 @@ class Protocol:
     ) -> list[VideoRecord]:
         """Videos assigned in this scheme, optionally narrowed by ``split`` and ``where``.
 
-        A video absent from the scheme's split rows (J4: unassigned, not ``exclude``) is never
-        returned, regardless of ``split``/``where``. ``where`` keys are ``VideoRecord`` fields,
+        A video the scheme does not assign is absent from its split file and so is never
+        returned, regardless of ``split``/``where``; ``exclude`` is reserved for explicit
+        exclusions. ``where`` keys are ``VideoRecord`` fields,
         ``"task"`` (the key prefix before ``/``), or ``"attrs.<name>"``; a scalar value means
         equality (``None`` matches a null value), a list means membership.
 
@@ -132,7 +133,7 @@ class Protocol:
         ``videos.jsonl.gz`` once (:func:`~dfwb.core.records.iter_jsonl_dicts`, which owns the
         file's open/gzip/decode/JSON-error handling), filtering each row as a plain dict before
         building a ``VideoRecord`` for it, so a selective query stays linear without paying to
-        construct rows it is about to discard (the 250k-row performance budget, protocols.md).
+        construct rows it is about to discard (the 250k-row read-performance budget).
 
         Raises:
             ConfigError: a ``where`` key is not one of those, with a did-you-mean suggestion.
@@ -218,7 +219,7 @@ class Protocol:
         """``(real_key, fake_key)`` pairs, or ``[]`` if the pack has none.
 
         When ``split`` is given, a pair is kept if the real record's split in this scheme equals
-        ``split``, or, when the real is absent from the scheme, the fake's split does (J7).
+        ``split``, or, when the real is absent from the scheme, the fake's split does.
         """
         if self._pairs_path is None:
             return []
@@ -378,7 +379,7 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
 
 
 def list_protocols() -> list[ProtocolInfo]:
-    """One row per scheme per dataset per healthy pack, plus one row per broken pack (J17, J4).
+    """One row per scheme per dataset per healthy pack, plus one row per broken pack.
 
     ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read.
     """

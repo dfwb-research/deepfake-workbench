@@ -87,13 +87,14 @@ _TOYONE_LANG = {"1": "en", "2": "fr", "3": "en", "4": "fr"}
 
 
 def write_toyone_dataset(dataset_dir: Path, dataset_id: str) -> None:
-    """Write the richer ``toyone`` dataset (Task 5): attrs, two schemes, three labels, pairs.
+    """Write the richer ``toyone`` dataset: attrs, two schemes, three labels, pairs.
 
     12 videos: ``REAL/r1..r4`` (compressions ``c23`` and ``c40``, so 8 ``VideoRecord`` rows),
     ``FAKE_A/a1..a4`` and ``FAKE_B/b1..b4`` (no compression variants, 4 rows each) -- 16 rows in
     total, each with ``attrs: {lang: en|fr}``. Two schemes: ``official`` (train/val/test, with
-    ``r4``/``a4``-paired-by-index left **unassigned** by index 4's real, to exercise J4's "absent,
-    not excluded" and J7's pairs fallback) and ``all-test`` (every row -> test). A ``labels.yaml``
+    ``r4``/``a4``-paired-by-index left **unassigned** by index 4's real, to exercise that an
+    unassigned record is absent rather than excluded, and that pairing falls back to the fake's
+    split) and ``all-test`` (every row -> test). A ``labels.yaml``
     with ``binary``, ``audiovisual-binary`` and ``family`` mappings (``binary`` overrides
     ``TOYONE-FAKE_B`` to ``"exclude"``), and four fake/real pairs in ``pairs.jsonl.gz``.
     """
@@ -133,7 +134,7 @@ def write_toyone_dataset(dataset_dir: Path, dataset_id: str) -> None:
 
     # "official": index 1 -> train, 2 -> val, 3 -> test, 4 -> train, except REAL/r4 is left
     # unassigned entirely (both compressions), so it never appears in official records() results,
-    # and its pair (FAKE_B/b4, REAL/r4) can only match a split through the fake's split (J7).
+    # and its pair (FAKE_B/b4, REAL/r4) can only match a split through the fake's split.
     official_rows = [
         SplitRow("REAL/r1", "c23", "train"),
         SplitRow("REAL/r1", "c40", "train"),
@@ -231,7 +232,7 @@ def write_toyone_dataset(dataset_dir: Path, dataset_id: str) -> None:
 
 
 def write_release_mismatch_dataset(dataset_dir: Path, dataset_id: str) -> None:
-    """30 ``FAKE_A`` videos, all assigned to ``test`` (Task 6's release-mismatch fixture).
+    """30 ``FAKE_A`` videos, all assigned to ``test`` (the release-mismatch fixture).
 
     Big enough that a test inventory can drop 10 and add 10 differently-keyed ones under the same
     task, to cross ``verify``'s release-mismatch heuristic (>=10 missing and >=10 extra sharing a
@@ -274,8 +275,8 @@ def make_pack(
 
     Each dataset is written by :func:`_write_dataset` (one video, one ``official`` scheme) unless
     ``builders`` maps its id to a different ``builder(dataset_dir, dataset_id)`` -- e.g.
-    :func:`write_toyone_dataset` for the richer Task 5 fixture -- so tests needing a richer dataset
-    reuse this function's package/registration scaffolding instead of duplicating it.
+    :func:`write_toyone_dataset` for the richer ``toyone`` fixture -- so tests needing a richer
+    dataset reuse this function's package/registration scaffolding instead of duplicating it.
 
     Returns the pack root (the directory holding ``pack.yaml``) -- exactly what the registry's
     ``.load()`` resolves to once :func:`register_packs` installs it, so mutating the returned
@@ -385,7 +386,7 @@ def fixture_packs(
 
 @pytest.fixture
 def toyone_pack(fixture_packs: Callable[..., dict[str, Path]]) -> Path:
-    """Install the richer ``toyone`` dataset (Task 5) in its own pack; returns the dataset dir."""
+    """Install the richer ``toyone`` dataset in its own pack; returns the dataset dir."""
     roots = fixture_packs(
         {"toyone-pack": {"toyone": {}}}, builders={"toyone-pack": {"toyone": write_toyone_dataset}}
     )
@@ -394,7 +395,7 @@ def toyone_pack(fixture_packs: Callable[..., dict[str, Path]]) -> Path:
 
 @pytest.fixture
 def release_pack(fixture_packs: Callable[..., dict[str, Path]]) -> Path:
-    """Install the 30-``FAKE_A``-video dataset (Task 6) in its own pack; returns the dataset dir."""
+    """Install the 30-``FAKE_A``-video dataset in its own pack; returns the dataset dir."""
     roots = fixture_packs(
         {"release-pack": {"release": {}}},
         builders={"release-pack": {"release": write_release_mismatch_dataset}},

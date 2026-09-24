@@ -62,7 +62,7 @@ class InventoryRecord:
     pair_key: str | None = None
     attrs: dict[str, Any] = field(default_factory=dict)
     probe: Probe | None = None
-    folder: str | None = None  # set when this record lives in a different dataset folder (J10)
+    folder: str | None = None  # set when this record lives in a different dataset folder
 
     def __post_init__(self) -> None:
         if not is_relative_posix_path(self.relpath):

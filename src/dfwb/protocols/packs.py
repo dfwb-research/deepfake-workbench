@@ -3,7 +3,7 @@
 Packs are registered in the ``protocol_packs`` data registry (``dfwb.core.plugins``); ``.load()``
 locates each one's root directory without importing any of its code. ``installed_packs()`` builds
 its list fresh on every call (no module-level cache), so a pack whose ``pack.yaml`` is missing or
-invalid never hides the others (J17): it is returned with ``card=None`` and ``error`` set, and
+invalid never hides the others: it is returned with ``card=None`` and ``error`` set, and
 using it raises :class:`ContractError`.
 """
 
@@ -23,7 +23,7 @@ __all__ = ["Pack", "find_dataset", "installed_packs"]
 
 @dataclass(frozen=True)
 class Pack:
-    """One installed protocol pack: its ``pack.yaml`` card, or why it could not be read (J17)."""
+    """One installed protocol pack: its ``pack.yaml`` card, or why it could not be read."""
 
     name: str
     provider: str

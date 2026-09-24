@@ -1,4 +1,4 @@
-"""Split rules (J5): carve keys, the 72/14/14 and 80/20 carves, official and official+80/20.
+"""Split rules: carve keys, the 72/14/14 and 80/20 carves, official and official+80/20.
 
 The assertions about the rules themselves are ported from the reference split builder's tests; the
 ones about its output files and folders are not (pack files are written by
