@@ -20,11 +20,12 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from dfwb.core.errors import ConfigError, InstallationError
+from dfwb.core.errors import ConfigError, ContractError, InstallationError
+from dfwb.core.plugins import get_registry
 from dfwb.core.records import ScoreRow, read_scores
 from dfwb.core.registry import install_hint
-from dfwb.eval.bootstrap import stratified_resample
-from dfwb.eval.metrics import compute, parse_metric_spec
+from dfwb.eval.bootstrap import _fast_auc_from_indices, _prepare_fast_auc, stratified_resample
+from dfwb.eval.metrics import MetricUndefined, compute, parse_metric_spec
 
 __all__ = [
     "CompareResult",
@@ -136,11 +137,30 @@ def delong_test(y: IntArray, p_a: FloatArray, p_b: FloatArray) -> tuple[float, f
 def _paired_bootstrap_delta(
     metric: str, y: IntArray, p_a: FloatArray, p_b: FloatArray, *, n_boot: int, seed: int
 ) -> tuple[float, float]:
+    """The paired-bootstrap CI of ``metric(y, p_b) - metric(y, p_a)``.
+
+    The metric's spec is resolved once, before the resample loop (see
+    :func:`~dfwb.eval.bootstrap.bootstrap_ci`); ``"auc"`` additionally uses the same ``O(n)``
+    per-resample formula that module uses, prepared once for each of ``p_a`` and ``p_b``.
+    """
     rng = np.random.default_rng(seed)
     deltas = np.empty(n_boot, dtype=np.float64)
-    for i in range(n_boot):
-        idx = stratified_resample(y, rng)
-        deltas[i] = compute(metric, y[idx], p_b[idx]) - compute(metric, y[idx], p_a[idx])
+    name, params = parse_metric_spec(metric)
+    if name == "auc" and not params:
+        auc_a = _prepare_fast_auc(y, p_a)
+        auc_b = _prepare_fast_auc(y, p_b)
+        for i in range(n_boot):
+            idx = stratified_resample(y, rng)
+            deltas[i] = _fast_auc_from_indices(idx, *auc_b) - _fast_auc_from_indices(idx, *auc_a)
+    else:
+        registry = get_registry("metrics")
+        kwargs = registry.validate(name, **params)
+        metric_fn = registry.load(name)
+        for i in range(n_boot):
+            idx = stratified_resample(y, rng)
+            deltas[i] = float(metric_fn(y[idx], p_b[idx], **kwargs)) - float(
+                metric_fn(y[idx], p_a[idx], **kwargs)
+            )
     lo, hi = np.quantile(deltas, [0.025, 0.975])
     return float(lo), float(hi)
 
@@ -190,7 +210,10 @@ def compare(
 
     Raises:
         ConfigError: fewer than two files are given.
-        ContractError: a file cannot be read (see :func:`~dfwb.core.records.read_scores`).
+        ContractError: a file cannot be read (see :func:`~dfwb.core.records.read_scores`), or a
+            pair's ``ok`` rows share no key at all.
+        MetricUndefined: a pair's shared rows are all one class and a metric needs both (named
+            with the two files and how many rows they share, not just "every label is 'fake'").
         InstallationError: ``"auc"`` is among ``metrics`` and scipy is not installed.
     """
     if len(files) < 2:
@@ -204,13 +227,26 @@ def compare(
         # sort key coerces a possibly-``None`` compression to "" -- comparing the raw 3-tuples
         # would raise if two keys share (dataset, key) but differ in compression being None.
         common = sorted(set(ok_rows[i]) & set(ok_rows[j]), key=lambda k: (k[0], k[1], k[2] or ""))
+        if not common:
+            raise ContractError(
+                f"{names[i]!r} and {names[j]!r} share no 'ok' rows to compare "
+                "(their (dataset, key, compression) intersection is empty)",
+                hint="check both files were scored on the same split with matching keys",
+            )
         y = np.asarray([ok_rows[i][k].label for k in common], dtype=np.int64)
         p_a = np.asarray([ok_rows[i][k].score for k in common], dtype=np.float64)
         p_b = np.asarray([ok_rows[j][k].score for k in common], dtype=np.float64)
         metric_rows: dict[str, dict[str, float]] = {}
         for metric in metrics:
-            value_a = compute(metric, y, p_a)
-            value_b = compute(metric, y, p_b)
+            try:
+                value_a = compute(metric, y, p_a)
+                value_b = compute(metric, y, p_b)
+            except MetricUndefined as exc:
+                raise MetricUndefined(
+                    f"{exc.message} ({names[i]!r} vs {names[j]!r}, over their {len(common)} "
+                    "shared 'ok' rows)",
+                    hint=exc.hint,
+                ) from exc
             lo, hi = _paired_bootstrap_delta(metric, y, p_a, p_b, n_boot=bootstrap, seed=seed)
             row = {
                 "a": value_a,

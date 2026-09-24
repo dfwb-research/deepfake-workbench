@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dfwb.core.errors import ConfigError, InstallationError
+from dfwb.core.errors import ConfigError, ContractError, InstallationError
 from dfwb.eval.compare import compare, delong_test, holm_correction
-from dfwb.eval.metrics import auc
+from dfwb.eval.metrics import MetricUndefined, auc
 
 pytest.importorskip("scipy")
 
@@ -61,6 +61,37 @@ def test_compare_handles_a_key_with_both_a_null_and_a_named_compression(tmp_path
     )
     result = compare([a, b], metrics=["acc@thr=0.5"])
     assert result.comparisons[0].n == 3
+
+
+def test_compare_empty_intersection_raises_a_clear_error(tmp_path):
+    a = _write(tmp_path, "a.scores.csv", ["d,k0,,0,0.1,ok", "d,k1,,1,0.9,ok"])
+    b = _write(tmp_path, "b.scores.csv", ["d,k2,,0,0.2,ok", "d,k3,,1,0.8,ok"])
+    with pytest.raises(ContractError, match="share no 'ok' rows") as info:
+        compare([a, b], metrics=["auc"])
+    assert "a.scores.csv" in info.value.message
+    assert "b.scores.csv" in info.value.message
+
+
+def test_compare_one_class_intersection_raises_a_clear_metric_undefined(tmp_path):
+    # both files' shared "ok" rows are all real -- "auc" cannot be defined on them, and the error
+    # must say so clearly (naming the files and the shared-row count), not just the generic
+    # "every label is 'fake'" a bare `compute()` call would give with no context.
+    a = _write(tmp_path, "a.scores.csv", ["d,k0,,0,0.1,ok", "d,k1,,0,0.2,ok"])
+    b = _write(tmp_path, "b.scores.csv", ["d,k0,,0,0.3,ok", "d,k1,,0,0.4,ok"])
+    with pytest.raises(MetricUndefined) as info:
+        compare([a, b], metrics=["auc"])
+    assert "a.scores.csv" in info.value.message
+    assert "b.scores.csv" in info.value.message
+    assert "2 shared" in info.value.message
+
+
+def test_compare_one_class_intersection_does_not_affect_single_class_metrics(tmp_path):
+    # a metric that does not need both classes must still work fine over a one-class intersection.
+    a = _write(tmp_path, "a.scores.csv", ["d,k0,,0,0.1,ok", "d,k1,,0,0.2,ok"])
+    b = _write(tmp_path, "b.scores.csv", ["d,k0,,0,0.3,ok", "d,k1,,0,0.4,ok"])
+    result = compare([a, b], metrics=["brier"])
+    assert result.comparisons[0].n == 2
+    assert "brier" in result.comparisons[0].metrics
 
 
 def test_compare_reports_delong_for_auc(tmp_path):

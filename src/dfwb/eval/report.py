@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dfwb.core.errors import ConfigError
-from dfwb.core.records import ScoreFile, ScoreMeta, read_scores
+from dfwb.core.records import ScoreFile, ScoreMeta, ScoreRow, read_scores
 from dfwb.eval.bootstrap import bootstrap_ci, summarize_seeds
 from dfwb.eval.breakdown import group_rows
 from dfwb.eval.coverage import Coverage, FloatArray, IntArray, coverage_of, labels_and_scores
@@ -100,14 +100,36 @@ def _score_metrics(
 
 
 def _file_row(
-    score_file: ScoreFile, coverage: Coverage, metric_table: dict[str, Any]
+    score_file: ScoreFile, coverage: Coverage, n: int, metric_table: dict[str, Any]
 ) -> dict[str, Any]:
     return {
         "file": score_file.path.name,
-        "n": len(score_file.rows),
+        "n": n,
         **coverage.as_dict(),
         "metrics": metric_table,
     }
+
+
+def _eval_rows_for_group(
+    by: str, group_rows_: list[ScoreRow], all_rows: Sequence[ScoreRow]
+) -> list[ScoreRow]:
+    """The rows one breakdown group is actually evaluated against.
+
+    ``compression`` stays a plain partition: a compression level's own rows already span both
+    classes. For a fake-side dimension (``method``, ``family``, ``label_key``), a group that is
+    entirely fake (label 1) is evaluated against every real (label 0) row of the same dataset(s)
+    too -- the standard per-method-AUC convention (this method's fakes against the *whole* pool of
+    reals, not against no reals at all). A group that is not entirely fake (the real group itself,
+    or, unusually, a mixed one) is left as its own plain partition.
+    """
+    if by == "compression":
+        return group_rows_
+    fakes = [r for r in group_rows_ if r.label == 1]
+    if not fakes or len(fakes) != len(group_rows_):
+        return group_rows_
+    datasets = {r.dataset for r in fakes}
+    reals = [r for r in all_rows if r.label == 0 and r.dataset in datasets]
+    return fakes + reals
 
 
 def _breakdown_table(
@@ -123,8 +145,9 @@ def _breakdown_table(
     for score_file in files:
         groups = group_rows(score_file.rows, by, meta=score_file.meta)
         for group_name, group_rows_ in sorted(groups.items()):
-            coverage = coverage_of(group_rows_)
-            y, p, _ = labels_and_scores(group_rows_, missing=missing)
+            eval_rows = _eval_rows_for_group(by, group_rows_, score_file.rows)
+            coverage = coverage_of(eval_rows)
+            y, p, kept = labels_and_scores(eval_rows, missing=missing)
             metric_table = _score_metrics(
                 metrics, y, p, n_boot=n_boot, seed=seed, skip_undefined=True
             )
@@ -132,7 +155,7 @@ def _breakdown_table(
                 {
                     "file": score_file.path.name,
                     "group": group_name,
-                    "n": len(group_rows_),
+                    "n": len(kept),
                     **coverage.as_dict(),
                     "metrics": metric_table,
                 }
@@ -205,16 +228,20 @@ def evaluate(
 ) -> EvalResult:
     """Coverage-aware metrics, with bootstrap CIs, over one or more C5 score files.
 
-    Every file gets its own row in ``tables["files"]``: its coverage (under the ``missing``
-    policy's effect on which rows carry a score, but coverage itself is always ``ok / expected``,
-    unaffected by the policy) and every metric's point estimate with its stratified-bootstrap CI.
-    ``exit_code`` is ``3`` (never raised as an exception -- the tables are still built and
-    returned) when any file's coverage is below ``min_coverage``.
+    Every file gets its own row in ``tables["files"]``: its coverage (``expected``/``ok``/
+    ``missing``/``error``, always over every row, unaffected by ``missing``), ``n`` (how many rows
+    were actually fed to the metric once ``missing`` was applied -- equal to ``ok`` for
+    ``"exclude"``, to every row for the other three policies), and every metric's point estimate
+    with its stratified-bootstrap CI. ``exit_code`` is ``3`` (never raised as an exception -- the
+    tables are still built and returned) when any file's coverage is below ``min_coverage``.
 
     ``by`` additionally breaks each file down by ``"method"``, ``"compression"``, ``"label_key"``
-    or ``"family"`` (see :func:`~dfwb.eval.breakdown.group_rows`); a metric undefined for a group
-    (most often a cross-class metric on a group that is one class by construction, e.g. a single
-    manipulation method) is left out of that group's row rather than failing the whole call.
+    or ``"family"`` (see :func:`~dfwb.eval.breakdown.group_rows`). For the three fake-side
+    dimensions, a group that is entirely fake is evaluated against every real row of the same
+    dataset(s) too (the usual per-method-AUC convention), so its ``n``/coverage reflect that
+    combined set, not just the group's own rows; ``"compression"`` stays a plain partition. A
+    metric still undefined for a group (most often a cross-class metric on the real group itself,
+    which nothing is added to) is left out of that group's row rather than failing the whole call.
 
     Several files that agree on everything but ``meta.seed`` get an extra ``tables["seeds"]`` row
     per metric: the per-seed values plus their mean and sample standard deviation.
@@ -237,12 +264,12 @@ def evaluate(
     points: list[dict[str, float]] = []
     file_rows: list[dict[str, Any]] = []
     for score_file, coverage in zip(loaded, coverages, strict=True):
-        y, p, _ = labels_and_scores(score_file.rows, missing=missing)
+        y, p, kept = labels_and_scores(score_file.rows, missing=missing)
         metric_table = _score_metrics(
             metrics, y, p, n_boot=bootstrap, seed=seed, skip_undefined=False
         )
         points.append({m: v["value"] for m, v in metric_table.items()})
-        file_rows.append(_file_row(score_file, coverage, metric_table))
+        file_rows.append(_file_row(score_file, coverage, len(kept), metric_table))
 
     tables: dict[str, list[dict[str, Any]]] = {"files": file_rows}
 
