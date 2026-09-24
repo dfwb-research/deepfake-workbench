@@ -48,6 +48,7 @@ TORCH_FREE_COMMANDS = [
     ["doctor"],
     ["doctor", "--json"],
     ["plugins", "list", "--all"],
+    ["config", "templates"],
 ]
 
 
@@ -55,3 +56,18 @@ TORCH_FREE_COMMANDS = [
 def test_cli_commands_run_with_torch_blocked(blocked, args):
     done = blocked([str(DFWB), *args], block=("torch",))
     assert done.returncode == 0, done.stderr
+
+
+def test_config_and_lookup_commands_run_with_torch_blocked(blocked, tmp_path):
+    steps = [
+        (["config", "init", "--out", "exp.yaml"], 0),
+        (["config", "show", "-c", "exp.yaml"], 0),
+        (["config", "validate", "-c", "exp.yaml"], 2),  # no components are installed
+        (["plugins", "info", "layers/srm"], 2),  # unknown key, with an install hint
+    ]
+    for args, code in steps:
+        done = blocked([str(DFWB), *args], block=("torch",), cwd=tmp_path)
+        assert done.returncode == code, (args, done.stderr)
+        assert "blocked by dfwb tests" not in done.stderr, (args, done.stderr)
+        if code:
+            assert "hint: " in done.stderr
