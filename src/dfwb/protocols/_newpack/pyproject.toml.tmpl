@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "$name"
+version = "0.1.0"
+description = "A dependency-free protocol pack for the Deepfake Workbench."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT AND CC-BY-4.0"
+license-files = ["LICENSE", "LICENSE-DATA"]
+authors = [{ name = "$author" }]
+dependencies = []
+
+[project.entry-points."dfwb.plugins"]
+$name = "$import:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/$import"]

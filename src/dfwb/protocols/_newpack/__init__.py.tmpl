@@ -1,0 +1,16 @@
+"""$name: a protocol pack for the Deepfake Workbench."""
+
+from __future__ import annotations
+
+from typing import Any
+
+DFWB_PLUGIN_API = ">=1.0,<2"
+
+
+def register(api: Any) -> None:
+    """Register this pack's protocol data with the framework."""
+    api.protocol_packs.add(
+        "$name",
+        target="$import:packs",
+        summary="A dependency-free protocol pack for the Deepfake Workbench.",
+    )

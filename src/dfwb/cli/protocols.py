@@ -180,6 +180,30 @@ def lint(pack: Path, release: bool, as_json: bool) -> int:
     return 4 if any(issue.severity == "error" for issue in issues) else 0
 
 
+@protocols.command("new-pack")
+@click.argument("directory", type=click.Path(path_type=Path, file_okay=False))
+@click.option("--name", required=True, help="Pack distribution and registry name (lower-kebab).")
+@click.option(
+    "--author", default="Your Name", show_default=True, help="Author name for the generated files."
+)
+@json_option
+def new_pack(directory: Path, name: str, author: str, as_json: bool) -> None:
+    """Scaffold a new, dependency-free protocol pack distribution.
+
+    ``DIRECTORY`` is created if it does not exist, and must be empty if it does. The result
+    registers itself with the framework through the ``dfwb.plugins`` entry point once installed.
+    """
+    from dfwb.protocols import newpack
+
+    written = newpack.new_pack(directory, name=name, author=author)
+
+    if as_json:
+        emit_json({"directory": str(directory), "written": [str(p) for p in written]})
+    else:
+        for path in written:
+            click.echo(f"wrote {path}")
+
+
 def _scheme_diff_row(scheme_diff: Any) -> dict[str, Any]:
     return {
         "dataset": scheme_diff.dataset,

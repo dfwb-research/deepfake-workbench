@@ -438,3 +438,53 @@ def test_diff_cli_expect_bump_exits_4_on_a_malformed_version(run, tmp_path):
 
     assert result.code == 4
     assert "is not MAJOR.MINOR.PATCH" in result.err
+
+
+# -------------------------------------------------------------------------------------------
+# `dfwb protocols new-pack`: scaffolding a new protocol pack distribution.
+# -------------------------------------------------------------------------------------------
+
+
+def test_new_pack_cli_writes_files_and_prints_them(run, tmp_path):
+    result = run("protocols", "new-pack", "my-pack", "--name", "my-pack")
+
+    assert result.code == 0
+    written = tmp_path / "my-pack"
+    assert (written / "pyproject.toml").is_file()
+    assert (written / "src" / "my_pack" / "packs" / "pack.yaml").is_file()
+    assert "wrote my-pack/pyproject.toml" in result.out
+
+
+def test_new_pack_cli_json_reports_the_written_files(run, tmp_path):
+    data = json.loads(run("protocols", "new-pack", "my-pack", "--name", "my-pack", "--json").out)
+
+    assert data["directory"] == "my-pack"
+    assert "my-pack/pyproject.toml" in data["written"]
+    assert len(data["written"]) == 6
+
+
+def test_new_pack_cli_accepts_an_author(run, tmp_path):
+    result = run("protocols", "new-pack", "my-pack", "--name", "my-pack", "--author", "Ada")
+
+    assert result.code == 0
+    pyproject = (tmp_path / "my-pack" / "src" / "my_pack" / "__init__.py").read_text("utf-8")
+    assert "my-pack" in pyproject
+    notice = (tmp_path / "my-pack" / "LICENSE-DATA").read_text("utf-8")
+    assert "Ada" in notice
+
+
+def test_new_pack_cli_rejects_a_bad_name_with_exit_2(run, tmp_path):
+    result = run("protocols", "new-pack", "my-pack", "--name", "Not_Kebab")
+
+    assert result.code == 2
+    assert "hint: " in result.err
+
+
+def test_new_pack_cli_rejects_a_non_empty_directory_with_exit_2(run, tmp_path):
+    (tmp_path / "my-pack").mkdir()
+    (tmp_path / "my-pack" / "keep.txt").write_text("hi")
+
+    result = run("protocols", "new-pack", "my-pack", "--name", "my-pack")
+
+    assert result.code == 2
+    assert "is not empty" in result.err
