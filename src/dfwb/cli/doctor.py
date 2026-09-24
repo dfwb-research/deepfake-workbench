@@ -5,12 +5,16 @@ from __future__ import annotations
 import importlib.util
 import platform
 import re
+from collections.abc import Mapping
 from importlib import metadata
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from dfwb.cli._output import emit_json, json_option, table
+
+if TYPE_CHECKING:
+    from dfwb.core.paths import ResolvedRoot, RootName
 
 _EXTRA_MARKER = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
 _NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
@@ -60,6 +64,44 @@ def _torch_status() -> dict[str, Any]:
     return info
 
 
+def _datasets(roots: Mapping[RootName, ResolvedRoot]) -> list[dict[str, Any]]:
+    """Every registered inventory builder's folder, and where it resolved on this machine.
+
+    Reads only registry metadata, so no builder module is imported.
+    """
+    from dfwb.core.paths import dataset_overrides
+    from dfwb.core.plugins import get_registry
+    from dfwb.preprocess.inventory.runner import folder_status
+
+    overrides = dataset_overrides()
+    rows: list[dict[str, Any]] = []
+    for entry in get_registry("inventory_builders").entries():
+        folder = entry.meta.get("folder")
+        folder = folder if isinstance(folder, str) and folder else None
+        status = folder_status(entry.key, folder, roots, overrides)
+        location = status.location
+        warning = None
+        if location is None and entry.key in overrides:
+            warning = status.problem  # an override that points nowhere
+        elif location is not None and location.also_found:
+            others = ", ".join(str(p) for p in location.also_found)
+            warning = (
+                f"{entry.key} is in several datasets roots; using {location.path} "
+                f"({status.source}), also in {others}"
+            )
+        rows.append(
+            {
+                "id": entry.key,
+                "folder": folder,
+                "path": None if location is None else str(location.path),
+                "source": status.source,
+                "also_found": [] if location is None else [str(p) for p in location.also_found],
+                "warning": warning,
+            }
+        )
+    return rows
+
+
 def collect() -> dict[str, Any]:
     """Everything ``dfwb doctor`` reports, as plain data."""
     from dfwb import __version__
@@ -103,6 +145,7 @@ def collect() -> dict[str, Any]:
             }
             for r in report.records
         ],
+        "datasets": _datasets(roots),
     }
 
 
@@ -147,3 +190,14 @@ def doctor(as_json: bool) -> None:
         for p in data["plugins"]
     ]
     click.echo(table(["PLUGIN", "PROVIDER", "VERSION", "STATUS", "REASON"], plugin_rows))
+    click.echo("")
+    if not data["datasets"]:
+        click.echo("datasets: no inventory builders are registered")
+        return
+    dataset_rows = [
+        [d["id"], d["folder"] or "-", d["source"], d["path"] or ""] for d in data["datasets"]
+    ]
+    click.echo(table(["DATASET", "FOLDER", "RESOLVED", "PATH"], dataset_rows))
+    for dataset in data["datasets"]:
+        if dataset["warning"]:
+            click.echo(f"warning: {dataset['warning']}", err=True)

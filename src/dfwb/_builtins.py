@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from dfwb.core.plugins import PluginAPI
+
+# The package every built-in inventory builder lives in.
+_BUILDERS_PACKAGE: Final = "dfwb.preprocess.inventory.builders"
+
+# Built-in inventory builders, one row each:
+#   (dataset id, "<module>:<Class>" inside dfwb.preprocess.inventory.builders,
+#    display name, the dataset's expected folder under a datasets root)
+# The folder is stored as registry metadata, so `dfwb datasets list` and `dfwb doctor` can
+# locate every dataset without importing a single builder module.
+INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = ()
 
 
 def register(api: PluginAPI) -> None:
@@ -14,3 +24,7 @@ def register(api: PluginAPI) -> None:
     Built-ins are added here as their layers are implemented; each one is an import-path target,
     so registering stays cheap and imports nothing heavy.
     """
+    for dataset_id, target, name, folder in INVENTORY_BUILDERS:
+        api.inventory_builders.add(
+            dataset_id, target=f"{_BUILDERS_PACKAGE}.{target}", summary=name, folder=folder
+        )

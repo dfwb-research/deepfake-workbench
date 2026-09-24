@@ -40,6 +40,17 @@ def test_core_imports_with_torch_and_numpy_blocked(blocked):
     assert json.loads(done.stdout)["loaded"] == []
 
 
+def test_inventory_and_protocols_import_with_torch_and_numpy_blocked(blocked):
+    packages = ("dfwb.preprocess.inventory", "dfwb.protocols")
+    code = IMPORT_ALL.format(packages=packages, watch=("torch", "numpy"))
+    done = blocked([sys.executable, "-c", code], block=("torch", "numpy"))
+    assert done.returncode == 0, done.stderr
+    result = json.loads(done.stdout)
+    assert set(packages) <= set(result["imported"])
+    assert "dfwb.preprocess.inventory.runner" in result["imported"]
+    assert result["loaded"] == []
+
+
 # Every torch-free command; each CLI task adds its own lines.
 TORCH_FREE_COMMANDS = [
     ["--help"],
@@ -49,6 +60,8 @@ TORCH_FREE_COMMANDS = [
     ["doctor", "--json"],
     ["plugins", "list", "--all"],
     ["protocols", "list"],
+    ["datasets", "list"],
+    ["datasets", "list", "--json"],
     ["config", "templates"],
     ["schema", "export", "c1"],
     ["schema", "export", "c2"],
@@ -70,11 +83,15 @@ def test_config_and_lookup_commands_run_with_torch_blocked(blocked, tmp_path):
         (["config", "show", "-c", "exp.yaml"], 0),
         (["config", "validate", "-c", "exp.yaml"], 2),  # no components are installed
         (["plugins", "info", "layers/srm"], 2),  # unknown key, with an install hint
+        (["datasets", "info", "nope"], 2),  # no such builder
+        (["inventory", "build", "nope"], 2),
+        (["inventory", "show", "nope"], 2),  # no work root, or no inventory
     ]
     for args, code in steps:
         done = blocked([str(DFWB), *args], block=("torch",), cwd=tmp_path)
         assert done.returncode == code, (args, done.stderr)
         assert "blocked by dfwb tests" not in done.stderr, (args, done.stderr)
+        assert "No such command" not in done.stderr, (args, done.stderr)
         if code:
             assert "hint: " in done.stderr
 

@@ -1,0 +1,301 @@
+"""Build, write and read local inventories (contract C3b).
+
+:func:`build_inventory` finds a dataset's folder, runs its builder, checks every record, and
+writes ``<work root>/<dataset id>/inventory.jsonl`` plus ``inventory.meta.json``. Rows are sorted
+by ``(key, compression)``, so the same files on disk always give the same bytes, and neither file
+holds an absolute path: an inventory can be shared or compared across machines.
+
+Builders are looked up in the ``inventory_builders`` registry. Each registration carries the
+dataset's expected folder as metadata (``folder``), so :func:`folder_status` can say where a
+dataset is without importing its builder.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from dfwb._version import __version__
+from dfwb.core.errors import ConfigError, ContractError, InstallationError, PluginError
+from dfwb.core.paths import (
+    DatasetLocation,
+    ResolvedRoot,
+    RootName,
+    absolute,
+    dataset_overrides,
+    locate_dataset,
+    require_root,
+    resolve_roots,
+)
+from dfwb.core.plugins import get_registry
+from dfwb.core.records import InventoryRecord, assert_no_absolute_paths, read_jsonl, write_jsonl
+from dfwb.preprocess.inventory.base import BaseBuilder
+
+__all__ = [
+    "INVENTORY_FILE",
+    "META_FILE",
+    "FolderStatus",
+    "InventoryResult",
+    "build_inventory",
+    "collect_records",
+    "describe_location",
+    "folder_status",
+    "get_builder",
+    "inventory_path",
+    "read_inventory",
+]
+
+INVENTORY_FILE = "inventory.jsonl"
+META_FILE = "inventory.meta.json"
+
+_NOT_FOUND = "not found"
+
+
+@dataclass(frozen=True)
+class InventoryResult:
+    """What :func:`build_inventory` wrote."""
+
+    dataset_id: str
+    path: Path
+    count: int
+    by_task: dict[str, int]  # every task of the builder, in task-table order (0 if absent)
+    dataset_dir: Path
+    location_source: str  # "--root", "root N" or "override (...)"
+
+
+@dataclass(frozen=True)
+class FolderStatus:
+    """Where a dataset's folder is, or why it was not found. Never an error."""
+
+    dataset_id: str
+    folder: str | None
+    location: DatasetLocation | None
+    source: str  # "root N", "override (...)" or "not found"
+    problem: str | None = None
+
+
+def get_builder(dataset_id: str) -> BaseBuilder:
+    """The inventory builder registered as ``dataset_id``, instantiated.
+
+    Raises:
+        UnknownKeyError: no builder is registered under that id (with a did-you-mean).
+        PluginError: the registered object is not a :class:`BaseBuilder`.
+    """
+    builder = get_registry("inventory_builders").build(dataset_id)
+    if not isinstance(builder, BaseBuilder):
+        raise PluginError(
+            f"inventory_builders/{dataset_id}: {type(builder).__name__} is not a BaseBuilder",
+            hint="an inventory builder subclasses dfwb.preprocess.inventory.base.BaseBuilder",
+        )
+    return builder
+
+
+def inventory_path(dataset_id: str, work_root: Path) -> Path:
+    """``<work_root>/<dataset_id>/inventory.jsonl``."""
+    return work_root / dataset_id / INVENTORY_FILE
+
+
+def _short_source(source: str) -> str:
+    """An override's origin without its directory: ``env: DFWB_DATASET_X`` or a file name."""
+    if source.startswith("env: "):
+        return source
+    file, sep, rest = source.partition(" [")
+    return Path(file).name + (f" [{rest}" if sep else "")
+
+
+def describe_location(location: DatasetLocation, roots: Mapping[RootName, ResolvedRoot]) -> str:
+    """How a folder was found, without any path: ``root N`` (1-based) or ``override (...)``."""
+    if location.root is None:
+        return f"override ({_short_source(location.source)})"
+    datasets = roots.get("datasets")
+    for index, path in enumerate(datasets.paths if datasets is not None else (), start=1):
+        if path == location.root:
+            return f"root {index}"
+    return "a datasets root"
+
+
+def folder_status(
+    dataset_id: str,
+    folder: str | None,
+    roots: Mapping[RootName, ResolvedRoot],
+    overrides: Mapping[str, tuple[Path, str]],
+) -> FolderStatus:
+    """Locate ``dataset_id``'s folder like :func:`~dfwb.core.paths.locate_dataset`, never raising.
+
+    ``folder`` is the expected folder name (``None`` when the registration names none, in which
+    case only an override can locate the dataset).
+    """
+    if not folder and dataset_id not in overrides:
+        return FolderStatus(
+            dataset_id,
+            folder,
+            None,
+            _NOT_FOUND,
+            f"{dataset_id}: its builder names no folder; set a dataset override to locate it",
+        )
+    try:
+        location = locate_dataset(dataset_id, folder or "", roots, overrides=overrides)
+    except ConfigError as exc:
+        return FolderStatus(dataset_id, folder, None, _NOT_FOUND, exc.message)
+    return FolderStatus(dataset_id, folder, location, describe_location(location, roots))
+
+
+def _check_key(builder: BaseBuilder, record: object, task_order: Sequence[str]) -> None:
+    if not isinstance(record, InventoryRecord):
+        raise ContractError(
+            f"{builder.dataset_id}: the builder yielded a {type(record).__name__}",
+            hint="a builder yields InventoryRecord objects (see BaseBuilder.record)",
+        )
+    task, sep, legacy = record.key.partition("/")
+    if not sep or not task or not legacy:
+        raise ContractError(
+            f"{builder.dataset_id}: key {record.key!r} is not <task>/<id>",
+            hint="build records with BaseBuilder.record, which adds the task prefix",
+        )
+    if task not in task_order:
+        raise ContractError(
+            f"{builder.dataset_id}: key {record.key!r} has task {task!r}, which is not in the "
+            f"task table ({', '.join(task_order)})",
+            hint="every key starts with the abbr of one of the builder's tasks",
+        )
+
+
+def collect_records(
+    builder: BaseBuilder, dataset_dir: Path, *, compressions: Sequence[str] | None = None
+) -> list[InventoryRecord]:
+    """Run ``builder`` over ``dataset_dir`` and return its records, checked and sorted.
+
+    Raises:
+        ContractError: a key is not ``<task>/<id>`` with a task from the builder's table, or two
+            records share a ``(key, compression)``.
+        ConfigError: ``compressions`` names a compression the dataset does not have.
+    """
+    task_order = [task.abbr for task in builder.tasks]
+    seen: set[tuple[str, str | None]] = set()
+    records: list[InventoryRecord] = []
+    for record in builder.discover(dataset_dir, compressions=compressions):
+        _check_key(builder, record, task_order)
+        identity = (record.key, record.compression)
+        if identity in seen:
+            raise ContractError(
+                f"{builder.dataset_id}: duplicate record {record.key!r} "
+                f"(compression {record.compression!r})",
+                hint="each (key, compression) must be unique; the builder yields it twice",
+            )
+        seen.add(identity)
+        records.append(record)
+    records.sort(key=lambda r: (r.key, r.compression or ""))
+    return records
+
+
+def _check_outside(out_dir: Path, dataset_dir: Path) -> None:
+    """Raw data is never written to: refuse an output folder inside the dataset folder."""
+    for out, data in ((out_dir, dataset_dir), (out_dir.resolve(), dataset_dir.resolve())):
+        if out.is_relative_to(data):
+            raise ConfigError(
+                f"the work root puts the inventory inside the dataset folder {dataset_dir}",
+                hint="set DFWB_WORK_ROOT to a folder outside every datasets root",
+            )
+
+
+def _write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def build_inventory(
+    dataset_id: str,
+    *,
+    root: Path | None = None,
+    compressions: Sequence[str] | None = None,
+    probe: bool = False,
+    jobs: int = 1,
+    roots: Mapping[RootName, ResolvedRoot] | None = None,
+) -> InventoryResult:
+    """Build ``dataset_id``'s inventory and write it under the work root.
+
+    Args:
+        dataset_id: The builder's registry key.
+        root: The dataset folder; by default it is located through the datasets roots and the
+            dataset overrides.
+        compressions: Only these compressions (default: every known one).
+        probe: Probe each video's media properties (not available in this version).
+        jobs: Parallel probes, when probing.
+        roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
+
+    Raises:
+        ConfigError: the work root is unset, ``root`` is not a directory, the dataset folder is
+            not found, the output would land inside the dataset folder, or ``jobs < 1``.
+        ContractError: the builder yields a bad or duplicate key.
+        InstallationError: ``probe`` is set.
+    """
+    if jobs < 1:
+        raise ConfigError(f"jobs must be at least 1, got {jobs}", hint="use --jobs 1 or more")
+    builder = get_builder(dataset_id)
+    if probe:
+        raise InstallationError(
+            "media probing (--probe) is not available in this version of dfwb",
+            hint='build without --probe; probing needs the "deepfake-workbench[preprocess]" '
+            "extra of a dfwb version that provides it",
+        )
+    resolved = resolve_roots() if roots is None else roots
+    work_root = require_root("work", resolved)
+    if root is not None:
+        dataset_dir = absolute(root)
+        if not dataset_dir.is_dir():
+            raise ConfigError(
+                f"{dataset_id}: --root {dataset_dir} is not a directory",
+                hint=f"point --root at the dataset's {builder.expected_folder!r} folder",
+            )
+        source = "--root"
+    else:
+        location = locate_dataset(
+            dataset_id, builder.expected_folder, resolved, overrides=dataset_overrides()
+        )
+        dataset_dir, source = location.path, describe_location(location, resolved)
+
+    path = inventory_path(dataset_id, work_root)
+    _check_outside(path.parent, dataset_dir)
+    records = collect_records(builder, dataset_dir, compressions=compressions)
+
+    by_task = {task.abbr: 0 for task in builder.tasks}
+    for record in records:
+        by_task[record.key.partition("/")[0]] += 1
+    present = {record.compression for record in records}
+    meta = {
+        "builder": {"id": builder.dataset_id, "version": builder.version},
+        "dfwb": __version__,
+        "count": len(records),
+        "compressions": sorted(present, key=lambda c: (c is not None, c or "")),
+        "by_task": by_task,
+        "location_source": source,
+    }
+    assert_no_absolute_paths(meta, where=META_FILE)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_jsonl(path, records)
+    _write_text(path.parent / META_FILE, json.dumps(meta, indent=2, sort_keys=True) + "\n")
+    return InventoryResult(dataset_id, path, len(records), by_task, dataset_dir, source)
+
+
+def read_inventory(dataset_id: str, work_root: Path) -> list[InventoryRecord]:
+    """The records of ``<work_root>/<dataset_id>/inventory.jsonl``.
+
+    Raises:
+        ConfigError: there is no inventory yet (the hint says how to build it).
+        ContractError: the file is corrupt.
+    """
+    path = inventory_path(dataset_id, work_root)
+    if not path.is_file():
+        raise ConfigError(
+            f"{dataset_id}: no inventory at {path}",
+            hint=f"run: dfwb inventory build {dataset_id}",
+        )
+    return read_jsonl(path, InventoryRecord)
