@@ -126,3 +126,67 @@ branch = true
 show_missing = true
 skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
+
+[tool.importlinter]
+root_package = "dfwb"
+include_external_packages = true
+# Imports under `if TYPE_CHECKING:` never run (dfwb.core.detector names torch types that way).
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+id = "layers"
+name = "dfwb layered architecture"
+type = "layers"
+containers = ["dfwb"]
+layers = [
+  "cli",
+  "train | score | zoo",
+  "models",
+  "data | eval | preprocess",
+  "protocols",
+  "core",
+]
+exhaustive = true
+exhaustive_ignores = ["_version", "_builtins"]
+
+[[tool.importlinter.contracts]]
+id = "narrow-edges"
+name = "models, score and zoo never import eval or preprocess"
+type = "forbidden"
+source_modules = ["dfwb.models", "dfwb.score", "dfwb.zoo"]
+forbidden_modules = ["dfwb.eval", "dfwb.preprocess"]
+
+[[tool.importlinter.contracts]]
+id = "train-no-preprocess"
+name = "train never imports preprocess"
+type = "forbidden"
+source_modules = ["dfwb.train"]
+forbidden_modules = ["dfwb.preprocess"]
+
+[[tool.importlinter.contracts]]
+id = "score-no-models"
+name = "score never imports models (detectors arrive through detector_sources)"
+type = "forbidden"
+source_modules = ["dfwb.score"]
+forbidden_modules = ["dfwb.models"]
+
+[[tool.importlinter.contracts]]
+id = "no-downstream"
+name = "the framework never imports utility or protocol packages"
+type = "forbidden"
+source_modules = ["dfwb"]
+forbidden_modules = ["dfwb_protocols", "dfwb_torch_srm"]
+
+[[tool.importlinter.contracts]]
+id = "torch-free"
+name = "torch-free layers never import torch"
+type = "forbidden"
+source_modules = ["dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess"]
+forbidden_modules = ["torch"]
+
+[[tool.importlinter.contracts]]
+id = "core-no-numpy"
+name = "core never imports numpy"
+type = "forbidden"
+source_modules = ["dfwb.core"]
+forbidden_modules = ["numpy"]

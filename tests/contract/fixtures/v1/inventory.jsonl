@@ -1,0 +1,1 @@
+{"attrs":{},"builder":{"id":"toyfake","version":"1.0.0"},"compression":null,"identity":"id0","key":"real/0000","label_key":"TF-REAL","method":"original","pair_key":null,"probe":{"codec":"h264","duration_s":1.0,"fps":8.0,"frames":8,"has_audio":false,"height":64,"width":64},"relpath":"real/0000.mp4","source_id":null,"target_id":null}

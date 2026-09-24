@@ -1,0 +1,3 @@
+dataset,key,compression,label,score,status,logit,label_key,method,n_clips,n_frames,x_note
+toyfake,real/0000,,0,0.1,ok,-2.2,TF-REAL,original,1,8,
+toyfake,blend-a/0000,,1,,missing,,TF-BLEND_A,blend-a,,,no clip

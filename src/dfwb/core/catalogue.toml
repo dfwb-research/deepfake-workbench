@@ -1,0 +1,12 @@
+# Install hints for error messages. This file is data: nothing here is imported or trusted.
+
+# [keys.<registry>] maps a well-known key to the pip requirement that provides it.
+[keys.layers]
+srm = "dfwb-torch-srm"
+
+[keys.protocol_packs]
+dfwb-protocols = "dfwb-protocols"
+
+# [imports] maps an import name to the deepfake-workbench extra that installs it.
+[imports]
+rich = "rich"

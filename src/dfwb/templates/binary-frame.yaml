@@ -1,0 +1,21 @@
+# Binary real/fake detector trained on face clips.
+# Extend it and set run, data.processing, data.train/val/test and model.backbone
+# (`dfwb config init` writes a starter file that does this).
+schema: dfwb.train/1
+
+data:
+  clip: {frames: 8, sampling: uniform, clips_per_video: {train: 1, eval: 4}}
+  labels: binary
+  transforms:
+    train: [{name: hflip, p: 0.5}, {name: color-jitter, strength: 0.2}]
+  loader: {batch_size: 32, num_workers: 8, balance: video-label}
+
+model:
+  temporal_pool: {name: mean}
+  head: {name: linear}
+
+loss: {name: bce}
+optim: {name: adamw, lr: 1.0e-4, weight_decay: 0.05, groups: {backbone: {lr_scale: 0.1}}}
+schedule: {name: cosine, warmup_epochs: 1}
+train: {max_epochs: 10, precision: bf16-mixed, devices: 1, monitor: val/video_auc, mode: max}
+eval: {metrics: [auc, eer, tpr@fpr=0.01, ece, brier], aggregate: mean-prob}

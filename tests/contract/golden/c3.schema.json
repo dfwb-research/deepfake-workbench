@@ -1,0 +1,1129 @@
+{
+  "$defs": {
+    "BackendSpec": {
+      "additionalProperties": true,
+      "description": "The face backend: a ``face_backends`` registry key plus its parameters.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "BackendSpec",
+      "type": "object"
+    },
+    "BuilderRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "title": "BuilderRef",
+      "type": "object"
+    },
+    "CropSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "align": {
+          "title": "Align",
+          "type": "string"
+        },
+        "scale": {
+          "exclusiveMinimum": 0,
+          "title": "Scale",
+          "type": "number"
+        },
+        "size": {
+          "minimum": 1,
+          "title": "Size",
+          "type": "integer"
+        },
+        "square": {
+          "title": "Square",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "scale",
+        "size",
+        "square",
+        "align"
+      ],
+      "title": "CropSpec",
+      "type": "object"
+    },
+    "DatasetCard": {
+      "additionalProperties": false,
+      "description": "``<dataset_id>/dataset.yaml``.",
+      "properties": {
+        "access": {
+          "title": "Access",
+          "type": "string"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "compressions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compressions"
+        },
+        "default_scheme": {
+          "pattern": "^[a-z0-9]+(?:[-+][a-z0-9]+)*$",
+          "title": "Default Scheme",
+          "type": "string"
+        },
+        "distribution": {
+          "default": "undecided",
+          "enum": [
+            "undecided",
+            "list",
+            "recipe"
+          ],
+          "title": "Distribution",
+          "type": "string"
+        },
+        "homepage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Homepage"
+        },
+        "id": {
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "key_rule": {
+          "title": "Key Rule",
+          "type": "string"
+        },
+        "license": {
+          "$ref": "#/$defs/LicenseInfo"
+        },
+        "modalities": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Modalities",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "paper": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PaperRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "release": {
+          "title": "Release",
+          "type": "string"
+        },
+        "schemes": {
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z0-9]+(?:[-+][a-z0-9]+)*$": {
+              "$ref": "#/$defs/SchemeCard"
+            }
+          },
+          "title": "Schemes",
+          "type": "object"
+        },
+        "terms": {
+          "$ref": "#/$defs/TermsInfo"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "release",
+        "license",
+        "access",
+        "modalities",
+        "key_rule",
+        "schemes",
+        "default_scheme"
+      ],
+      "title": "DatasetCard",
+      "type": "object"
+    },
+    "DecodeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "enum": [
+            "rgb",
+            "bgr"
+          ],
+          "title": "Color",
+          "type": "string"
+        },
+        "library": {
+          "title": "Library",
+          "type": "string"
+        }
+      },
+      "required": [
+        "library",
+        "color"
+      ],
+      "title": "DecodeSpec",
+      "type": "object"
+    },
+    "ExtrasSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "landmarks": {
+          "title": "Landmarks",
+          "type": "boolean"
+        },
+        "masks": {
+          "title": "Masks",
+          "type": "boolean"
+        },
+        "mesh": {
+          "title": "Mesh",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "landmarks",
+        "mesh",
+        "masks"
+      ],
+      "title": "ExtrasSpec",
+      "type": "object"
+    },
+    "InventoryRecord": {
+      "additionalProperties": false,
+      "description": "One line of ``$DFWB_WORK_ROOT/<dataset_id>/inventory.jsonl``.",
+      "properties": {
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "builder": {
+          "$ref": "#/$defs/BuilderRef"
+        },
+        "compression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Compression"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label_key": {
+          "title": "Label Key",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "pair_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pair Key"
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Probe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relpath": {
+          "title": "Relpath",
+          "type": "string"
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        }
+      },
+      "required": [
+        "key",
+        "compression",
+        "label_key",
+        "method",
+        "relpath",
+        "builder"
+      ],
+      "title": "InventoryRecord",
+      "type": "object"
+    },
+    "LabelMappingSpec": {
+      "additionalProperties": false,
+      "description": "A named label mapping: take attribute ``from`` of each vocab entry, with overrides.",
+      "properties": {
+        "from": {
+          "title": "From",
+          "type": "string"
+        },
+        "override": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "const": "exclude",
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Override",
+          "type": "object"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "title": "LabelMappingSpec",
+      "type": "object"
+    },
+    "LabelVocab": {
+      "additionalProperties": false,
+      "description": "``<dataset_id>/labels.yaml``.",
+      "properties": {
+        "mappings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LabelMappingSpec"
+          },
+          "title": "Mappings",
+          "type": "object"
+        },
+        "vocab": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Vocab",
+          "type": "object"
+        }
+      },
+      "required": [
+        "vocab",
+        "mappings"
+      ],
+      "title": "LabelVocab",
+      "type": "object"
+    },
+    "LicenseInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "spdx": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spdx"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "title": "LicenseInfo",
+      "type": "object"
+    },
+    "PackCard": {
+      "additionalProperties": false,
+      "description": "``pack.yaml``.",
+      "properties": {
+        "datasets": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "title": "Datasets",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "withheld": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "title": "Withheld",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "name",
+        "version",
+        "datasets"
+      ],
+      "title": "PackCard",
+      "type": "object"
+    },
+    "PaperRef": {
+      "additionalProperties": false,
+      "properties": {
+        "doi": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Doi"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "venue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Venue"
+        },
+        "year": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Year"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "PaperRef",
+      "type": "object"
+    },
+    "Probe": {
+      "additionalProperties": false,
+      "description": "Optional media probe (``--probe``).",
+      "properties": {
+        "codec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Codec"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration S"
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fps"
+        },
+        "frames": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frames"
+        },
+        "has_audio": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Audio"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        }
+      },
+      "title": "Probe",
+      "type": "object"
+    },
+    "ProcessedRecord": {
+      "additionalProperties": false,
+      "description": "One line of ``processed/<profile_id>/index.jsonl``.",
+      "properties": {
+        "compression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Compression"
+        },
+        "frame_indices": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Frame Indices",
+          "type": "array"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "n_frames": {
+          "title": "N Frames",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "relpath": {
+          "title": "Relpath",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "no_face",
+            "decode_error",
+            "too_short",
+            "skipped"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrackStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "key",
+        "compression",
+        "status",
+        "n_frames",
+        "frame_indices",
+        "relpath"
+      ],
+      "title": "ProcessedRecord",
+      "type": "object"
+    },
+    "ProcessingProfile": {
+      "additionalProperties": false,
+      "description": "A named, hashed recipe for turning videos into face clips (C3c).",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/BackendSpec"
+        },
+        "crop": {
+          "$ref": "#/$defs/CropSpec"
+        },
+        "decode": {
+          "$ref": "#/$defs/DecodeSpec"
+        },
+        "extras": {
+          "$ref": "#/$defs/ExtrasSpec"
+        },
+        "id": {
+          "pattern": "^[a-z0-9]+(?:[-.][a-z0-9]+)*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "sampling": {
+          "$ref": "#/$defs/SamplingSpec"
+        },
+        "track": {
+          "$ref": "#/$defs/TrackSpec"
+        }
+      },
+      "required": [
+        "id",
+        "backend",
+        "track",
+        "crop",
+        "sampling",
+        "decode",
+        "extras"
+      ],
+      "title": "ProcessingProfile",
+      "type": "object"
+    },
+    "SamplingSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "frames": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frames"
+        },
+        "mode": {
+          "enum": [
+            "uniform",
+            "stride",
+            "first-consecutive",
+            "all"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "SamplingSpec",
+      "type": "object"
+    },
+    "SchemeCard": {
+      "additionalProperties": false,
+      "description": "One split scheme of a dataset.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "official",
+            "derived",
+            "subset"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rationale"
+        },
+        "ratios": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ratios"
+        },
+        "rule": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rule"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "splits": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "train",
+                  "val",
+                  "test"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Splits"
+        }
+      },
+      "required": [
+        "kind",
+        "sha256"
+      ],
+      "title": "SchemeCard",
+      "type": "object"
+    },
+    "SplitRow": {
+      "additionalProperties": false,
+      "description": "One line of ``splits/<scheme>.tsv.gz``.",
+      "properties": {
+        "compression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Compression"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "split": {
+          "enum": [
+            "train",
+            "val",
+            "test",
+            "exclude"
+          ],
+          "title": "Split",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "compression",
+        "split"
+      ],
+      "title": "SplitRow",
+      "type": "object"
+    },
+    "TermsInfo": {
+      "additionalProperties": false,
+      "description": "Outcome of the per-dataset terms review (decided per dataset, later).",
+      "properties": {
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        },
+        "reviewed": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewed"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        }
+      },
+      "title": "TermsInfo",
+      "type": "object"
+    },
+    "TrackSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "iou": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Iou",
+          "type": "number"
+        },
+        "strategy": {
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "iou",
+        "strategy"
+      ],
+      "title": "TrackSpec",
+      "type": "object"
+    },
+    "TrackStats": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_switch": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Switch"
+        },
+        "mean_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Confidence"
+        }
+      },
+      "title": "TrackStats",
+      "type": "object"
+    },
+    "VideoRecord": {
+      "additionalProperties": false,
+      "description": "One line of ``videos.jsonl.gz``: a video, identified by ``(key, compression)``.",
+      "properties": {
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "compression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Compression"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label_key": {
+          "title": "Label Key",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "pair_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pair Key"
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        }
+      },
+      "required": [
+        "key",
+        "compression",
+        "label_key",
+        "method"
+      ],
+      "title": "VideoRecord",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dfwb C3: Dataset and protocol records",
+  "x-dfwb-contract": {
+    "id": "c3",
+    "version": "1"
+  }
+}

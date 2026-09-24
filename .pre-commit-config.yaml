@@ -1,0 +1,20 @@
+# Install once with `uv run pre-commit install`, or run by hand: uv run pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+  - repo: local
+    hooks:
+      - id: no-absolute-paths
+        name: no machine-specific absolute paths
+        language: pygrep
+        entry: '(?<![\w.])/(home|mnt|media|Users|scratch)/'
+        types: [text]

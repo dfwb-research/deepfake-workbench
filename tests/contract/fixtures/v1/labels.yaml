@@ -1,0 +1,5 @@
+vocab:
+  TF-REAL: {binary: 0, family: real}
+  TF-BLEND_A: {binary: 1, family: blend, method: blend-a}
+mappings:
+  binary: {from: binary}

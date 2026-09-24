@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    uses: dfwb-research/.github/.github/workflows/python-lint.yml@v1
+    with:
+      python-version: "3.12"
+  test:
+    uses: dfwb-research/.github/.github/workflows/python-test.yml@v1
+    with:
+      python-versions: '["3.12", "3.14"]'
+      torch-versions: "[]"
+      pytest-args: "-n auto"
+      coverage-min: 90

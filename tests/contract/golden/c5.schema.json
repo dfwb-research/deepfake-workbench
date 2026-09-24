@@ -1,0 +1,420 @@
+{
+  "$defs": {
+    "Aggregation": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_to_video": {
+          "title": "Clip To Video",
+          "type": "string"
+        },
+        "clips_per_video": {
+          "minimum": 1,
+          "title": "Clips Per Video",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "clip_to_video",
+        "clips_per_video"
+      ],
+      "title": "Aggregation",
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "minimum": 0,
+          "title": "Error",
+          "type": "integer"
+        },
+        "expected": {
+          "minimum": 0,
+          "title": "Expected",
+          "type": "integer"
+        },
+        "missing": {
+          "minimum": 0,
+          "title": "Missing",
+          "type": "integer"
+        },
+        "ok": {
+          "minimum": 0,
+          "title": "Ok",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expected",
+        "ok",
+        "missing",
+        "error"
+      ],
+      "title": "Coverage",
+      "type": "object"
+    },
+    "DetectorInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint Sha256"
+        },
+        "contract_version": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Contract Version",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "source",
+        "contract_version"
+      ],
+      "title": "DetectorInfo",
+      "type": "object"
+    },
+    "GitState": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Commit"
+        },
+        "dirty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dirty"
+        }
+      },
+      "title": "GitState",
+      "type": "object"
+    },
+    "InputAdaptation": {
+      "additionalProperties": false,
+      "properties": {
+        "derived_crop": {
+          "default": false,
+          "title": "Derived Crop",
+          "type": "boolean"
+        },
+        "mismatch_override": {
+          "default": false,
+          "title": "Mismatch Override",
+          "type": "boolean"
+        }
+      },
+      "title": "InputAdaptation",
+      "type": "object"
+    },
+    "ProfileRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sha256"
+      ],
+      "title": "ProfileRef",
+      "type": "object"
+    },
+    "ProtocolInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pack": {
+          "title": "Pack",
+          "type": "string"
+        },
+        "pack_version": {
+          "title": "Pack Version",
+          "type": "string"
+        },
+        "scheme_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scheme Sha256",
+          "type": "string"
+        },
+        "split": {
+          "title": "Split",
+          "type": "string"
+        },
+        "where": {
+          "additionalProperties": true,
+          "title": "Where",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "split",
+        "pack",
+        "pack_version",
+        "scheme_sha256"
+      ],
+      "title": "ProtocolInfo",
+      "type": "object"
+    },
+    "ScoreMeta": {
+      "additionalProperties": false,
+      "description": "``<name>.scores.meta.json``: everything the scores depend on.",
+      "properties": {
+        "aggregation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Aggregation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "created": {
+          "format": "date-time",
+          "title": "Created",
+          "type": "string"
+        },
+        "detector": {
+          "$ref": "#/$defs/DetectorInfo"
+        },
+        "env": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "git": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_adaptation": {
+          "$ref": "#/$defs/InputAdaptation"
+        },
+        "labels": {
+          "title": "Labels",
+          "type": "string"
+        },
+        "processing_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProfileRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolInfo"
+        },
+        "schema": {
+          "const": "dfwb.scores/1",
+          "default": "dfwb.scores/1",
+          "title": "Schema",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        }
+      },
+      "required": [
+        "detector",
+        "protocol",
+        "labels",
+        "coverage",
+        "created"
+      ],
+      "title": "ScoreMeta",
+      "type": "object"
+    },
+    "ScoreRow": {
+      "additionalProperties": false,
+      "description": "One row of <name>.scores.csv (empty cells are null); score is P(fake).",
+      "patternProperties": {
+        "^x_": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "properties": {
+        "compression": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dataset": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "integer"
+        },
+        "label_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "n_clips": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "n_frames": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "score": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "missing",
+            "error"
+          ]
+        }
+      },
+      "required": [
+        "dataset",
+        "key",
+        "compression",
+        "label",
+        "score",
+        "status"
+      ],
+      "title": "ScoreRow",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dfwb C5: Score file (schema dfwb.scores/1)",
+  "x-dfwb-contract": {
+    "id": "c5",
+    "version": "dfwb.scores/1"
+  }
+}
