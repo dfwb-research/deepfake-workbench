@@ -239,9 +239,11 @@ def _describe(exc: BaseException) -> str:
 def _provider_of(ep: metadata.EntryPoint, group: str) -> tuple[str, str | None]:
     if group == BUILTINS_GROUP:
         return BUILTIN_PROVIDER, _dist_version(ep)
-    if ep.dist is not None:
-        return canonical_name(ep.dist.name), ep.dist.version
-    return canonical_name(ep.value.partition(":")[0].partition(".")[0]), None
+    name = ep.dist.name if ep.dist is not None else None
+    if name:
+        return canonical_name(name), _dist_version(ep)
+    # No distribution, or METADATA without a Name: fall back to the entry point's top-level module.
+    return canonical_name(ep.value.partition(":")[0].partition(".")[0]), _dist_version(ep)
 
 
 def _dist_version(ep: metadata.EntryPoint) -> str | None:
@@ -282,7 +284,7 @@ def _load_group(group: str) -> list[PluginRecord]:
                 continue
         try:
             register = ep.load()
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:  # a plugin calling sys.exit() is isolated too
             records.append(PluginRecord(**base, status=PluginStatus.FAILED, reason=_describe(exc)))
             continue
         declared = None
@@ -309,7 +311,7 @@ def _load_group(group: str) -> list[PluginRecord]:
         with providing(provider) as added:
             try:
                 register(api)
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:
                 keys = tuple(f"{reg.name}/{entry.key}" for reg, entry in added)
                 for reg, entry in added:
                     reg._remove(entry)

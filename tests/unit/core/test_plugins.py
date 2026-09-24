@@ -273,3 +273,29 @@ def test_api_declared_in_the_entry_point_module_is_honoured(entry_points, monkey
     entry_points["dfwb.plugins"].append(ep)
     (record,) = load_plugins().records
     assert record.status is PluginStatus.SKIPPED
+
+
+def test_a_plugin_calling_sys_exit_is_isolated(entry_points):
+    def exits(api):
+        raise SystemExit(3)
+
+    entry_points["dfwb.plugins"] += [
+        FakeEntryPoint("exits", exits, dist="exits-dist"),
+        FakeEntryPoint("exits-on-import", SystemExit(4), dist="exits-on-import-dist"),
+        FakeEntryPoint("good", _register_stem, dist="good-dist"),
+    ]
+    statuses = {r.name: (r.status, r.reason) for r in load_plugins().records}
+    assert statuses["exits"] == (PluginStatus.FAILED, "SystemExit: 3")
+    assert statuses["exits-on-import"] == (PluginStatus.FAILED, "SystemExit: 4")
+    assert statuses["good"] == (PluginStatus.OK, None)
+    assert "stem" in api.layers
+
+
+def test_a_distribution_without_a_name_does_not_break_loading(entry_points):
+    ep = FakeEntryPoint("nameless", _register_stem, dist="placeholder")
+    ep.dist = SimpleNamespace(name=None, version=None)  # METADATA without a Name field
+    entry_points["dfwb.plugins"] += [ep, FakeEntryPoint("good", _register_stem, dist="good-dist")]
+    records = {r.name: r for r in load_plugins().records}
+    assert records["nameless"].status is PluginStatus.OK
+    assert records["nameless"].provider == "fake-module-nameless"  # falls back to the module name
+    assert records["good"].status is PluginStatus.OK
