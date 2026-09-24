@@ -1,0 +1,14 @@
+{
+  "title": "Deepfake Workbench",
+  "upload_type": "software",
+  "description": "A uniform, plugin-driven workbench for deepfake detection research: verified dataset inventories, versioned protocols, training, scoring and evaluation.",
+  "creators": [
+    {
+      "name": "Collins, Luke",
+      "affiliation": "Deakin University",
+      "orcid": "0009-0002-7771-1081"
+    }
+  ],
+  "license": "MIT",
+  "keywords": ["deepfake", "forensics", "detection", "benchmark", "reproducibility"]
+}

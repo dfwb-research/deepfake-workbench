@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If DFWB helps your work, please consider citing it."
+type: software
+title: "Deepfake Workbench"
+abstract: >-
+  A uniform, plugin-driven workbench for deepfake detection research: verified dataset
+  inventories, versioned protocols, training, scoring and evaluation.
+authors:
+  - family-names: Collins
+    given-names: Luke
+    email: luke.collins@research.deakin.edu.au
+    affiliation: Deakin University
+    orcid: "https://orcid.org/0009-0002-7771-1081"
+license: MIT
+repository-code: "https://github.com/dfwb-research/deepfake-workbench"
+url: "https://dfwb-research.github.io/deepfake-workbench"
+keywords:
+  - deepfake
+  - forensics
+  - detection
+  - benchmark
+  - reproducibility

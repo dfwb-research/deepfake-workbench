@@ -1,0 +1,128 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepfake-workbench"
+dynamic = ["version"]
+description = "A uniform, plugin-driven workbench for deepfake detection research: datasets → protocols → training → scoring → evaluation."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Luke Collins", email = "luke.collins@research.deakin.edu.au" }]
+keywords = ["deepfake", "forensics", "detection", "benchmark", "pytorch", "reproducibility"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Image Recognition",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.6,<3",
+  "pyyaml>=6.0.1",
+  "platformdirs>=4",
+  "numpy>=1.26",
+  "click>=8.2",
+]
+
+[project.optional-dependencies]
+rich = ["rich>=13"]
+
+[project.scripts]
+dfwb = "dfwb.cli.main:main"
+
+[project.entry-points."dfwb.builtins"]
+dfwb = "dfwb._builtins:register"
+
+[project.urls]
+Homepage = "https://github.com/dfwb-research/deepfake-workbench"
+Documentation = "https://dfwb-research.github.io/deepfake-workbench"
+Issues = "https://github.com/dfwb-research/deepfake-workbench/issues"
+Changelog = "https://github.com/dfwb-research/deepfake-workbench/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/dfwb/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dfwb"]
+
+[dependency-groups]
+dev = [
+  "ruff",
+  "mypy",
+  "pytest>=8",
+  "pytest-cov",
+  "pytest-xdist",
+  "hypothesis",
+  "import-linter",
+  "scikit-learn",
+  "pre-commit",
+  "types-PyYAML",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "NPY", "RUF", "PT", "PTH", "TID", "ANN"]
+# Any is the honest type at the plugin boundary (registries hold arbitrary objects).
+ignore = ["ANN401"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src/dfwb"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# torch is optional; the core names its types only for annotations.
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+  "--import-mode=importlib",
+  # timing, GPU and network tests run only when asked for, e.g. `pytest -m slow`
+  "-m",
+  "not slow and not gpu and not network",
+]
+markers = [
+  "slow: long-running test (select with -m slow)",
+  "gpu: needs a CUDA device; run locally only",
+  "network: needs network access; off in CI",
+]
+xfail_strict = true
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["dfwb"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
