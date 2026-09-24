@@ -216,3 +216,19 @@ def test_unreadable_score_files_are_contract_errors(tmp_path):
     (tmp_path / "dir.scores.csv").mkdir()
     with pytest.raises(ContractError, match=r"dir.scores.csv: cannot read \(IsADirectoryError"):
         read_scores(tmp_path / "dir.scores.csv")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # a blank line before the bad row
+        "dataset,key,compression,label,score,status\nd,k1,,0,0.5,ok\n\nd,k2,,1,bad,ok\n",
+        # a quoted cell spanning two lines before the bad row
+        'dataset,key,compression,label,score,status,method\nd,k1,,0,0.5,ok,"two\nlines"\nd,k2,,1,bad,ok,m\n',
+    ],
+)
+def test_reader_reports_the_physical_line(tmp_path, content):
+    path = tmp_path / "lines.scores.csv"
+    path.write_text(content)
+    with pytest.raises(ContractError, match=r"lines.scores.csv:4: column 'score' must be float"):
+        read_scores(path)

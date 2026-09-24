@@ -357,7 +357,8 @@ def _read_rows(source: Path) -> list[ScoreRow]:
                 hint="extension columns must start with x_",
             )
         rows: list[ScoreRow] = []
-        for lineno, raw in enumerate(reader, start=2):
+        for raw in reader:
+            lineno = reader.line_num  # physical line; blank lines and multi-line cells count
             try:
                 rows.append(_parse(raw, lineno, source.name))
             except ContractError as exc:
