@@ -103,11 +103,15 @@ def _dataset_env_var(dataset_id: str) -> str:
     return DATASET_ENV_PREFIX + dataset_id.upper().replace("-", "_")
 
 
-def _read_roots(table: object, path: Path) -> dict[str, str | list[str]]:
-    """Validate a ``[roots]``-shaped table. ``datasets`` may be a string or list of strings."""
+def _read_roots(table: object, path: Path, label: str = "roots") -> dict[str, str | list[str]]:
+    """Validate a ``[roots]``-shaped table. ``datasets`` may be a string or list of strings.
+
+    ``label`` anchors error messages: ``"roots"`` for the top-level table (the M1 wording,
+    unchanged), or ``"hosts.<host>.roots"`` when validating a host table.
+    """
     if not isinstance(table, dict):
         raise ConfigError(
-            f"{path}: [roots] must be a table", hint='e.g. [roots]\ndatasets = "/data"'
+            f"{path}: [{label}] must be a table", hint='e.g. [roots]\ndatasets = "/data"'
         )
     result: dict[str, str | list[str]] = {}
     for key, value in table.items():
@@ -117,23 +121,23 @@ def _read_roots(table: object, path: Path) -> dict[str, str | list[str]]:
                 hint="roots: " + ", ".join(ROOT_NAMES),
             )
         if key == "datasets":
-            result[key] = _read_datasets_root_value(value, path)
+            result[key] = _read_datasets_root_value(value, path, label)
         elif not isinstance(value, str) or not value:
             raise ConfigError(
-                f"{path}: roots.{key} must be a non-empty string", hint="quote the path"
+                f"{path}: {label}.{key} must be a non-empty string", hint="quote the path"
             )
         else:
             result[key] = value
     return result
 
 
-def _read_datasets_root_value(value: object, path: Path) -> list[str]:
+def _read_datasets_root_value(value: object, path: Path, label: str) -> list[str]:
     if isinstance(value, str) and value:
         return [value]
     if isinstance(value, list) and value and all(isinstance(v, str) and v for v in value):
         return list(value)
     raise ConfigError(
-        f"{path}: roots.datasets must be a non-empty string or a list of strings",
+        f"{path}: {label}.datasets must be a non-empty string or a list of strings",
         hint="quote the path(s)",
     )
 
@@ -186,7 +190,12 @@ def _read_file(path: Path, host: str) -> _FileSettings:
     host_roots: dict[str, str | list[str]] = {}
     host_datasets: dict[str, str] = {}
     host_table = hosts.get(host)
-    if isinstance(host_table, dict):
+    if host_table is not None:
+        if not isinstance(host_table, dict):
+            raise ConfigError(
+                f"{path}: [hosts.{host}] must be a table",
+                hint="use [hosts.<host>.roots] and [hosts.<host>.datasets]",
+            )
         for key in host_table:
             if key not in _HOST_TABLE_KEYS:
                 raise ConfigError(
@@ -194,7 +203,7 @@ def _read_file(path: Path, host: str) -> _FileSettings:
                     f"{did_you_mean(key, _HOST_TABLE_KEYS)}",
                     hint="use [hosts.<host>.roots] and [hosts.<host>.datasets]",
                 )
-        host_roots = _read_roots(host_table.get("roots", {}), path)
+        host_roots = _read_roots(host_table.get("roots", {}), path, f"hosts.{host}.roots")
         host_datasets = _read_datasets_table(
             host_table.get("datasets", {}), path, f"hosts.{host}.datasets"
         )
@@ -309,7 +318,11 @@ def dataset_overrides(
 
     Sources, highest precedence first: ``DFWB_DATASET_<ID>`` environment variables, the project
     host table, the project ``[datasets]`` table, the user host table, the user ``[datasets]``
-    table.
+    table. A ``DFWB_DATASET_<ID>`` variable is discovered even for a dataset id that appears in
+    no table at all: the id is recovered from ``<ID>`` by lower-casing it and turning ``_`` into
+    ``-`` (e.g. ``DFWB_DATASET_CELEBDF_V2`` -> ``celebdf-v2``). Dataset ids are lower-kebab
+    everywhere in DFWB, so this is exact for every id the framework defines; an id that itself
+    contains ``_`` cannot be set this way and must instead go in a ``[datasets]`` table.
     """
     env = os.environ if env is None else env
     cwd = Path.cwd() if cwd is None else cwd

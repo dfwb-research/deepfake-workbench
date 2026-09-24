@@ -67,6 +67,22 @@ def test_unknown_key_in_host_table_is_an_error(places):
         resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
 
 
+def test_host_table_that_is_not_a_table_is_an_error(places):
+    cwd, user = places
+    (cwd / "dfwb.toml").write_text('[hosts]\nhades = "/x"\n')
+    with pytest.raises(ConfigError) as info:
+        resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
+    assert "[hosts.hades] must be a table" in info.value.message
+    assert "[hosts.<host>.roots]" in info.value.hint
+
+
+def test_host_roots_table_errors_use_the_host_prefix(places):
+    cwd, user = places
+    (cwd / "dfwb.toml").write_text('[hosts.hades.roots]\nwork = ["a", "b"]\n')
+    with pytest.raises(ConfigError, match=r"hosts\.hades\.roots\.work must be a non-empty string"):
+        resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
+
+
 def test_current_host_is_short_and_lower_case(monkeypatch):
     assert current_host({"DFWB_HOST": "Lab-Box"}) == "lab-box"
     monkeypatch.setattr("socket.gethostname", lambda: "Hades.cluster.local")
@@ -123,6 +139,17 @@ def test_dataset_overrides_from_env_and_host_table(places, tmp_path):
     assert found["kodf"] == (tmp_path / "mine", "env: DFWB_DATASET_KODF")
     assert found["celebdf-v2"][0] == Path("/fast/CDF2")
     assert "[hosts.hades.datasets]" in found["celebdf-v2"][1]
+
+
+def test_dataset_overrides_discovers_env_only_ids(places, tmp_path):
+    cwd, user = places
+    env = {
+        "DFWB_DATASET_CELEBDF_V2": str(tmp_path / "cdf2"),
+        "DFWB_DATASET_KODF": str(tmp_path / "kodf"),
+    }
+    found = dataset_overrides(env=env, cwd=cwd, user_config=user)
+    assert found["celebdf-v2"] == (tmp_path / "cdf2", "env: DFWB_DATASET_CELEBDF_V2")
+    assert found["kodf"] == (tmp_path / "kodf", "env: DFWB_DATASET_KODF")
 
 
 def test_an_override_wins_over_root_search(places, tmp_path):
