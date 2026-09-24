@@ -1,0 +1,237 @@
+{
+  "$defs": {
+    "DetectorMeta": {
+      "description": "Identity, licensing and provenance of a detector.",
+      "properties": {
+        "citation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Citation"
+        },
+        "contract_version": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Contract Version",
+          "type": "array"
+        },
+        "input": {
+          "$ref": "#/$defs/InputSpec"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "training_data": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Training Data",
+          "type": "array"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "weights_license": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weights License"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "contract_version",
+        "input",
+        "license",
+        "weights_license",
+        "citation",
+        "source"
+      ],
+      "title": "DetectorMeta",
+      "type": "object"
+    },
+    "InputSpec": {
+      "description": "What a detector consumes. The harness adapts stored clips to it (or refuses).",
+      "properties": {
+        "color": {
+          "default": "rgb",
+          "enum": [
+            "rgb",
+            "bgr"
+          ],
+          "title": "Color",
+          "type": "string"
+        },
+        "crop": {
+          "default": "face",
+          "enum": [
+            "face",
+            "full-frame"
+          ],
+          "title": "Crop",
+          "type": "string"
+        },
+        "crop_scale": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.3,
+          "title": "Crop Scale"
+        },
+        "frames": {
+          "default": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "mean": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean"
+        },
+        "modality": {
+          "default": "frames",
+          "enum": [
+            "frames",
+            "audio",
+            "audiovisual"
+          ],
+          "title": "Modality",
+          "type": "string"
+        },
+        "preferred_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preferred Profile"
+        },
+        "sampling": {
+          "default": "any",
+          "enum": [
+            "uniform",
+            "consecutive",
+            "any"
+          ],
+          "title": "Sampling",
+          "type": "string"
+        },
+        "size": {
+          "default": [
+            224,
+            224
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Size",
+          "type": "array"
+        },
+        "std": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std"
+        },
+        "value_range": {
+          "default": [
+            0.0,
+            1.0
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Value Range",
+          "type": "array"
+        }
+      },
+      "title": "InputSpec",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dfwb C4: Detector and adapter metadata",
+  "x-dfwb-contract": {
+    "id": "c4",
+    "version": "1.0"
+  }
+}

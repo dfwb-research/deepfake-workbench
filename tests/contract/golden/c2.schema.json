@@ -1,0 +1,434 @@
+{
+  "$defs": {
+    "ClipSection": {
+      "additionalProperties": false,
+      "properties": {
+        "clips_per_video": {
+          "$ref": "#/$defs/ClipsPerVideo"
+        },
+        "frames": {
+          "minimum": 1,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "sampling": {
+          "enum": [
+            "uniform",
+            "consecutive",
+            "random-window"
+          ],
+          "title": "Sampling",
+          "type": "string"
+        }
+      },
+      "required": [
+        "frames",
+        "sampling",
+        "clips_per_video"
+      ],
+      "title": "ClipSection",
+      "type": "object"
+    },
+    "ClipsPerVideo": {
+      "additionalProperties": false,
+      "properties": {
+        "eval": {
+          "minimum": 1,
+          "title": "Eval",
+          "type": "integer"
+        },
+        "train": {
+          "minimum": 1,
+          "title": "Train",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "train",
+        "eval"
+      ],
+      "title": "ClipsPerVideo",
+      "type": "object"
+    },
+    "ComponentSpec": {
+      "additionalProperties": true,
+      "description": "A pluggable component: ``{name: <registry key>, **params}``.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ComponentSpec",
+      "type": "object"
+    },
+    "DataSection": {
+      "additionalProperties": false,
+      "properties": {
+        "clip": {
+          "$ref": "#/$defs/ClipSection"
+        },
+        "labels": {
+          "title": "Labels",
+          "type": "string"
+        },
+        "loader": {
+          "$ref": "#/$defs/LoaderSection"
+        },
+        "processing": {
+          "title": "Processing",
+          "type": "string"
+        },
+        "test": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SuiteRef"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/DataSource"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Test"
+        },
+        "train": {
+          "items": {
+            "$ref": "#/$defs/DataSource"
+          },
+          "minItems": 1,
+          "title": "Train",
+          "type": "array"
+        },
+        "transforms": {
+          "$ref": "#/$defs/TransformsSection"
+        },
+        "val": {
+          "items": {
+            "$ref": "#/$defs/DataSource"
+          },
+          "title": "Val",
+          "type": "array"
+        }
+      },
+      "required": [
+        "processing",
+        "clip",
+        "labels",
+        "train",
+        "loader"
+      ],
+      "title": "DataSection",
+      "type": "object"
+    },
+    "DataSource": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "title": "Protocol",
+          "type": "string"
+        },
+        "split": {
+          "enum": [
+            "train",
+            "val",
+            "test"
+          ],
+          "title": "Split",
+          "type": "string"
+        },
+        "where": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Where",
+          "type": "object"
+        }
+      },
+      "required": [
+        "protocol",
+        "split"
+      ],
+      "title": "DataSource",
+      "type": "object"
+    },
+    "EvalSection": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate": {
+          "title": "Aggregate",
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Metrics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "metrics",
+        "aggregate"
+      ],
+      "title": "EvalSection",
+      "type": "object"
+    },
+    "LoaderSection": {
+      "additionalProperties": false,
+      "properties": {
+        "balance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Balance"
+        },
+        "batch_size": {
+          "minimum": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "num_workers": {
+          "minimum": 0,
+          "title": "Num Workers",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "batch_size",
+        "num_workers"
+      ],
+      "title": "LoaderSection",
+      "type": "object"
+    },
+    "ModelSection": {
+      "additionalProperties": false,
+      "properties": {
+        "backbone": {
+          "$ref": "#/$defs/ComponentSpec"
+        },
+        "head": {
+          "$ref": "#/$defs/ComponentSpec"
+        },
+        "temporal_pool": {
+          "$ref": "#/$defs/ComponentSpec"
+        }
+      },
+      "required": [
+        "backbone",
+        "temporal_pool",
+        "head"
+      ],
+      "title": "ModelSection",
+      "type": "object"
+    },
+    "RunSection": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "output_root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Root"
+        },
+        "seeds": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Seeds",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "seeds"
+      ],
+      "title": "RunSection",
+      "type": "object"
+    },
+    "SuiteRef": {
+      "additionalProperties": false,
+      "properties": {
+        "suite": {
+          "title": "Suite",
+          "type": "string"
+        }
+      },
+      "required": [
+        "suite"
+      ],
+      "title": "SuiteRef",
+      "type": "object"
+    },
+    "TrainConfig": {
+      "additionalProperties": false,
+      "description": "``schema: dfwb.train/1``: one training experiment.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/DataSection"
+        },
+        "eval": {
+          "$ref": "#/$defs/EvalSection"
+        },
+        "loss": {
+          "$ref": "#/$defs/ComponentSpec"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelSection"
+        },
+        "optim": {
+          "$ref": "#/$defs/ComponentSpec"
+        },
+        "run": {
+          "$ref": "#/$defs/RunSection"
+        },
+        "schedule": {
+          "$ref": "#/$defs/ComponentSpec"
+        },
+        "schema": {
+          "const": "dfwb.train/1",
+          "title": "Schema",
+          "type": "string"
+        },
+        "train": {
+          "$ref": "#/$defs/TrainSection"
+        }
+      },
+      "required": [
+        "schema",
+        "run",
+        "data",
+        "model",
+        "loss",
+        "optim",
+        "schedule",
+        "train",
+        "eval"
+      ],
+      "title": "TrainConfig",
+      "type": "object"
+    },
+    "TrainSection": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "minimum": 1,
+          "title": "Devices",
+          "type": "integer"
+        },
+        "max_epochs": {
+          "minimum": 1,
+          "title": "Max Epochs",
+          "type": "integer"
+        },
+        "mode": {
+          "enum": [
+            "max",
+            "min"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "monitor": {
+          "title": "Monitor",
+          "type": "string"
+        },
+        "precision": {
+          "title": "Precision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "max_epochs",
+        "precision",
+        "devices",
+        "monitor",
+        "mode"
+      ],
+      "title": "TrainSection",
+      "type": "object"
+    },
+    "TransformsSection": {
+      "additionalProperties": false,
+      "properties": {
+        "train": {
+          "items": {
+            "$ref": "#/$defs/ComponentSpec"
+          },
+          "title": "Train",
+          "type": "array"
+        }
+      },
+      "title": "TransformsSection",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dfwb C2: Config (schema dfwb.train/1)",
+  "x-dfwb-contract": {
+    "id": "c2",
+    "version": "dfwb.train/1"
+  }
+}

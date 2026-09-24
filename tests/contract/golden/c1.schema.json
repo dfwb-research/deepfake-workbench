@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "Entry": {
+      "description": "One registration: a key, where its object lives, who provided it and what it needs.",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "meta": {
+          "additionalProperties": true,
+          "title": "Meta",
+          "type": "object"
+        },
+        "params": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Params"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "registry": {
+          "title": "Registry",
+          "type": "string"
+        },
+        "requires": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Requires",
+          "type": "array"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registry",
+        "key",
+        "target",
+        "provider",
+        "summary"
+      ],
+      "title": "Entry",
+      "type": "object"
+    },
+    "PluginRecord": {
+      "description": "What happened to one entry point.",
+      "properties": {
+        "entries": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "group": {
+          "title": "Group",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "$ref": "#/$defs/PluginStatus"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Version"
+        }
+      },
+      "required": [
+        "name",
+        "group",
+        "provider",
+        "version",
+        "target",
+        "status"
+      ],
+      "title": "PluginRecord",
+      "type": "object"
+    },
+    "PluginStatus": {
+      "description": "Outcome of loading one entry point.",
+      "enum": [
+        "ok",
+        "failed",
+        "skipped",
+        "disabled"
+      ],
+      "title": "PluginStatus",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dfwb C1: Plugin API: registry entries and plugin load records",
+  "x-dfwb-contract": {
+    "id": "c1",
+    "version": "1.0"
+  }
+}
