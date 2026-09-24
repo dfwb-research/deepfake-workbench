@@ -22,18 +22,27 @@ from dfwb.core.records import (
     DatasetCard,
     LabelVocab,
     PackCard,
+    PairRecord,
     SchemeCard,
     SplitRow,
     VideoRecord,
     write_jsonl,
     write_split_tsv,
 )
-from dfwb.core.records.protocol import LicenseInfo
+from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
 
-__all__ = ["fixture_packs", "make_pack", "register_packs", "register_provider_packs"]
+__all__ = [
+    "fixture_packs",
+    "make_pack",
+    "register_packs",
+    "register_provider_packs",
+    "toyone_pack",
+    "write_toyone_dataset",
+]
 
 DatasetSpec = Mapping[str, Mapping[str, Any]]
 PackSpec = Mapping[str, DatasetSpec]
+Builder = Callable[[Path, str], None]
 
 
 def _dump(model: BaseModel) -> str:
@@ -70,19 +79,181 @@ def _write_dataset(dataset_dir: Path, dataset_id: str) -> None:
     (dataset_dir / "labels.yaml").write_text(_dump(labels))
 
 
-def make_pack(tmp_path: Path, name: str, datasets: DatasetSpec) -> Path:
+# Real identities, by index (shared by REAL/FAKE_A/FAKE_B so "the same identity" carries a
+# consistent attrs.lang across tasks): 1,3 -> en; 2,4 -> fr.
+_TOYONE_LANG = {"1": "en", "2": "fr", "3": "en", "4": "fr"}
+
+
+def write_toyone_dataset(dataset_dir: Path, dataset_id: str) -> None:
+    """Write the richer ``toyone`` dataset (Task 5): attrs, two schemes, three labels, pairs.
+
+    12 videos: ``REAL/r1..r4`` (compressions ``c23`` and ``c40``, so 8 ``VideoRecord`` rows),
+    ``FAKE_A/a1..a4`` and ``FAKE_B/b1..b4`` (no compression variants, 4 rows each) -- 16 rows in
+    total, each with ``attrs: {lang: en|fr}``. Two schemes: ``official`` (train/val/test, with
+    ``r4``/``a4``-paired-by-index left **unassigned** by index 4's real, to exercise J4's "absent,
+    not excluded" and J7's pairs fallback) and ``all-test`` (every row -> test). A ``labels.yaml``
+    with ``binary``, ``audiovisual-binary`` and ``family`` mappings (``binary`` overrides
+    ``TOYONE-FAKE_B`` to ``"exclude"``), and four fake/real pairs in ``pairs.jsonl.gz``.
+    """
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "splits").mkdir()
+
+    videos: list[VideoRecord] = []
+    for i in range(1, 5):
+        idx = str(i)
+        for compression in ("c23", "c40"):
+            videos.append(
+                VideoRecord(
+                    f"REAL/r{i}",
+                    compression,
+                    "TOYONE-REAL",
+                    "original",
+                    identity=f"r{i}",
+                    attrs={"lang": _TOYONE_LANG[idx]},
+                )
+            )
+    fake_tasks = (("FAKE_A", "TOYONE-FAKE_A", "FakeA"), ("FAKE_B", "TOYONE-FAKE_B", "FakeB"))
+    for task, label_key, method in fake_tasks:
+        prefix = "a" if task == "FAKE_A" else "b"
+        for i in range(1, 5):
+            idx = str(i)
+            videos.append(
+                VideoRecord(
+                    f"{task}/{prefix}{i}",
+                    None,
+                    label_key,
+                    method,
+                    identity=f"{prefix}{i}",
+                    attrs={"lang": _TOYONE_LANG[idx]},
+                )
+            )
+    write_jsonl(dataset_dir / "videos.jsonl.gz", videos)
+
+    # "official": index 1 -> train, 2 -> val, 3 -> test, 4 -> train, except REAL/r4 is left
+    # unassigned entirely (both compressions), so it never appears in official records() results,
+    # and its pair (FAKE_B/b4, REAL/r4) can only match a split through the fake's split (J7).
+    official_rows = [
+        SplitRow("REAL/r1", "c23", "train"),
+        SplitRow("REAL/r1", "c40", "train"),
+        SplitRow("REAL/r2", "c23", "val"),
+        SplitRow("REAL/r2", "c40", "val"),
+        SplitRow("REAL/r3", "c23", "test"),
+        SplitRow("REAL/r3", "c40", "test"),
+        SplitRow("FAKE_A/a1", None, "train"),
+        SplitRow("FAKE_A/a2", None, "val"),
+        SplitRow("FAKE_A/a3", None, "test"),
+        SplitRow("FAKE_A/a4", None, "train"),
+        SplitRow("FAKE_B/b1", None, "train"),
+        SplitRow("FAKE_B/b2", None, "val"),
+        SplitRow("FAKE_B/b3", None, "test"),
+        SplitRow("FAKE_B/b4", None, "train"),
+    ]
+    official_sha = write_split_tsv(dataset_dir / "splits" / "official.tsv.gz", official_rows)
+
+    all_test_rows = [SplitRow(v.key, v.compression, "test") for v in videos]
+    all_test_sha = write_split_tsv(dataset_dir / "splits" / "all-test.tsv.gz", all_test_rows)
+
+    def _counts(rows: list[SplitRow]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row.split] = counts.get(row.split, 0) + 1
+        return counts
+
+    card = DatasetCard(
+        id=dataset_id,
+        name="Toy One",
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only",
+        modalities=["video"],
+        key_rule="fixture",
+        schemes={
+            "official": SchemeCard(
+                kind="official",
+                source="fixture",
+                sha256=official_sha,
+                counts=_counts(official_rows),
+            ),
+            "all-test": SchemeCard(
+                kind="subset",
+                source="fixture",
+                sha256=all_test_sha,
+                counts=_counts(all_test_rows),
+            ),
+        },
+        default_scheme="official",
+    )
+    (dataset_dir / "dataset.yaml").write_text(_dump(card))
+
+    vocab = {
+        "TOYONE-REAL": {
+            "binary": 0,
+            "binary_av": 0,
+            "multiclass": "real",
+            "family": "real",
+            "method": "original",
+            "task": "REAL",
+        },
+        "TOYONE-FAKE_A": {
+            "binary": 1,
+            "binary_av": 1,
+            "multiclass": "fake_a",
+            "family": "face-swap",
+            "method": "FakeA",
+            "task": "FAKE_A",
+        },
+        "TOYONE-FAKE_B": {
+            "binary": 1,
+            "binary_av": 0,
+            "multiclass": "fake_b",
+            "family": "lip-sync",
+            "method": "FakeB",
+            "task": "FAKE_B",
+        },
+    }
+    mappings = {
+        "binary": LabelMappingSpec(from_="binary", override={"TOYONE-FAKE_B": "exclude"}),
+        "audiovisual-binary": LabelMappingSpec(from_="binary_av"),
+        "family": LabelMappingSpec(from_="family"),
+    }
+    labels = LabelVocab(vocab=vocab, mappings=mappings)
+    (dataset_dir / "labels.yaml").write_text(_dump(labels))
+
+    pairs = [
+        PairRecord("FAKE_A/a1", "REAL/r1", "thesis"),
+        PairRecord("FAKE_A/a2", "REAL/r2", "thesis"),
+        PairRecord("FAKE_B/b3", "REAL/r3", "thesis"),
+        PairRecord("FAKE_B/b4", "REAL/r4", "thesis"),
+    ]
+    write_jsonl(dataset_dir / "pairs.jsonl.gz", pairs)
+
+
+def make_pack(
+    tmp_path: Path,
+    name: str,
+    datasets: DatasetSpec,
+    *,
+    builders: Mapping[str, Builder] | None = None,
+) -> Path:
     """Write a minimal, valid protocol pack under a throwaway importable package in ``tmp_path``.
+
+    Each dataset is written by :func:`_write_dataset` (one video, one ``official`` scheme) unless
+    ``builders`` maps its id to a different ``builder(dataset_dir, dataset_id)`` -- e.g.
+    :func:`write_toyone_dataset` for the richer Task 5 fixture -- so tests needing a richer dataset
+    reuse this function's package/registration scaffolding instead of duplicating it.
 
     Returns the pack root (the directory holding ``pack.yaml``) -- exactly what the registry's
     ``.load()`` resolves to once :func:`register_packs` installs it, so mutating the returned
     path (e.g. corrupting ``pack.yaml``) is visible to code under test.
     """
+    builders = builders or {}
     package_dir = tmp_path / _package_name(name)
     root = package_dir / "pack"
     root.mkdir(parents=True)
     (package_dir / "__init__.py").write_text("")
     for dataset_id in datasets:
-        _write_dataset(root / dataset_id, dataset_id)
+        builder = builders.get(dataset_id, _write_dataset)
+        builder(root / dataset_id, dataset_id)
     card = PackCard(schema_version=1, name=name, version="1.0.0", datasets=sorted(datasets))
     (root / "pack.yaml").write_text(_dump(card))
     return root
@@ -155,12 +326,32 @@ def register_packs(monkeypatch: pytest.MonkeyPatch, packs: Mapping[str, Path]) -
 @pytest.fixture
 def fixture_packs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Callable[[PackSpec], dict[str, Path]]:
-    """Build and register one or more fixture protocol packs; returns ``{pack_name: pack_root}``."""
+) -> Callable[..., dict[str, Path]]:
+    """Build and register one or more fixture protocol packs; returns ``{pack_name: pack_root}``.
 
-    def _install(packs: PackSpec) -> dict[str, Path]:
-        roots = {name: make_pack(tmp_path, name, datasets) for name, datasets in packs.items()}
+    ``builders`` optionally overrides how one dataset's files are written, keyed
+    ``{pack_name: {dataset_id: builder}}`` (e.g. :func:`write_toyone_dataset`) instead of the
+    default single-video dataset; see :func:`make_pack`.
+    """
+
+    def _install(
+        packs: PackSpec, *, builders: Mapping[str, Mapping[str, Builder]] | None = None
+    ) -> dict[str, Path]:
+        builders = builders or {}
+        roots = {
+            name: make_pack(tmp_path, name, datasets, builders=builders.get(name))
+            for name, datasets in packs.items()
+        }
         register_packs(monkeypatch, roots)
         return roots
 
     return _install
+
+
+@pytest.fixture
+def toyone_pack(fixture_packs: Callable[..., dict[str, Path]]) -> Path:
+    """Install the richer ``toyone`` dataset (Task 5) in its own pack; returns the dataset dir."""
+    roots = fixture_packs(
+        {"toyone-pack": {"toyone": {}}}, builders={"toyone-pack": {"toyone": write_toyone_dataset}}
+    )
+    return roots["toyone-pack"] / "toyone"

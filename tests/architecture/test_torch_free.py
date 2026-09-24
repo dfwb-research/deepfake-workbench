@@ -48,6 +48,7 @@ TORCH_FREE_COMMANDS = [
     ["doctor"],
     ["doctor", "--json"],
     ["plugins", "list", "--all"],
+    ["protocols", "list"],
     ["config", "templates"],
     ["schema", "export", "c1"],
     ["schema", "export", "c2"],

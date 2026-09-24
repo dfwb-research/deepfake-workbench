@@ -26,6 +26,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "config": ("dfwb.cli.config:config", "Compose, show and validate configs."),
     "doctor": ("dfwb.cli.doctor:doctor", "Check Python, roots, extras and plugins."),
     "plugins": ("dfwb.cli.plugins:plugins", "List and inspect plugins and their components."),
+    "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),
 }
 
