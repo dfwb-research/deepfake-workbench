@@ -66,6 +66,17 @@ def _dataset_ids(pack: Pack) -> frozenset[str]:
     return frozenset(pack.card.datasets) if pack.card is not None else frozenset()
 
 
+def _require_single_provider(name: str, same_name: list[Pack]) -> None:
+    """Raise if ``name`` was registered by more than one distribution (never wins silently, C1)."""
+    if len(same_name) > 1:
+        providers = sorted(p.provider for p in same_name)
+        raise AmbiguousKeyError(
+            f"protocol pack {name!r} is provided by more than one distribution: "
+            f"{', '.join(providers)}",
+            hint=f"uninstall one of the distributions that provide pack {name!r}",
+        )
+
+
 def find_dataset(dataset: str, pack: str | None = None) -> Pack:
     """The pack that publishes ``dataset``.
 
@@ -73,29 +84,34 @@ def find_dataset(dataset: str, pack: str | None = None) -> Pack:
         UnknownKeyError: ``dataset`` is in no installed pack (with did-you-mean over every
             dataset id, and an install hint when the id is in the catalogue), or ``pack`` names a
             pack that is not installed or does not publish ``dataset``.
-        AmbiguousKeyError: ``dataset`` is published by more than one pack and ``pack`` is ``None``.
+        AmbiguousKeyError: ``dataset`` is published by more than one pack and ``pack`` is ``None``,
+            or the resolved pack name (``pack``, or the single name that publishes ``dataset``) was
+            registered by more than one distribution -- that can never be resolved by qualifying
+            with the pack name, since the name collides, so it always raises.
         ContractError: the named pack is broken.
     """
     packs = installed_packs()
     if pack is not None:
-        named = next((p for p in packs if p.name == pack), None)
-        if named is None:
+        named = [p for p in packs if p.name == pack]
+        if not named:
             raise UnknownKeyError(
                 f"unknown protocol pack {pack!r}{did_you_mean(pack, [p.name for p in packs])}",
                 hint="run `dfwb plugins list --all` to see installed protocol packs",
             )
-        if named.error is not None:
+        _require_single_provider(pack, named)
+        found = named[0]
+        if found.error is not None:
             raise ContractError(
-                f"protocol pack {pack!r} is broken: {named.error}",
-                hint=f"fix or reinstall the pack {pack!r} (provided by {named.provider})",
+                f"protocol pack {pack!r} is broken: {found.error}",
+                hint=f"fix or reinstall the pack {pack!r} (provided by {found.provider})",
             )
-        if dataset not in _dataset_ids(named):
+        if dataset not in _dataset_ids(found):
             raise UnknownKeyError(
                 f"{pack!r} does not publish dataset {dataset!r}"
-                f"{did_you_mean(dataset, _dataset_ids(named))}",
+                f"{did_you_mean(dataset, _dataset_ids(found))}",
                 hint=f"run `dfwb protocols list --pack {pack}` to see its datasets",
             )
-        return named
+        return found
     matches = [p for p in packs if dataset in _dataset_ids(p)]
     if not matches:
         all_ids = sorted({d for p in packs for d in _dataset_ids(p)})
@@ -108,10 +124,13 @@ def find_dataset(dataset: str, pack: str | None = None) -> Pack:
         raise UnknownKeyError(
             f"unknown dataset {dataset!r}{did_you_mean(dataset, all_ids)}", hint=hint
         )
-    if len(matches) > 1:
+    names = sorted({p.name for p in matches})
+    if len(names) > 1:
         qualified = sorted(f"{p.name}:{dataset}" for p in matches)
         raise AmbiguousKeyError(
             f"dataset {dataset!r} is provided by more than one pack: {', '.join(qualified)}",
             hint=f"qualify it, e.g. {qualified[0]!r}",
         )
+    same_name = [p for p in packs if p.name == names[0]]
+    _require_single_provider(names[0], same_name)
     return matches[0]

@@ -20,25 +20,28 @@ __all__ = ["read_card", "read_labels", "read_model"]
 
 
 def read_model[M: BaseModel](path: Path, model: type[M]) -> M:
-    """Read and validate ``path`` as ``model``. Any failure raises :class:`ContractError`."""
+    """Read and validate ``path`` as ``model``. Any failure raises :class:`ContractError`.
+
+    Messages name the full local path (never just the filename), so a failure can be traced back
+    to the dataset or pack it came from -- these are local error messages, never written into pack
+    files or other artifacts.
+    """
     try:
         text = path.read_text("utf-8")
     except OSError as exc:
         raise ContractError(
-            f"{path.name}: cannot read ({type(exc).__name__}: {exc})",
+            f"{path}: cannot read ({type(exc).__name__}: {exc})",
             hint="check that the pack was installed correctly",
         ) from None
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise ContractError(
-            f"{path.name}: invalid YAML ({exc})", hint="fix the YAML syntax"
-        ) from None
+        raise ContractError(f"{path}: invalid YAML ({exc})", hint="fix the YAML syntax") from None
     try:
         return model.model_validate(data)
     except ValidationError as exc:
         raise ContractError(
-            f"{path.name}: " + "; ".join(validation_messages(exc)),
+            f"{path}: " + "; ".join(validation_messages(exc)),
             hint=f"not a valid {model.__name__}",
         ) from None
 

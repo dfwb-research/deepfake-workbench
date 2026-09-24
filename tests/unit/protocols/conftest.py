@@ -30,7 +30,7 @@ from dfwb.core.records import (
 )
 from dfwb.core.records.protocol import LicenseInfo
 
-__all__ = ["fixture_packs", "make_pack", "register_packs"]
+__all__ = ["fixture_packs", "make_pack", "register_packs", "register_provider_packs"]
 
 DatasetSpec = Mapping[str, Mapping[str, Any]]
 PackSpec = Mapping[str, DatasetSpec]
@@ -91,14 +91,54 @@ def make_pack(tmp_path: Path, name: str, datasets: DatasetSpec) -> Path:
 class _FakePackEntryPoint:
     """Duck-typed stand-in for ``importlib.metadata.EntryPoint`` (mirrors test_plugins.py)."""
 
-    def __init__(self, name: str, register: Callable[[Any], None]) -> None:
+    def __init__(
+        self, name: str, register: Callable[[Any], None], *, dist: str = "fixture-packs"
+    ) -> None:
         self.name = name
         self.value = f"fake_module_{name}:register"
-        self.dist = SimpleNamespace(name="fixture-packs", version="0.0.0")
+        self.dist = SimpleNamespace(name=dist, version="0.0.0")
         self._register = register
 
     def load(self) -> Callable[[Any], None]:
         return self._register
+
+
+def _pack_register(packs: Mapping[str, Path]) -> Callable[[Any], None]:
+    def _register(api: Any) -> None:
+        for name, path in packs.items():
+            api.protocol_packs.add(
+                name, target=f"{path.parent.name}:{path.name}", summary=f"fixture pack {name!r}"
+            )
+
+    return _register
+
+
+def register_provider_packs(
+    monkeypatch: pytest.MonkeyPatch, providers: Mapping[str, Mapping[str, Path]]
+) -> None:
+    """Install one fake entry point per provider: ``{dist_name: {pack_name: pack_root}}``.
+
+    Unlike :func:`register_packs` (every pack from one distribution), this lets a test register
+    the *same* pack name from more than one distribution, to exercise the registry's own collision
+    handling: two providers registering one key is ambiguous, never resolved silently (C1).
+    """
+    seen: set[Path] = set()
+    for packs in providers.values():
+        for path in packs.values():
+            parent = path.parent.parent
+            if parent not in seen:
+                monkeypatch.syspath_prepend(str(parent))
+                seen.add(parent)
+
+    entry_points = [
+        _FakePackEntryPoint(dist, _pack_register(packs), dist=dist)
+        for dist, packs in providers.items()
+    ]
+    monkeypatch.setattr(
+        plugins,
+        "_entry_points",
+        lambda group: entry_points if group == plugins.ENTRY_POINT_GROUP else [],
+    )
 
 
 def register_packs(monkeypatch: pytest.MonkeyPatch, packs: Mapping[str, Path]) -> None:
@@ -106,27 +146,10 @@ def register_packs(monkeypatch: pytest.MonkeyPatch, packs: Mapping[str, Path]) -
 
     A single fake ``dfwb.plugins`` entry point registers every pack in one ``register(api)`` call
     (``api.protocol_packs.add(name, target=...)``); the target names the importable package
-    :func:`make_pack` wrote, so lookup goes through the real, data-kind registry path.
+    :func:`make_pack` wrote, so lookup goes through the real, data-kind registry path. All packs
+    share one fake distribution; use :func:`register_provider_packs` for more than one provider.
     """
-    seen: set[Path] = set()
-    for path in packs.values():
-        parent = path.parent.parent
-        if parent not in seen:
-            monkeypatch.syspath_prepend(str(parent))
-            seen.add(parent)
-
-    def _register(api: Any) -> None:
-        for name, path in packs.items():
-            api.protocol_packs.add(
-                name, target=f"{path.parent.name}:{path.name}", summary=f"fixture pack {name!r}"
-            )
-
-    entry_point = _FakePackEntryPoint("fixture-packs", _register)
-    monkeypatch.setattr(
-        plugins,
-        "_entry_points",
-        lambda group: [entry_point] if group == plugins.ENTRY_POINT_GROUP else [],
-    )
+    register_provider_packs(monkeypatch, {"fixture-packs": packs})
 
 
 @pytest.fixture

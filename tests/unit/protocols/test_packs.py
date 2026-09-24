@@ -1,4 +1,5 @@
 import pytest
+from tests.unit.protocols.conftest import make_pack, register_provider_packs
 
 from dfwb.core.errors import AmbiguousKeyError, ContractError, UnknownKeyError
 from dfwb.core.records import PackCard
@@ -89,3 +90,35 @@ def test_read_model_errors(tmp_path):
     with pytest.raises(ContractError, match="schema_version") as info:
         read_model(bad_schema, PackCard)
     assert info.value.hint == "not a valid PackCard"
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+# Finding 1: read_model errors named only the bare filename, so a broken dataset.yaml could not be
+# told apart from any other pack's. Finding 2: two providers registering the same protocol_packs
+# key were resolved silently (first one found), instead of raising like every other registry
+# collision (C1).
+
+
+def test_read_model_error_names_the_full_path_not_just_the_filename(fixture_packs):
+    root = fixture_packs({"alpha": {"toyone": {}}})
+    dataset_dir = root["alpha"] / "toyone"
+    (dataset_dir / "dataset.yaml").write_text("id: not-a-real-card\n")
+    with pytest.raises(ContractError) as info:
+        read_card(dataset_dir)
+    assert "toyone" in info.value.message
+    assert str(dataset_dir / "dataset.yaml") in info.value.message
+
+
+def test_two_providers_registering_the_same_pack_name_is_ambiguous(tmp_path, monkeypatch):
+    root = make_pack(tmp_path, "gamma", {"toyone": {}})
+    register_provider_packs(
+        monkeypatch, {"provider-a": {"gamma": root}, "provider-b": {"gamma": root}}
+    )
+    assert [p.name for p in installed_packs()] == ["gamma", "gamma"]
+    with pytest.raises(AmbiguousKeyError) as info:
+        find_dataset("toyone", pack="gamma")
+    assert "provider-a" in info.value.message
+    assert "provider-b" in info.value.message
+    assert info.value.hint == "uninstall one of the distributions that provide pack 'gamma'"
+    with pytest.raises(AmbiguousKeyError):
+        find_dataset("toyone")
