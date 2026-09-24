@@ -1,0 +1,6 @@
+# The org's own reusable workflows are pinned to their release tag (@v1) on purpose.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "dfwb-research/*": ref-pin
