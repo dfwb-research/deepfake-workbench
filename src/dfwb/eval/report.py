@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from dfwb.core.errors import ConfigError
 from dfwb.core.records import ScoreFile, ScoreMeta, read_scores
 from dfwb.eval.bootstrap import bootstrap_ci, summarize_seeds
 from dfwb.eval.breakdown import group_rows
-from dfwb.eval.coverage import Coverage, coverage_of, labels_and_scores
+from dfwb.eval.coverage import Coverage, FloatArray, IntArray, coverage_of, labels_and_scores
 from dfwb.eval.metrics import MetricUndefined
 from dfwb.eval.suites import Suite, aggregate_suite, load_suite
 
@@ -42,7 +42,7 @@ class EvalResult:
     bootstrap: int
     seed: int
     tables: dict[str, list[dict[str, Any]]]
-    exit_code: int = field(compare=True)
+    exit_code: int
 
     def to_json(self) -> dict[str, Any]:
         """The full result as one JSON-friendly ``dict`` (full precision, no rounding)."""
@@ -75,7 +75,13 @@ def _metric_table(
 
 
 def _score_metrics(
-    metrics: Sequence[str], y: Any, p: Any, *, n_boot: int, seed: int, skip_undefined: bool
+    metrics: Sequence[str],
+    y: IntArray,
+    p: FloatArray,
+    *,
+    n_boot: int,
+    seed: int,
+    skip_undefined: bool,
 ) -> dict[str, dict[str, float]]:
     values: dict[str, float] = {}
     lo: dict[str, float] = {}

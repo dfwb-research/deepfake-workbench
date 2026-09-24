@@ -201,7 +201,9 @@ def compare(
     comparisons: list[PairComparison] = []
     delong_by_pair: dict[int, float] = {}
     for pair_index, (i, j) in enumerate(pairs):
-        common = sorted(set(ok_rows[i]) & set(ok_rows[j]))
+        # sort key coerces a possibly-``None`` compression to "" -- comparing the raw 3-tuples
+        # would raise if two keys share (dataset, key) but differ in compression being None.
+        common = sorted(set(ok_rows[i]) & set(ok_rows[j]), key=lambda k: (k[0], k[1], k[2] or ""))
         y = np.asarray([ok_rows[i][k].label for k in common], dtype=np.int64)
         p_a = np.asarray([ok_rows[i][k].score for k in common], dtype=np.float64)
         p_b = np.asarray([ok_rows[j][k].score for k in common], dtype=np.float64)

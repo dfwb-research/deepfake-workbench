@@ -46,6 +46,23 @@ def test_compare_uses_intersection(tmp_path):
     assert "acc@thr=0.5" in comparison.metrics
 
 
+def test_compare_handles_a_key_with_both_a_null_and_a_named_compression(tmp_path):
+    # the same (dataset, key) with one None-compression row and one "c23" row must not raise
+    # when sorting the intersection (comparing None to a string).
+    a = _write(
+        tmp_path,
+        "a.scores.csv",
+        ["d,k0,,0,0.1,ok", "d,k0,c23,0,0.15,ok", "d,k1,,1,0.9,ok"],
+    )
+    b = _write(
+        tmp_path,
+        "b.scores.csv",
+        ["d,k0,,0,0.2,ok", "d,k0,c23,0,0.25,ok", "d,k1,,1,0.8,ok"],
+    )
+    result = compare([a, b], metrics=["acc@thr=0.5"])
+    assert result.comparisons[0].n == 3
+
+
 def test_compare_reports_delong_for_auc(tmp_path):
     rng = np.random.default_rng(0)
     n = 60
