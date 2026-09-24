@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dfwb-fake-plugin-broken"
+version = "0.1.0"
+description = "Test fixture: a dfwb plugin whose register() fails halfway."
+requires-python = ">=3.12"
+
+[project.entry-points."dfwb.plugins"]
+fake-broken = "fake_broken_plugin:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fake_broken_plugin"]
