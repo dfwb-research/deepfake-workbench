@@ -144,6 +144,20 @@ def test_release_mismatch_heuristic(release_pack, tmp_path):
     ]
 
 
+def test_unknown_split_raises_config_error_with_suggestion(toyone_pack, tmp_path):
+    videos = read_jsonl(toyone_pack / "videos.jsonl.gz", VideoRecord)
+    inventory = _write_inventory(
+        tmp_path / "inventory.jsonl", [_inventory_record(v) for v in videos]
+    )
+
+    with pytest.raises(ConfigError) as info:
+        verify("toyone/official", inventory=inventory, splits=["tset"], work_root=tmp_path / "work")
+
+    assert "toyone/official: split 'tset' is not in this scheme" in str(info.value)
+    assert "did you mean 'test'" in str(info.value)
+    assert info.value.hint == "splits in this scheme: test, train, val"
+
+
 def test_no_inventory_raises_config_error_with_inventory_build_hint(toyone_pack, tmp_path):
     with pytest.raises(ConfigError) as info:
         verify(

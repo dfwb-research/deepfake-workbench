@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dfwb.core.errors import ConfigError
+from dfwb.core.errors import ConfigError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.core.records import InventoryRecord, VideoRecord, read_jsonl
 from dfwb.protocols.protocol import load
@@ -94,13 +94,25 @@ def verify(
     ``requested_splits`` is every split this scheme assigns, except ``exclude``.
 
     Raises:
-        ConfigError: no inventory file exists at the resolved path.
+        ConfigError: no inventory file exists at the resolved path, or ``splits`` names a split
+            this scheme does not assign.
         UnknownKeyError, ContractError: as raised by :func:`~dfwb.protocols.protocol.load`.
     """
     resolved_work_root = (
         work_root if work_root is not None else require_root("work", resolve_roots())
     )
     protocol = load(ref, work_root=resolved_work_root)
+
+    split_by_key = {(row.key, row.compression): row.split for row in protocol.split_rows()}
+    scheme_splits = frozenset(split_by_key.values())
+    if splits is not None:
+        for s in splits:
+            if s not in scheme_splits:
+                raise ConfigError(
+                    f"{protocol.ref}: split {s!r} is not in this scheme"
+                    f"{did_you_mean(s, scheme_splits)}",
+                    hint="splits in this scheme: " + ", ".join(sorted(scheme_splits)),
+                )
 
     inventory_path = (
         inventory
@@ -116,13 +128,8 @@ def verify(
     pack_videos = read_jsonl(protocol._videos_path, VideoRecord)
     inventory_rows = read_jsonl(inventory_path, InventoryRecord)
     on_disk = {(r.key, r.compression): r for r in inventory_rows}
-    split_by_key = {(row.key, row.compression): row.split for row in protocol.split_rows()}
 
-    requested = (
-        frozenset(splits)
-        if splits is not None
-        else frozenset(s for s in split_by_key.values() if s != "exclude")
-    )
+    requested = frozenset(splits) if splits is not None else scheme_splits - {"exclude"}
 
     counts = dict.fromkeys(_BUCKETS, 0)
     samples: dict[str, list[str]] = {bucket: [] for bucket in _BUCKETS}

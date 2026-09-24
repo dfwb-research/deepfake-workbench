@@ -183,3 +183,20 @@ def test_verify_without_inventory_hints_inventory_build(run, monkeypatch, tmp_pa
 
     assert result.code == 2
     assert "hint: run: dfwb inventory build toyone" in result.err
+
+
+def test_verify_cli_rejects_unknown_split_with_suggestion(run, monkeypatch, tmp_path):
+    root = _install_toyone(monkeypatch, tmp_path)
+    work_root = tmp_path / "work"
+    monkeypatch.setenv("DFWB_WORK_ROOT", str(work_root))
+    inventory_path = work_root / "toyone" / "inventory.jsonl"
+    inventory_path.parent.mkdir(parents=True)
+    videos = read_jsonl(root / "toyone" / "videos.jsonl.gz", VideoRecord)
+    write_jsonl(inventory_path, [_inventory_record(v) for v in videos])
+
+    result = run("protocols", "verify", "toyone", "--split", "tset")
+
+    assert result.code == 2
+    assert "split 'tset' is not in this scheme" in result.err
+    assert "did you mean 'test'" in result.err
+    assert "hint: splits in this scheme: test, train, val" in result.err
