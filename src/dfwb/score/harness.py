@@ -6,12 +6,14 @@ Every video the split names gets a row: ``ok`` (scored), ``missing`` (no usable 
 ``error`` (the detector raised while scoring it, or returned an output that fails validation).
 Nothing is silently dropped.
 
-A detector source may set two plain attributes on the ``Detector`` it returns, beyond contract C4
+A detector source may set plain attributes on the ``Detector`` it returns, beyond contract C4
 (``meta``, ``to()``, ``predict()``): ``checkpoint_sha256`` (the sha256 of the exact weights file
-scored) and ``training_seed`` (the seed it was trained with). Neither is required -- read with
+scored), ``training_seed`` (the seed it was trained with) and ``fingerprint_extra`` (a source-owned
+string that stands in for ``meta.source`` in the cache key, for a source whose ``meta.source`` is
+not a reliable identity on its own). None is required -- read with
 ``getattr(detector, "checkpoint_sha256", None)`` -- but when present they sharpen the C5 meta and
-the cache key beyond what ``meta.source`` alone can (:mod:`dfwb.models.source`'s ``run:`` sets
-both).
+the cache key beyond what ``meta.source`` alone can (:mod:`dfwb.models.source`'s ``run:`` sets the
+first two; :func:`dfwb.score.sources.load_py`'s ``py:`` sets the third).
 """
 
 from __future__ import annotations
@@ -350,6 +352,7 @@ class _DetectorIdentity:
     source: str | None
     checkpoint_sha256: str | None
     training_seed: int | None
+    fingerprint_extra: str | None
 
     @classmethod
     def of(cls, detector: Any) -> _DetectorIdentity:
@@ -357,6 +360,7 @@ class _DetectorIdentity:
             source=detector.meta.source,
             checkpoint_sha256=getattr(detector, "checkpoint_sha256", None),
             training_seed=getattr(detector, "training_seed", None),
+            fingerprint_extra=getattr(detector, "fingerprint_extra", None),
         )
 
     def effective_seed(self, requested_seed: int) -> int:
@@ -373,6 +377,7 @@ def _fingerprint_payload(detector: Any, identity: _DetectorIdentity) -> dict[str
         "source": identity.source,
         "contract_version": list(meta.contract_version),
         "checkpoint_sha256": identity.checkpoint_sha256,
+        "fingerprint_extra": identity.fingerprint_extra,
     }
 
 

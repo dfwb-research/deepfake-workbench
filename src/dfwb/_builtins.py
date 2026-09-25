@@ -290,6 +290,11 @@ def register(api: PluginAPI) -> None:
         summary="Rebuild a detector saved by training, from its run directory",
         requires=("torch",),
     )
+    api.detector_sources.add(
+        "py",
+        target="dfwb.score.sources:load_py",
+        summary="Call a user's own factory function to build a Detector (runs user code)",
+    )
     for dataset_id, target, name, folder in INVENTORY_BUILDERS:
         api.inventory_builders.add(
             dataset_id, target=f"{_BUILDERS_PACKAGE}.{target}", summary=name, folder=folder

@@ -206,6 +206,66 @@ def test_a_b1_shaped_score_is_squeezed_and_accepted(score_roots, tmp_path):
         assert 0.0 <= row.score <= 1.0
 
 
+# ------------------------------------------------------------------------------ aggregation modes
+
+
+def test_mean_prob_aggregation_matches_a_hand_computed_fixture(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:scripted=0.1,0.3,0.9", clips_per_video=3, aggregate="mean-prob")
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"ok"}
+    for row in scored.rows:
+        assert row.score == pytest.approx((0.1 + 0.3 + 0.9) / 3, abs=1e-4)
+
+
+def test_mean_logit_aggregation_matches_a_hand_computed_fixture(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(
+        tmp_path, "fake:scripted=0.1,0.3,0.9", clips_per_video=3, aggregate="mean-logit"
+    )
+
+    scored = read_scores(result.csv_path)
+    # Hand-computed: logit(p) = ln(p / (1 - p)) for each of 0.1, 0.3, 0.9, averaged, then
+    # mapped back through the sigmoid -- distinct from the plain mean of 0.1, 0.3, 0.9 above.
+    for row in scored.rows:
+        assert row.score == pytest.approx(0.42985748800076856, abs=1e-4)
+
+
+def test_max_aggregation_matches_a_hand_computed_fixture(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:scripted=0.1,0.3,0.9", clips_per_video=3, aggregate="max")
+
+    scored = read_scores(result.csv_path)
+    for row in scored.rows:
+        assert row.score == pytest.approx(0.9, abs=1e-4)
+
+
+def test_median_aggregation_matches_a_hand_computed_fixture(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:scripted=0.1,0.3,0.9", clips_per_video=3, aggregate="median")
+
+    scored = read_scores(result.csv_path)
+    for row in scored.rows:
+        assert row.score == pytest.approx(0.3, abs=1e-4)
+
+
+def test_n_clips_and_n_frames_reflect_the_requested_clip_count(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:frames=2", clips_per_video=3)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"ok"}
+    for row in scored.rows:
+        assert row.n_clips == 3
+        assert row.n_frames == 6  # 3 clips * 2 frames each
+
+
 # ------------------------------------------------------------------------- pre-flight validation
 
 

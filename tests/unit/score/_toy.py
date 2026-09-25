@@ -208,6 +208,12 @@ class FakeDetector:
     output (``bad_output``: ``"nan"``, ``"length"`` or ``"shape"``) to exercise the harness's own
     output validation.
 
+    ``scripted``, when given, replaces the pixel-mean score with a fixed, known-in-advance score
+    per clip: clip ``i`` of every video gets ``scripted[i % len(scripted)]``, read off
+    ``batch.clip_index`` (eval-mode clips are sampled deterministically, so this is exactly the
+    same clip every time) -- the toy store's frames are all identical, so a hand-computed
+    aggregation fixture needs scores that do not depend on pixel content at all.
+
     Asserts ``batch.labels is None`` on every call: contract C4 gives labels to training and
     validation batches only, never a scoring one, so the harness must clear them first. Also
     records, in :attr:`saw_inference_mode`, whether ``torch.is_inference_mode_enabled()`` was true
@@ -221,6 +227,7 @@ class FakeDetector:
         raise_for: frozenset[str] = frozenset(),
         bad_output: str | None = None,
         spy_id: str | None = None,
+        scripted: tuple[float, ...] | None = None,
     ) -> None:
         self.meta = DetectorMeta(
             name="fake-detector",
@@ -235,6 +242,7 @@ class FakeDetector:
         self._raise_for = raise_for
         self._bad_output = bad_output
         self._spy_id = spy_id
+        self._scripted = scripted
         self.saw_inference_mode: list[bool] = []
 
     def to(self, device: Any) -> FakeDetector:
@@ -253,6 +261,10 @@ class FakeDetector:
         if self._raise_for.intersection(batch.keys):
             raise RuntimeError("fake detector: configured to fail on this batch")
         n = len(batch.keys)
+        if self._scripted is not None:
+            table = self._scripted
+            values = [table[int(i) % len(table)] for i in batch.clip_index.tolist()]
+            return DetectorOutput(score=torch.tensor(values, dtype=torch.float32))
         mean = batch.clips.mean(dim=tuple(range(1, batch.clips.ndim))).clamp(0.0, 1.0)
         if self._bad_output == "nan":
             score: Any = torch.full((n,), float("nan"))
@@ -274,9 +286,11 @@ class FakeDetector:
 def load_fake(ref: str) -> FakeDetector:
     """The ``fake:`` detector source: ``fake:key=value&key=value...`` configures the returned
     :class:`FakeDetector` -- ``crop`` (default ``face``), ``scale`` (default ``1.3``), ``size``
-    (default ``32``), ``preferred`` (``InputSpec.preferred_profile``), ``raise`` (a
-    comma-separated list of video keys :meth:`FakeDetector.predict` raises for), ``bad`` (see
-    ``bad_output`` above) and ``spy`` (see :data:`SPY_CALLS` above)."""
+    (default ``32``), ``frames`` (``InputSpec.frames``, default ``1``), ``preferred``
+    (``InputSpec.preferred_profile``), ``raise`` (a comma-separated list of video keys
+    :meth:`FakeDetector.predict` raises for), ``bad`` (see ``bad_output`` above), ``spy`` (see
+    :data:`SPY_CALLS` above) and ``scripted`` (a comma-separated list of floats, see
+    :attr:`FakeDetector._scripted` above)."""
     options: dict[str, str] = {}
     for part in ref.split("&"):
         if not part:
@@ -286,17 +300,25 @@ def load_fake(ref: str) -> FakeDetector:
     crop = options.get("crop", "face")
     scale = float(options.get("scale", "1.3"))
     size = int(options.get("size", "32"))
+    frames = int(options.get("frames", "1"))
     preferred = options.get("preferred")
     raise_for = frozenset(options["raise"].split(",")) if options.get("raise") else frozenset()
+    scripted = (
+        tuple(float(v) for v in options["scripted"].split(",")) if options.get("scripted") else None
+    )
     spec = InputSpec(
         crop=crop,  # type: ignore[arg-type]  # test-only: trusted fixture input
         crop_scale=scale,
         size=(size, size),
-        frames=1,
+        frames=frames,
         preferred_profile=preferred,
     )
     return FakeDetector(
-        spec, raise_for=raise_for, bad_output=options.get("bad"), spy_id=options.get("spy")
+        spec,
+        raise_for=raise_for,
+        bad_output=options.get("bad"),
+        spy_id=options.get("spy"),
+        scripted=scripted,
     )
 
 
