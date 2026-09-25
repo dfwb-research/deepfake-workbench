@@ -187,8 +187,16 @@ class DetectorModule(L.LightningModule):
                 "checkpoints are all produced by one process",
                 hint="train with devices: 1 (one GPU, or the CPU)",
             )
-        names = self._source_names()
-        known = self._metric_keys(names) | {_LOSS_KEY}
+        self.check_monitor(self._source_names())
+
+    def check_monitor(self, source_names: Sequence[str]) -> None:
+        """Check ``train.monitor`` against what validation over sources named ``source_names``
+        logs, so a typo in a per-source monitor fails before any training.
+
+        Raises:
+            ConfigError: ``train.monitor`` names no value validation will log.
+        """
+        known = self._metric_keys(source_names) | {_LOSS_KEY}
         if self.monitor.key not in known:
             raise ConfigError(
                 f"train.monitor: {self.monitor.key!r} is not a value validation logs"

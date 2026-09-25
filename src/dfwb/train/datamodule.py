@@ -57,9 +57,6 @@ _log = logging.getLogger(__name__)
 #: ``none``.
 BALANCE_MODES = ("none", "video-label", "source")
 
-# A shorter spelling of ``video-label``, accepted as the same mode.
-_BALANCE_ALIASES = {"label": "video-label"}
-
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._+-]+")
 
 
@@ -104,7 +101,7 @@ class _EpochShuffle(Sampler[int]):
 
 
 def _balance_mode(value: str | None, *, pairs: bool) -> str:
-    mode = "none" if value is None else _BALANCE_ALIASES.get(value, value)
+    mode = "none" if value is None else value
     if mode not in BALANCE_MODES:
         raise ConfigError(
             f"data.loader.balance: {value!r} is not one of {list(BALANCE_MODES)}"
@@ -377,6 +374,11 @@ class ProtocolDataModule(L.LightningDataModule):
                 )
             )
         return loaders
+
+    @property
+    def epoch(self) -> int:
+        """The epoch the training data was last moved to."""
+        return self._epoch
 
     def set_epoch(self, epoch: int) -> None:
         """Move every training dataset and the training sampler to ``epoch``."""

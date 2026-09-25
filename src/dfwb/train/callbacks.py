@@ -3,15 +3,17 @@
 - :class:`SafetensorsCheckpoint`: ``checkpoints/best`` (by the module's monitor) and
   ``checkpoints/last``, each ``model.safetensors`` plus ``detector.json`` -- weights and JSON
   only, never a pickled module. Lightning's own checkpointing pickles, so it must be off
-  (``enable_checkpointing=False``); this callback refuses to run alongside it.
+  (``enable_checkpointing=False``); this callback refuses to run alongside it. A run with nothing
+  to monitor (no validation sources) keeps ``best`` as a copy of ``last``, so a reference to a
+  run's default ``best`` checkpoint always resolves.
 - :class:`ValScoreDump`: after each validation epoch, one score file per validation source,
   ``scores/val/<source>.scores.{csv,meta.json}``, holding exactly the video scores the logged
   metrics were computed from.
 - :class:`EarlyStop`: stop once the monitor has not improved for ``patience`` validations.
 - :class:`NonFiniteGuard`: stop, with an error naming the step, once the loss has not been finite
   for ``tolerance`` steps in a row (each such step's update is skipped by the module).
-- :class:`Heartbeat`: ``heartbeat.json`` with the step, epoch and time, every few steps, so a
-  stalled run can be told apart from a slow one.
+- :class:`Heartbeat`: ``logs/heartbeat.json`` with the step, epoch and time, every few steps, so
+  a stalled run can be told apart from a slow one.
 - Lightning's ``LearningRateMonitor``, which logs every parameter group's learning rate.
 
 All of them follow :attr:`DetectorModule.monitor <dfwb.train.module.DetectorModule.monitor>`, not
@@ -56,7 +58,7 @@ _log = logging.getLogger(__name__)
 _CHECKPOINTS_DIR = "checkpoints"
 _CHECKPOINT_NAMES = ("best", "last")
 _SCORES_DIR = Path("scores") / "val"
-_HEARTBEAT_FILE = "heartbeat.json"
+_HEARTBEAT_FILE = Path("logs") / "heartbeat.json"
 _UNKNOWN_SOURCE = "unknown"
 
 
@@ -91,19 +93,23 @@ class SafetensorsCheckpoint(Callback):
     :func:`dfwb.models.checkpoint.save` directory (``model.safetensors`` + ``detector.json``).
 
     ``best`` is rewritten whenever the module's monitor improves after a validation; ``last`` at
-    the end of every training epoch. Each is written beside its target first (``.<name>.tmp``)
-    and swapped in only when complete: the previous copy is moved aside to ``.<name>.old``, the
-    new one renamed into place, and the old one removed. So an interrupted save never leaves a
-    half-written checkpoint in place, and one interrupted between the two renames is undone --
-    the previous copy moved back -- at setup and before the next save.
+    the end of every training epoch. With ``best_is_last`` (a run with nothing to monitor),
+    ``best`` is rewritten along with ``last`` instead. Each is written beside its target first
+    (``.<name>.tmp``) and swapped in only when complete: the previous copy is moved aside to
+    ``.<name>.old``, the new one renamed into place, and the old one removed. So an interrupted
+    save never leaves a half-written checkpoint in place, and one interrupted between the two
+    renames is undone -- the previous copy moved back -- at setup and before the next save.
 
     Raises:
         ContractError: At setup, when Lightning's own (pickling) checkpointing is also enabled.
     """
 
-    def __init__(self, directory: Path, model_cfg: ModelSection) -> None:
+    def __init__(
+        self, directory: Path, model_cfg: ModelSection, *, best_is_last: bool = False
+    ) -> None:
         self.directory = Path(directory)
         self.model_cfg = model_cfg
+        self.best_is_last = best_is_last
         self.monitor: str | None = None
         self.best_value: float | None = None
         self.best_epoch: int | None = None
@@ -171,6 +177,8 @@ class SafetensorsCheckpoint(Callback):
 
     def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         self._save("last", pl_module)
+        if self.best_is_last:
+            self._save("best", pl_module)
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -376,6 +384,12 @@ class NonFiniteGuard(Callback):
         self.tolerance = tolerance
         self._count = 0
 
+    def state_dict(self) -> dict[str, Any]:
+        return {"count": self._count}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        self._count = int(state_dict["count"])
+
     def on_train_batch_end(
         self,
         trainer: L.Trainer,
@@ -415,6 +429,12 @@ class Heartbeat(Callback):
         self.every_n_steps = every_n_steps
         self._batches = 0
 
+    def state_dict(self) -> dict[str, Any]:
+        return {"batches": self._batches}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        self._batches = int(state_dict["batches"])
+
     def on_train_batch_end(
         self,
         trainer: L.Trainer,
@@ -443,14 +463,16 @@ def build_callbacks(
     early_stop_min_delta: float = 0.0,
     nan_tolerance: int = 3,
     heartbeat_every: int = 50,
+    best_is_last: bool = False,
 ) -> list[Callback]:
     """Every callback of a run whose directory is ``run_dir``: best/last checkpoints under
     ``checkpoints/``, the validation score dump under ``scores/val/``, the non-finite loss guard,
-    the heartbeat file, the LR monitor, and -- only when ``early_stop_patience`` is given --
-    early stopping on the monitor."""
+    the heartbeat file under ``logs/``, the LR monitor, and -- only when ``early_stop_patience``
+    is given -- early stopping on the monitor. ``best_is_last`` is for a run with nothing to
+    monitor: ``best`` is then kept as a copy of ``last``."""
     run_dir = Path(run_dir)
     callbacks: list[Callback] = [
-        SafetensorsCheckpoint(run_dir / _CHECKPOINTS_DIR, model_cfg),
+        SafetensorsCheckpoint(run_dir / _CHECKPOINTS_DIR, model_cfg, best_is_last=best_is_last),
         ValScoreDump(run_dir / _SCORES_DIR),
         NonFiniteGuard(tolerance=nan_tolerance),
         Heartbeat(run_dir / _HEARTBEAT_FILE, every_n_steps=heartbeat_every),

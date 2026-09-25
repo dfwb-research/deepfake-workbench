@@ -144,8 +144,10 @@ def test_float_spellings_give_one_fingerprint(experiment, spelling):
 
 
 def test_check_registries_uses_installed_plugins(experiment):
-    with pytest.raises(ConfigError, match="invalid component"):
-        load_config(experiment, env={}, check_registries=True)
+    overrides = ["model.backbone.name=no-such-backbone"]
+    with pytest.raises(ConfigError, match="invalid component") as caught:
+        load_config(experiment, overrides, env={}, check_registries=True)
+    assert "backbones: unknown key 'no-such-backbone'" in caught.value.message
 
 
 def test_dump_yaml_round_trips(experiment):

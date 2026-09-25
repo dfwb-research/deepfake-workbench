@@ -158,7 +158,6 @@ def test_transforms_apply_to_train_only(toy_work_root):
         (None, "none", "shuffle"),
         ("none", "none", "shuffle"),
         ("video-label", "video-label", VideoLabelBalanced),
-        ("label", "video-label", VideoLabelBalanced),  # the short alias
         ("source", "source", SourceBalanced),
     ],
 )
@@ -176,11 +175,12 @@ def test_balance_chooses_the_train_sampler(toy_work_root, balance, mode, expecte
 
 
 def test_an_unknown_balance_is_a_config_error_naming_video_label(toy_work_root):
-    config = toy_config(
-        data={"loader": {"batch_size": 8, "num_workers": 0, "balance": "video-labl"}}
-    )
+    # The config schema already refuses it; a data section built without validation still is.
+    config = toy_config()
+    loader = config.data.loader.model_copy(update={"balance": "video-labl"})
+    data = config.data.model_copy(update={"loader": loader})
     with pytest.raises(ConfigError, match=r"data\.loader\.balance") as caught:
-        _datamodule(config, toy_work_root)
+        ProtocolDataModule(data, input_spec=TINY_INPUT, work_root=toy_work_root, seed=0)
     assert "did you mean 'video-label'" in caught.value.message
     assert "video-label" in caught.value.hint
     assert BALANCE_MODES == ("none", "video-label", "source")

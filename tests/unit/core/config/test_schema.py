@@ -51,7 +51,7 @@ def test_errors_name_exact_paths_with_suggestions(experiment):
     data["train"]["max_epoch"] = 3
     data["data"]["clip"]["sampling"] = "unifrom"
     data["data"]["train"][0]["split"] = "trian"
-    del data["train"]["mode"]
+    del data["train"]["precision"]
     with pytest.raises(ConfigError) as info:
         validate_config(data, source="exp.yaml")
     lines = info.value.message.splitlines()
@@ -64,7 +64,7 @@ def test_errors_name_exact_paths_with_suggestions(experiment):
         "  data.train[0].split: 'trian' is not one of ['train', 'val', 'test'] "
         "(did you mean 'train'?)" in lines
     )
-    assert "  train.mode: required key is missing" in lines
+    assert "  train.precision: required key is missing" in lines
     assert "  train.max_epoch: unknown key (did you mean 'max_epochs'?)" in lines
     assert info.value.hint == "see `dfwb schema export c2` for every key and type"
 
@@ -105,8 +105,9 @@ def test_check_components_reports_every_problem_at_its_path(experiment):
     with pytest.raises(ConfigError) as info:
         check_components(model, registries)
     lines = info.value.message.splitlines()
-    assert lines[0] == "3 invalid component value(s)"
-    assert "  model.head.dim: required key is missing" in lines
+    assert lines[0] == "2 invalid component value(s)"
+    # a head's dim comes from the backbone when the detector is built: never missing here.
+    assert not [line for line in lines if "model.head.dim" in line]
     assert "  loss.weight: required key is missing" in lines
     assert "  data.transforms.train[1]: transforms: unknown key 'color-jitter'" in lines
 

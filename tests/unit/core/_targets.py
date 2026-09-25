@@ -21,6 +21,10 @@ def make_head(dim: int, *, dropout: float = 0.0) -> dict[str, Any]:
     return {"dim": dim, "dropout": dropout}
 
 
+def make_stem(in_channels: int, *, out_channels: int = 3) -> dict[str, Any]:
+    return {"in_channels": in_channels, "out_channels": out_channels}
+
+
 def open_kwargs(**kwargs: Any) -> dict[str, Any]:
     return kwargs
 

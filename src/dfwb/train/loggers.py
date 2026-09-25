@@ -36,11 +36,13 @@ def _wandb_logger_class() -> type[Logger]:
     return WandbLogger
 
 
-def build_loggers(run_dir: Path, *, wandb: Mapping[str, Any] | None = None) -> list[Logger]:
+def build_loggers(
+    run_dir: Path, *, tensorboard: bool = True, wandb: Mapping[str, Any] | None = None
+) -> list[Logger]:
     """The loggers of one run, all writing under ``run_dir / "logs"``.
 
     - CSV, always: ``logs/metrics.csv``.
-    - TensorBoard, when ``tensorboard`` is installed: ``logs/tensorboard/``.
+    - TensorBoard, when ``tensorboard`` is asked for and installed: ``logs/tensorboard/``.
     - W&B, only when ``wandb`` is given (its entries are passed to Lightning's ``WandbLogger``,
       e.g. ``{"project": ..., "entity": ...}``).
 
@@ -49,7 +51,7 @@ def build_loggers(run_dir: Path, *, wandb: Mapping[str, Any] | None = None) -> l
     """
     logs = Path(run_dir) / _LOGS_DIR
     loggers: list[Logger] = [CSVLogger(save_dir=logs, name="", version="")]
-    if _installed("tensorboard"):
+    if tensorboard and _installed("tensorboard"):
         loggers.append(TensorBoardLogger(save_dir=logs, name="tensorboard", version=""))
     if wandb is not None:
         if not _installed("wandb"):

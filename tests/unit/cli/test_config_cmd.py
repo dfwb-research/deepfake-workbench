@@ -1,4 +1,5 @@
 import json
+from importlib import resources
 
 import yaml
 
@@ -21,7 +22,51 @@ def _experiment(tmp_path):
 def test_templates(run):
     result = run("config", "templates")
     assert "binary-frame  Binary real/fake detector trained on face clips." in result.out
-    assert json.loads(run("config", "templates", "--json").out)[0]["name"] == "binary-frame"
+    assert "toy-cpu       A tiny CPU training run on the synthetic toyfake dataset." in result.out
+    names = [t["name"] for t in json.loads(run("config", "templates", "--json").out)]
+    assert names == ["binary-frame", "toy-cpu"]
+
+
+def test_validate_accepts_the_toy_cpu_template(run, requires_torch):
+    # Components are checked against the installed plugins; the toyfake protocol pack and its
+    # processed store are only needed once training starts.
+    path = resources.files("dfwb").joinpath("templates", "toy-cpu.yaml")
+    result = run("config", "validate", "-c", str(path))
+    assert result.code == 0, result.err
+    shown = json.loads(run("config", "show", "-c", str(path), "--json").out)["config"]
+    assert shown["data"]["processing"] == "toy-64-center-8f"
+    assert shown["data"]["train"] == [
+        {"protocol": "toyfake/official", "split": "train", "where": {}}
+    ]
+    assert shown["data"]["clip"]["frames"] == 1
+    assert shown["data"]["loader"]["batch_size"] == 16
+    assert shown["data"]["loader"]["num_workers"] == 0
+    assert shown["model"]["backbone"] == {"name": "tiny-cnn"}
+    assert shown["model"]["input"] == {"crop": "full-frame", "crop_scale": None}
+    assert shown["train"]["max_epochs"] == 2
+    assert shown["train"]["precision"] == "32-true"
+    assert shown["train"]["lightning"]["accelerator"] == "cpu"
+
+
+def test_binary_frame_holds_the_contract_skeleton_defaults():
+    text = resources.files("dfwb").joinpath("templates", "binary-frame.yaml").read_text("utf-8")
+    template = yaml.safe_load(text)
+    assert template["run"] == {"seeds": [42]}
+    assert template["data"]["processing"] == "face-256-1.3x-32f"
+    assert template["data"]["clip"] == {
+        "frames": 8,
+        "sampling": "uniform",
+        "clips_per_video": {"train": 1, "eval": 4},
+    }
+    assert template["data"]["loader"] == {
+        "batch_size": 32,
+        "num_workers": 8,
+        "balance": "video-label",
+    }
+    assert template["model"]["temporal_pool"] == {"name": "mean"}
+    assert template["train"]["monitor"] == "val/video_auc"
+    assert template["train"]["mode"] == "max"
+    assert template["eval"]["metrics"] == ["auc", "eer", "tpr@fpr=0.01", "ece", "brier"]
 
 
 def test_show_resolves_three_level_chain(run, tmp_path):

@@ -131,7 +131,11 @@ def show(config_path: Path, overrides: tuple[str, ...], as_json: bool) -> None:
 @_overrides_argument
 @json_option
 def validate(config_path: Path, overrides: tuple[str, ...], as_json: bool) -> None:
-    """Check a config, including every component against the installed plugins."""
+    """Check a config, including every component against the installed plugins.
+
+    Protocol packs and processed stores are not needed here: training checks them, before it
+    starts, once it joins the data.
+    """
     from dfwb.core.config import load_config
 
     loaded = load_config(config_path, overrides, check_registries=True)

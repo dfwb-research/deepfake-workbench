@@ -1,0 +1,36 @@
+# A tiny CPU training run on the synthetic toyfake dataset.
+# tiny-cnn on single full frames, two epochs, a minute or two on a laptop CPU. It needs the toyfake
+# protocol pack installed and toyfake processed with the toy-64-center-8f profile.
+schema: dfwb.train/1
+
+run:
+  name: toy-cpu
+  seeds: [0]
+
+data:
+  processing: toy-64-center-8f
+  clip: {frames: 1, sampling: uniform, clips_per_video: {train: 1, eval: 4}}
+  labels: binary
+  train: [{protocol: toyfake/official, split: train}]
+  val: [{protocol: toyfake/official, split: val}]
+  transforms:
+    train: [{name: hflip, p: 0.5}]
+  loader: {batch_size: 16, num_workers: 0, balance: video-label}
+
+model:
+  backbone: {name: tiny-cnn}
+  temporal_pool: {name: mean}
+  head: {name: linear}
+  input: {crop: full-frame, crop_scale: null}   # the toy store keeps whole frames
+
+loss: {name: bce}
+optim: {name: adamw, lr: 1.0e-3, weight_decay: 0.01}
+schedule: {name: cosine, warmup_epochs: 0}
+train:
+  max_epochs: 2
+  precision: 32-true
+  devices: 1
+  monitor: val/video_auc
+  mode: max
+  lightning: {accelerator: cpu, log_every_n_steps: 1}
+eval: {metrics: [auc, eer, ece, brier], aggregate: mean-prob}

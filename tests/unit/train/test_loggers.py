@@ -59,6 +59,12 @@ def test_tensorboard_is_added_when_installed(tmp_path, monkeypatch):
     assert made["name"] == "tensorboard"
 
 
+def test_tensorboard_can_be_left_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(loggers_module, "_installed", lambda name: True)
+    (csv_logger,) = build_loggers(tmp_path, tensorboard=False)
+    assert isinstance(csv_logger, CSVLogger)
+
+
 def test_wandb_without_the_package_names_the_extra(tmp_path, monkeypatch):
     monkeypatch.setattr(loggers_module, "_installed", lambda name: False)
     with pytest.raises(InstallationError, match="wandb") as caught:

@@ -76,6 +76,7 @@ __all__ = [
     "toy_config",
     "toy_profile",
     "toy_source",
+    "write_toy_config",
     "write_toy_store",
 ]
 
@@ -269,6 +270,13 @@ def toy_config(**changes: Any) -> TrainConfig:
         else:
             config[section] = value
     return TrainConfig.model_validate(config)
+
+
+def write_toy_config(directory: Path, config: TrainConfig, name: str = "exp.yaml") -> Path:
+    """Write ``config`` as a YAML config file (as a user would, before resolution)."""
+    path = directory / name
+    path.write_text(yaml.safe_dump(config.model_dump(mode="json", by_alias=True), sort_keys=False))
+    return path
 
 
 @dataclass

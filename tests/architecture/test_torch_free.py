@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.unit.cli._runs import FP_A, fake_run
 from tests.unit.eval.conftest import make_meta, make_rows
 
 from dfwb.core.records import write_scores
@@ -81,6 +82,10 @@ TORCH_FREE_COMMANDS = [
     ["schema", "export", "c3"],
     ["schema", "export", "c4"],
     ["schema", "export", "c5"],
+    ["train", "--help"],
+    ["runs", "--help"],
+    ["runs", "list"],
+    ["runs", "list", "--json"],
 ]
 
 
@@ -107,6 +112,24 @@ def test_config_and_lookup_commands_run_with_torch_blocked(blocked, tmp_path):
         assert "No such command" not in done.stderr, (args, done.stderr)
         if code:
             assert "hint: " in done.stderr
+
+
+def test_runs_commands_read_runs_with_torch_blocked(blocked, tmp_path, monkeypatch):
+    run_dir = fake_run(tmp_path / "runs", "toy", "20260101-000000", 0, FP_A, latest=True)
+    monkeypatch.setenv("DFWB_RUNS_ROOT", str(tmp_path / "runs"))
+    for args in (
+        ["runs", "list", "--json"],
+        ["runs", "show", "toy"],
+        ["runs", "show", str(run_dir)],
+    ):
+        done = blocked([str(DFWB), *args], block=("torch",), cwd=tmp_path)
+        assert done.returncode == 0, (args, done.stderr)
+        assert FP_A[:12] in done.stdout
+    # training itself needs torch, and says how to get it
+    done = blocked([str(DFWB), "train", "--resume", str(run_dir)], block=("torch",), cwd=tmp_path)
+    assert done.returncode == 5, done.stderr
+    assert "blocked by dfwb tests" not in done.stderr
+    assert "deepfake-workbench[train]" in done.stderr
 
 
 def test_protocols_verify_runs_with_torch_blocked(blocked, tmp_path):

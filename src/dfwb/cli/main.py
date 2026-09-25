@@ -33,7 +33,9 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "inventory": ("dfwb.cli.inventory:inventory", "Build and summarise dataset inventories."),
     "plugins": ("dfwb.cli.plugins:plugins", "List and inspect plugins and their components."),
     "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
+    "runs": ("dfwb.cli.runs:runs", "List and show training runs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),
+    "train": ("dfwb.cli.train:train", "Train a config, or resume an interrupted run."),
 }
 
 ISSUES_URL = "https://github.com/dfwb-research/deepfake-workbench/issues"

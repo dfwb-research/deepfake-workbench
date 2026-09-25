@@ -12,7 +12,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    SerializerFunctionWrapHandler,
+    Tag,
+    ValidationError,
+    field_validator,
+    model_serializer,
+)
+from pydantic_core import PydanticCustomError
 
 from dfwb.core.errors import (
     ConfigError,
@@ -30,6 +41,8 @@ __all__ = [
     "ComponentOf",
     "ComponentSpec",
     "ConfigModel",
+    "EarlyStopSection",
+    "InputOverrides",
     "TrainConfig",
     "check_components",
     "validate_config",
@@ -44,9 +57,15 @@ class ConfigModel(BaseModel):
 
 @dataclass(frozen=True)
 class ComponentOf:
-    """Marks a :class:`ComponentSpec` field as naming a key of the given registry."""
+    """Marks a :class:`ComponentSpec` field as naming a key of the given registry.
+
+    ``supplied`` names parameters the framework passes itself when it builds the component (a
+    pool's and a head's ``dim`` come from the backbone's output size), so a config that leaves
+    them out is still complete.
+    """
 
     registry: str
+    supplied: tuple[str, ...] = ()
 
 
 class ComponentSpec(BaseModel):
@@ -94,7 +113,9 @@ class TransformsSection(ConfigModel):
 class LoaderSection(ConfigModel):
     batch_size: int = Field(ge=1)
     num_workers: int = Field(ge=0)
-    balance: str | None = None
+    #: ``none`` (a seeded shuffle), ``video-label`` (real and fake videos equally likely) or
+    #: ``source`` (every training source weighted equally); unset means ``none``.
+    balance: Literal["none", "video-label", "source"] | None = None
 
 
 def _suite_or_list(value: Any) -> str:
@@ -114,13 +135,66 @@ class DataSection(ConfigModel):
     ] = Field(default_factory=list)
     transforms: TransformsSection = Field(default_factory=TransformsSection)
     loader: LoaderSection
+    #: Train on real/fake pairs from each training protocol's pair list.
+    pairs: bool = False
+    #: Let input adaptation proceed past a store that cannot serve the detector's input (a
+    #: crop-kind mismatch, or a narrower crop than the detector asks for); every source records
+    #: what it had to accept.
+    allow_input_mismatch: bool = False
+
+
+# InputSpec fields that must hold a value; the others may be null on purpose.
+_INPUT_NEEDS_VALUE = ("modality", "crop", "size", "frames", "sampling", "color", "value_range")
+
+
+class InputOverrides(ConfigModel):
+    """``model.input``: overrides of the backbone's own input spec (the detector contract's
+    ``InputSpec``).
+
+    Only the keys written here override; every other one keeps the backbone's value. So the
+    resolved config keeps exactly the keys that were written, and ``crop_scale: null`` (any crop
+    scale the store kept, e.g. for a full-frame input) stays distinct from leaving it out.
+    """
+
+    modality: Literal["frames", "audio", "audiovisual"] | None = None
+    crop: Literal["face", "full-frame"] | None = None
+    crop_scale: float | None = Field(default=None, gt=0)
+    size: tuple[int, int] | None = None
+    frames: int | None = Field(default=None, ge=1)
+    sampling: Literal["uniform", "consecutive", "any"] | None = None
+    color: Literal["rgb", "bgr"] | None = None
+    value_range: tuple[float, float] | None = None
+    mean: tuple[float, ...] | None = None
+    std: tuple[float, ...] | None = None
+    preferred_profile: str | None = None
+
+    @field_validator(*_INPUT_NEEDS_VALUE)
+    @classmethod
+    def _needs_a_value(cls, value: Any) -> Any:
+        if value is None:
+            raise PydanticCustomError("not_null", "may not be null")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _written_keys_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        return {key: value for key, value in data.items() if key in self.model_fields_set}
+
+    def overrides(self) -> dict[str, Any]:
+        """The written keys, as ``InputSpec`` keyword arguments."""
+        return {
+            name: getattr(self, name)
+            for name in type(self).model_fields
+            if name in self.model_fields_set
+        }
 
 
 class ModelSection(ConfigModel):
     backbone: Annotated[ComponentSpec, ComponentOf("backbones")]
-    temporal_pool: Annotated[ComponentSpec, ComponentOf("temporal_pools")]
-    head: Annotated[ComponentSpec, ComponentOf("heads")]
-    stem: Annotated[ComponentSpec | None, ComponentOf("layers")] = None
+    temporal_pool: Annotated[ComponentSpec, ComponentOf("temporal_pools", supplied=("dim",))]
+    head: Annotated[ComponentSpec, ComponentOf("heads", supplied=("dim",))]
+    stem: Annotated[ComponentSpec | None, ComponentOf("layers", supplied=("in_channels",))] = None
+    input: InputOverrides | None = None
 
 
 class RunSection(ConfigModel):
@@ -129,12 +203,86 @@ class RunSection(ConfigModel):
     output_root: str | None = None
 
 
+_ONE_PROCESS = (
+    "training runs in a single process (one GPU, or the CPU): validation scores, the score dump "
+    "and the checkpoints are all produced by that one process"
+)
+
+# Lightning Trainer arguments ``train.lightning`` may not set, and why.
+_LIGHTNING_REFUSED: dict[str, str] = {
+    "enable_checkpointing": "checkpoints are written as safetensors by the run itself; "
+    "Lightning's own checkpointing pickles, so it stays off",
+    "strategy": _ONE_PROCESS,
+    "num_nodes": _ONE_PROCESS,
+    "callbacks": "the run directory's checkpoints, score dumps and guards come from the "
+    "framework's own callbacks",
+    "logger": "the run directory's logs come from train.loggers",
+    "default_root_dir": "everything a run writes goes under its own run directory",
+    "max_epochs": "set train.max_epochs instead",
+    "precision": "set train.precision instead",
+}
+
+
+def _one_device(value: Any) -> bool:
+    if isinstance(value, list):
+        return len(value) == 1
+    return bool(value == 1 or value == "1")
+
+
+LoggerName = Literal["csv", "tensorboard", "wandb"]
+
+
+def _default_loggers() -> list[LoggerName]:
+    return ["csv", "tensorboard"]
+
+
+class EarlyStopSection(ConfigModel):
+    """Stop once the monitor has gone ``patience`` validations without improving by more than
+    ``min_delta``."""
+
+    patience: int = Field(ge=1)
+    min_delta: float = Field(default=0.0, ge=0)
+
+
 class TrainSection(ConfigModel):
     max_epochs: int = Field(ge=1)
     precision: str
     devices: int = Field(ge=1)
-    monitor: str
-    mode: Literal["max", "min"]
+    monitor: str = "val/video_auc"
+    mode: Literal["max", "min"] = "max"
+    early_stop: EarlyStopSection | None = None
+    #: Stop once the loss has not been finite for this many steps in a row.
+    nan_tolerance: int = Field(default=3, ge=1)
+    #: Rewrite the run's heartbeat file every this many training steps.
+    heartbeat_steps: int = Field(default=50, ge=1)
+    #: The CSV log is always written; TensorBoard when it is installed; W&B only when listed.
+    loggers: list[LoggerName] = Field(default_factory=_default_loggers)
+    #: Extra keyword arguments for Lightning's ``Trainer`` (``deterministic``, ``accelerator``,
+    #: ``log_every_n_steps``, ...), except the ones the run itself must control.
+    lightning: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("devices")
+    @classmethod
+    def _single_device(cls, value: int) -> int:
+        if value != 1:
+            raise PydanticCustomError("one_device", f"{_ONE_PROCESS}; set devices: 1")
+        return value
+
+    @field_validator("lightning")
+    @classmethod
+    def _passthrough(cls, value: dict[str, Any]) -> dict[str, Any]:
+        for key, option in value.items():
+            if key in _LIGHTNING_REFUSED and not (key == "num_nodes" and option == 1):
+                reason = _LIGHTNING_REFUSED[key]
+                raise PydanticCustomError(
+                    "refused_trainer_argument", f"{key!r} is not allowed here: {reason}"
+                )
+            if key == "devices" and not _one_device(option):
+                raise PydanticCustomError(
+                    "refused_trainer_argument",
+                    f"'devices' is not allowed here: {_ONE_PROCESS} (devices: 1, or --device)",
+                )
+        return value
 
 
 class EvalSection(ConfigModel):
@@ -189,40 +337,50 @@ def validate_config(data: Mapping[str, Any], *, source: str) -> ConfigModel:
         ) from None
 
 
-def _component_registry(info_annotation: Any, metadata: list[Any]) -> str | None:
+def _component_marker(info_annotation: Any, metadata: list[Any]) -> ComponentOf | None:
     for item in metadata:
         if isinstance(item, ComponentOf):
-            return item.registry
+            return item
     if typing.get_origin(info_annotation) is Annotated:
         for item in typing.get_args(info_annotation)[1:]:
             if isinstance(item, ComponentOf):
-                return item.registry
+                return item
     return None
 
 
-def _walk_components(
-    value: Any, loc: tuple[str | int, ...]
-) -> list[tuple[tuple[str | int, ...], str, ComponentSpec]]:
-    found: list[tuple[tuple[str | int, ...], str, ComponentSpec]] = []
+_Found = tuple[tuple[str | int, ...], ComponentOf, ComponentSpec]
+
+
+def _walk_components(value: Any, loc: tuple[str | int, ...]) -> list[_Found]:
+    found: list[_Found] = []
     if isinstance(value, BaseModel) and not isinstance(value, ComponentSpec):
         for name, info in type(value).model_fields.items():
             child = getattr(value, name)
-            registry = _component_registry(info.annotation, info.metadata)
-            if registry is None and typing.get_origin(info.annotation) is list:
+            marker = _component_marker(info.annotation, info.metadata)
+            if marker is None and typing.get_origin(info.annotation) is list:
                 (inner,) = typing.get_args(info.annotation) or (None,)
                 if typing.get_origin(inner) is Annotated:
-                    registry = _component_registry(inner, [])
+                    marker = _component_marker(inner, [])
             key = info.alias or name
-            if registry is not None and isinstance(child, ComponentSpec):
-                found.append(((*loc, key), registry, child))
-            elif registry is not None and isinstance(child, list):
-                found.extend(((*loc, key, i), registry, c) for i, c in enumerate(child))
+            if marker is not None and isinstance(child, ComponentSpec):
+                found.append(((*loc, key), marker, child))
+            elif marker is not None and isinstance(child, list):
+                found.extend(((*loc, key, i), marker, c) for i, c in enumerate(child))
             else:
                 found.extend(_walk_components(child, (*loc, key)))
     elif isinstance(value, list):
         for i, item in enumerate(value):
             found.extend(_walk_components(item, (*loc, i)))
     return found
+
+
+def _unsupplied(
+    pairs: tuple[tuple[Loc, str], ...], marker: ComponentOf, spec: ComponentSpec
+) -> tuple[tuple[Loc, str], ...]:
+    """``pairs`` without the problems about a parameter the framework supplies itself (which
+    the config rightly left out)."""
+    skipped = {(name,) for name in marker.supplied if name not in spec.params}
+    return tuple((where, text) for where, text in pairs if tuple(where) not in skipped)
 
 
 def check_components(config: ConfigModel, registries: Mapping[str, Any]) -> None:
@@ -235,11 +393,14 @@ def check_components(config: ConfigModel, registries: Mapping[str, Any]) -> None
     :class:`ConfigError` otherwise.
     """
     found: list[tuple[list[str], str, bool]] = []  # (problem lines, hint, missing install)
-    for loc, registry_name, spec in _walk_components(config, ()):
+    for loc, marker, spec in _walk_components(config, ()):
         try:
-            registries[registry_name].validate(spec.name, **spec.params)
+            registries[marker.registry].validate(spec.name, **spec.params)
         except ConfigError as exc:
             pairs: tuple[tuple[Loc, str], ...] = exc.problems or (((), exc.message),)
+            pairs = _unsupplied(pairs, marker, spec)
+            if not pairs:
+                continue
             lines = [f"{format_loc((*loc, *where))}: {text}" for where, text in pairs]
             found.append((lines, exc.hint, False))
         except DFWBError as exc:

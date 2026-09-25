@@ -1,14 +1,21 @@
 # Binary real/fake detector trained on face clips.
-# Extend it and set run, data.processing, data.train/val/test and model.backbone
+# Extend it and set run.name, data.train/val/test and model.backbone
 # (`dfwb config init` writes a starter file that does this).
 schema: dfwb.train/1
 
+run:
+  seeds: [42]                       # a list: one run per seed
+  # output_root: unset puts runs under the runs root (DFWB_RUNS_ROOT, dfwb.toml, or ./runs)
+
 data:
+  processing: face-256-1.3x-32f     # processing profile of the processed stores
   clip: {frames: 8, sampling: uniform, clips_per_video: {train: 1, eval: 4}}
   labels: binary
   transforms:
     train: [{name: hflip, p: 0.5}, {name: color-jitter, brightness: 0.2, contrast: 0.2, saturation: 0.2, hue: 0.05}]
   loader: {batch_size: 32, num_workers: 8, balance: video-label}
+  pairs: false
+  allow_input_mismatch: false
 
 model:
   temporal_pool: {name: mean}
@@ -17,5 +24,15 @@ model:
 loss: {name: bce}
 optim: {name: adamw, lr: 1.0e-4, weight_decay: 0.05, groups: {backbone: {lr_scale: 0.1}}}
 schedule: {name: cosine, warmup_epochs: 1}
-train: {max_epochs: 10, precision: bf16-mixed, devices: 1, monitor: val/video_auc, mode: max}
+train:
+  max_epochs: 10
+  precision: bf16-mixed
+  devices: 1
+  monitor: val/video_auc
+  mode: max
+  early_stop: null                  # e.g. {patience: 3, min_delta: 0.001}
+  nan_tolerance: 3
+  heartbeat_steps: 50
+  loggers: [csv, tensorboard]
+  lightning: {}                     # extra Lightning Trainer arguments, e.g. {deterministic: true}
 eval: {metrics: [auc, eer, tpr@fpr=0.01, ece, brier], aggregate: mean-prob}

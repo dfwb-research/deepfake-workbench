@@ -64,6 +64,16 @@ def test_best_follows_the_monitor(tmp_path, toy_work_root):
     assert len(saver.history) == 3
 
 
+def test_without_monitoring_best_is_a_copy_of_last(tmp_path, toy_work_root):
+    config = toy_config(train={"max_epochs": 2}, data={"val": []})
+    run = fit_toy(
+        tmp_path / "run", config, work_root=toy_work_root, callback_options={"best_is_last": True}
+    )
+    checkpoints = run.run_dir / "checkpoints"
+    assert _hashes(checkpoints / "best") == _hashes(checkpoints / "last")
+    assert run.module.val_metrics == {}  # no validation ran at all
+
+
 def test_lightning_checkpointing_is_refused(tmp_path, toy_work_root):
     with pytest.raises(ContractError, match="pickles") as caught:
         fit_toy(tmp_path / "run", toy_config(), work_root=toy_work_root, enable_checkpointing=True)
@@ -310,6 +320,13 @@ def test_nan_guard_counts_only_consecutive_non_finite_losses(toy_work_root):
         guard.on_train_batch_end(trainer, module, None, None, 2)
 
 
+def test_nan_guard_state_round_trips():
+    guard = NonFiniteGuard(tolerance=3)
+    assert guard.state_dict() == {"count": 0}
+    guard.load_state_dict({"count": 2})
+    assert guard.state_dict() == {"count": 2}
+
+
 def test_nan_guard_tolerance_is_configurable(tmp_path):
     callbacks = build_callbacks(tmp_path, toy_config().model, nan_tolerance=5)
     (guard,) = [cb for cb in callbacks if isinstance(cb, NonFiniteGuard)]
@@ -328,12 +345,19 @@ def test_heartbeat_file_is_updated_with_step_epoch_and_time(tmp_path, toy_work_r
         work_root=toy_work_root,
         callback_options={"heartbeat_every": 3},
     )
-    beat = json.loads((run.run_dir / "heartbeat.json").read_text("utf-8"))
+    beat = json.loads((run.run_dir / "logs" / "heartbeat.json").read_text("utf-8"))
     assert set(beat) == {"step", "epoch", "time"}
     assert (beat["step"], beat["epoch"]) == (6, 1)  # 8 batches in all, a beat every 3
     assert beat["time"].endswith("Z")
+    assert not (run.run_dir / "heartbeat.json").exists()  # logs/ holds it, beside the other logs
     with pytest.raises(ValueError, match="every_n_steps"):
         Heartbeat(run.run_dir / "heartbeat.json", every_n_steps=0)
+
+
+def test_heartbeat_state_round_trips(tmp_path):
+    beat = Heartbeat(tmp_path / "heartbeat.json", every_n_steps=3)
+    beat.load_state_dict({"batches": 7})
+    assert beat.state_dict() == {"batches": 7}
 
 
 # ------------------------------------------------------------------------------ LR monitor
