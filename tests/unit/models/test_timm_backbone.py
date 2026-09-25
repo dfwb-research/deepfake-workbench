@@ -90,6 +90,45 @@ def test_lora_makes_only_lora_params_trainable():
     assert all("lora" not in n for n in frozen)
 
 
+def test_default_drop_path_builds_a_model_that_rejects_the_keyword():
+    # densenet121's constructor has no drop_path_rate parameter at all, and rejects it even at
+    # 0.0; the default drop_path=0.0 must not be passed through in that case.
+    backbone = TimmBackbone(model="densenet121", pretrained=False)
+    assert backbone.out_dim == backbone.model.num_features
+
+
+def test_drop_path_raises_config_error_for_a_model_that_does_not_support_it():
+    with pytest.raises(ConfigError, match="does not support drop_path") as info:
+        TimmBackbone(model="densenet121", pretrained=False, drop_path=0.1)
+    assert "densenet121" in info.value.message
+    assert "drop_path" in info.value.hint
+
+
+def test_drop_path_still_works_for_a_model_that_supports_it():
+    backbone = TimmBackbone(model=_MODEL, pretrained=False, drop_path=0.1)
+    assert backbone.out_dim == backbone.model.num_features
+
+
+def test_resnet_block_groups_come_from_the_numbered_layer_attributes():
+    backbone = TimmBackbone(model="resnet18", pretrained=False)
+    groups = backbone.param_groups()
+    block_names = [n for n in groups if n.startswith("blocks.")]
+    assert len(block_names) == 4
+    all_ids = [id(p) for params in groups.values() for p in params]
+    assert len(all_ids) == len(set(all_ids))  # no parameter counted twice
+    assert sorted(all_ids) == sorted(id(p) for p in backbone.model.parameters())
+
+
+def test_resnet_partial_one_trains_only_layer4():
+    backbone = TimmBackbone(
+        model="resnet18", pretrained=False, freeze=FreezeSpec(mode="partial", trainable_blocks=1)
+    )
+    layer4_ids = {id(p) for p in backbone.model.layer4.parameters()}
+    assert layer4_ids
+    for name, param in backbone.model.named_parameters():
+        assert param.requires_grad is (id(param) in layer4_ids), name
+
+
 def test_registered_as_a_builtin_backbone():
     entry = get_registry("backbones").entry("timm")
     assert entry.provider == "dfwb"

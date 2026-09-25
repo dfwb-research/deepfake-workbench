@@ -70,6 +70,19 @@ def test_apply_lora_rejects_targets_matching_nothing():
     assert "q_proj" in info.value.hint
 
 
+def test_apply_lora_rejects_targets_matching_nothing_without_mutating_the_module():
+    module = _Toy()
+    names_before = [name for name, _ in module.named_modules()]
+    param_ids_before = {id(p) for p in module.parameters()}
+    grads_before = [p.requires_grad for p in module.parameters()]
+    with pytest.raises(ConfigError):
+        apply_lora(module, FreezeSpec(mode="lora", targets=["nope"]))
+    assert [name for name, _ in module.named_modules()] == names_before
+    assert {id(p) for p in module.parameters()} == param_ids_before
+    assert [p.requires_grad for p in module.parameters()] == grads_before
+    assert all(p.requires_grad for p in module.parameters())
+
+
 def test_apply_lora_raises_installation_error_without_peft(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "peft", None)
     module = _Toy()

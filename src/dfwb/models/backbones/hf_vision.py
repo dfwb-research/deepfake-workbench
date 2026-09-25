@@ -9,7 +9,7 @@ from torch import Tensor, nn
 from dfwb.core.detector import InputSpec
 from dfwb.core.errors import ConfigError
 from dfwb.models.backbone import Backbone, BackboneOutput, FreezeSpec
-from dfwb.models.backbones._blocks import block_container, partition_by_blocks
+from dfwb.models.backbones._blocks import block_container, container_prefixes, partition_by_blocks
 
 __all__ = ["HFVisionBackbone"]
 
@@ -64,7 +64,8 @@ class HFVisionBackbone(Backbone):
         return BackboneOutput(pooled=pooled, tokens=last_hidden)
 
     def param_groups(self) -> dict[str, list[nn.Parameter]]:
-        return partition_by_blocks(self.model, block_container(self.model, _BLOCK_ATTRS))
+        container = block_container(self.model, _BLOCK_ATTRS)
+        return partition_by_blocks(self.model, container_prefixes(container))
 
     def lora_module(self) -> nn.Module | None:
         return cast(nn.Module, self.model)

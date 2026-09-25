@@ -7,14 +7,28 @@ from typing import Any, cast
 from torch import Tensor, nn
 
 from dfwb.core.detector import InputSpec
+from dfwb.core.errors import ConfigError
 from dfwb.models.backbone import Backbone, BackboneOutput, FreezeSpec
-from dfwb.models.backbones._blocks import block_container, partition_by_blocks
+from dfwb.models.backbones._blocks import (
+    block_container,
+    container_prefixes,
+    numbered_blocks,
+    partition_by_blocks,
+)
 
 __all__ = ["TimmBackbone"]
 
+# Most timm image models collect their blocks into one of these containers. The ResNet family
+# instead exposes them as separate top-level ``layer1``, ``layer2``, ... attributes (see
+# ``numbered_blocks``), tried when none of these match.
 _BLOCK_ATTRS: tuple[str, ...] = ("blocks", "stages", "layers")
 
 _DEFAULT_FREEZE = FreezeSpec()
+
+
+def _block_prefixes(model: nn.Module) -> list[str]:
+    prefixes = container_prefixes(block_container(model, _BLOCK_ATTRS))
+    return prefixes if prefixes else numbered_blocks(model)
 
 
 class TimmBackbone(Backbone):
@@ -39,9 +53,18 @@ class TimmBackbone(Backbone):
         import timm
         from timm.data.config import resolve_data_config
 
-        backbone: Any = timm.create_model(
-            model, pretrained=pretrained, num_classes=0, drop_path_rate=drop_path
-        )
+        # Not every timm model accepts drop_path_rate at all (DenseNet, VGG, Inception, ...
+        # reject the keyword outright, even at 0.0), so it's only passed when actually wanted.
+        kwargs: dict[str, Any] = {"drop_path_rate": drop_path} if drop_path > 0 else {}
+        try:
+            backbone: Any = timm.create_model(model, pretrained=pretrained, num_classes=0, **kwargs)
+        except TypeError as exc:
+            if not kwargs:
+                raise
+            raise ConfigError(
+                f"timm model {model!r} does not support drop_path",
+                hint="set drop_path: 0 for this model",
+            ) from exc
         self.model = backbone
         self.out_dim = backbone.num_features
         data_config: dict[str, Any] = resolve_data_config(  # type: ignore[no-untyped-call]
@@ -63,7 +86,7 @@ class TimmBackbone(Backbone):
         return BackboneOutput(pooled=pooled, tokens=tokens)
 
     def param_groups(self) -> dict[str, list[nn.Parameter]]:
-        return partition_by_blocks(self.model, block_container(self.model, _BLOCK_ATTRS))
+        return partition_by_blocks(self.model, _block_prefixes(self.model))
 
     def lora_module(self) -> nn.Module | None:
         return cast(nn.Module, self.model)
