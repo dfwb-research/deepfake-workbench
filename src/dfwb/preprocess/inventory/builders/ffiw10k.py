@@ -49,6 +49,7 @@ _SPLIT_SUFFIX: Final = ".mp4"
 
 def _stem(video_id: Any) -> str:
     """``test_<8 digits>`` for an integer id (or anything ``int()`` accepts)."""
+    # This assumes the older file naming, where every video was named test_<8 digits>.
     return f"test_{int(video_id):08d}"
 
 
