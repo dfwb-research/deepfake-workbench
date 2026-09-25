@@ -1,4 +1,4 @@
-"""Protocol packs (contract C3a): loading, querying, verification and pack building.
+"""Protocol packs (contract C3a): loading, querying, verification, materializing and pack building.
 
 Every name below is resolved lazily on first attribute access (``__getattr__``), so
 ``import dfwb.protocols`` never imports pydantic models, YAML or any pack's code -- it stays as
@@ -11,6 +11,7 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from dfwb.protocols.materialize import materialize
     from dfwb.protocols.protocol import LabelMapping, Protocol, ProtocolInfo, load
     from dfwb.protocols.protocol import list_protocols as list
     from dfwb.protocols.refs import ProtocolRef, parse_ref
@@ -24,6 +25,7 @@ __all__ = [
     "ProtocolRef",
     "list",
     "load",
+    "materialize",
     "parse_ref",
     "verify",
     "write_report",
@@ -35,6 +37,7 @@ _LAZY = {
     "ProtocolInfo": "dfwb.protocols.protocol",
     "LabelMapping": "dfwb.protocols.protocol",
     "load": "dfwb.protocols.protocol",
+    "materialize": "dfwb.protocols.materialize",
     "ProtocolRef": "dfwb.protocols.refs",
     "parse_ref": "dfwb.protocols.refs",
     "CoverageReport": "dfwb.protocols.verify",

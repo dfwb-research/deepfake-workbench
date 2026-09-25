@@ -148,6 +148,141 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
     return report.exit_code
 
 
+@protocols.command("build")
+@click.argument("dataset")
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="The dataset's folder in the pack, normally <pack root>/DATASET.",
+)
+@click.option(
+    "--inventory",
+    "inventory",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Inventory to build from (default: <work root>/<dataset>/inventory.jsonl).",
+)
+@click.option(
+    "--scheme",
+    "schemes",
+    multiple=True,
+    help="A scheme to build (repeatable); default: every scheme of the dataset. The default "
+    "scheme must be among them.",
+)
+@click.option(
+    "--update-pack-yaml",
+    is_flag=True,
+    help="Also list DATASET in the pack.yaml next to --out (OUT/../pack.yaml) if it is absent.",
+)
+@json_option
+def build(
+    dataset: str,
+    out: Path,
+    inventory: Path | None,
+    schemes: tuple[str, ...],
+    update_pack_yaml: bool,
+    as_json: bool,
+) -> None:
+    """Build DATASET's protocol-pack files from its local inventory.
+
+    Writes the videos, one split file per scheme, the pairs, the labels, the dataset card, the
+    NOTICE and PROVENANCE.json into --out. Rebuilding from the same inventory gives the same bytes.
+    """
+    from dfwb.core.errors import ConfigError
+    from dfwb.preprocess.packbuild import PACK_YAML, add_to_pack_yaml, build_dataset
+
+    if update_pack_yaml and out.name != dataset:
+        raise ConfigError(
+            f"--update-pack-yaml lists {dataset!r} in the pack, but --out {out} is not named "
+            f"{dataset!r}",
+            hint=f"build into <pack root>/{dataset}",
+        )
+    result = build_dataset(dataset, out=out, inventory=inventory, schemes=schemes or None)
+    pack_yaml: dict[str, Any] | None = None
+    if update_pack_yaml:
+        added = add_to_pack_yaml(result.out.parent, dataset)
+        pack_yaml = {"path": str(result.out.parent / PACK_YAML), "added": added}
+
+    if as_json:
+        emit_json(
+            {
+                "dataset_id": dataset,
+                "out": str(result.out),
+                "n_videos": result.n_videos,
+                "n_pairs": result.n_pairs,
+                "schemes": {
+                    name: card.model_dump(mode="json") for name, card in result.schemes.items()
+                },
+                "pack_yaml": pack_yaml,
+            }
+        )
+        return
+
+    click.echo(f"wrote {dataset} to {result.out}: {result.n_videos} videos, {result.n_pairs} pairs")
+    rows = []
+    for name, card in result.schemes.items():
+        counts = card.counts or {}
+        train, val, test = (counts.get(s, "-") for s in ("train", "val", "test"))
+        rows.append([name, card.rule, train, val, test, card.sha256[:12]])
+    click.echo(table(["SCHEME", "RULE", "TRAIN", "VAL", "TEST", "SHA256"], rows))
+    if pack_yaml is not None:
+        verb = "now lists" if pack_yaml["added"] else "already lists"
+        click.echo(f"{pack_yaml['path']} {verb} {dataset}")
+
+
+@protocols.command("materialize")
+@click.argument("ref")
+@click.option(
+    "--inventory",
+    "inventory",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Inventory to recompute from (default: <work root>/<dataset>/inventory.jsonl).",
+)
+@json_option
+def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
+    """Recompute a recipe scheme from the local inventory and check its published hash.
+
+    A pack may publish a scheme as a rule, its parameters and a hash, with no key list. This
+    rebuilds the split from your own inventory and, only if it hashes to the published value,
+    writes it to the dataset's materialized folder under the work root, where every command that
+    loads the protocol finds it. A mismatch exits 4 and writes nothing.
+    """
+    from dfwb.core.paths import require_root, resolve_roots
+    from dfwb.core.records import InventoryRecord, read_jsonl
+    from dfwb.preprocess.inventory.runner import get_builder, inventory_path
+    from dfwb.preprocess.packbuild import locate_metadata_root
+    from dfwb.protocols.materialize import materialize as run_materialize
+    from dfwb.protocols.materialize import needs_official
+    from dfwb.protocols.refs import parse_ref
+
+    roots = resolve_roots()
+    work_root = require_root("work", roots)
+    parsed = parse_ref(ref)
+    source = inventory if inventory is not None else inventory_path(parsed.dataset, work_root)
+    official = None
+    if needs_official(parsed) and source.is_file():
+        # The publisher's split is dataset knowledge: read it with the dataset's own builder.
+        builder = get_builder(parsed.dataset)
+        records = read_jsonl(source, InventoryRecord)
+        official = builder.official_splits(locate_metadata_root(builder, roots), records)
+    result = run_materialize(parsed, inventory=source, official=official, work_root=work_root)
+
+    if as_json:
+        emit_json(
+            {
+                "ref": result.ref,
+                "path": str(result.path),
+                "sha256": result.sha256,
+                "matched": result.matched,
+            }
+        )
+        return
+    click.echo(f"{result.ref}: sha256 {result.sha256} matches the published hash")
+    click.echo(f"wrote {result.path}")
+
+
 def _lint_issue_row(issue: Any) -> dict[str, Any]:
     return {"severity": issue.severity, "where": issue.where, "message": issue.message}
 
