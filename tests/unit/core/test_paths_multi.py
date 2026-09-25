@@ -23,6 +23,20 @@ def test_env_datasets_root_is_an_ordered_list(places, tmp_path):
     assert roots["datasets"].path == tmp_path / "a"
 
 
+@pytest.mark.parametrize("value", [":", "", "::", "  "])
+def test_a_datasets_root_of_only_empty_segments_is_unset(places, tmp_path, value):
+    cwd, user = places
+    (cwd / "dfwb.toml").write_text(f'[roots]\ndatasets = "{tmp_path}/from-project"\n')
+    for source in ({"DFWB_DATASETS_ROOT": value}, {}):
+        roots = resolve_roots(env=source, cwd=cwd, user_config=user)
+        assert roots["datasets"].paths == (tmp_path / "from-project",)
+        assert roots["datasets"].source == "project"
+    flagged = resolve_roots(flags={"datasets": value}, env={}, cwd=cwd, user_config=user)
+    assert flagged["datasets"].source == "project"
+    bare = resolve_roots(env={"DFWB_DATASETS_ROOT": value}, cwd=tmp_path, user_config=user)
+    assert (bare["datasets"].path, bare["datasets"].source) == (None, "unset")
+
+
 def test_toml_datasets_root_may_be_a_list(places):
     cwd, user = places
     (cwd / "dfwb.toml").write_text('[roots]\ndatasets = ["one", "/abs/two"]\n')

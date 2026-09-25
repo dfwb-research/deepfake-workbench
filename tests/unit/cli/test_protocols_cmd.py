@@ -187,6 +187,22 @@ def test_verify_cli_exit_codes_and_json(run, monkeypatch, tmp_path):
     assert data["report_path"] == str(report_path)
 
 
+def test_verify_cli_refuses_a_work_root_inside_a_datasets_root(run, monkeypatch, tmp_path):
+    root = _install_toyone(monkeypatch, tmp_path)
+    datasets = tmp_path / "datasets"
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", str(datasets))
+    monkeypatch.setenv("DFWB_WORK_ROOT", str(datasets / "dfwb-work"))
+    inventory = tmp_path / "inventory.jsonl"
+    videos = read_jsonl(root / "toyone" / "videos.jsonl.gz", VideoRecord)
+    write_jsonl(inventory, [_inventory_record(v) for v in videos])
+
+    result = run("protocols", "verify", "toyone", "--inventory", str(inventory))
+
+    assert result.code == 2
+    assert "DFWB_WORK_ROOT" in result.err
+    assert not (datasets / "dfwb-work").exists()
+
+
 def test_verify_cli_prints_release_mismatch_warning(run, monkeypatch, tmp_path):
     root = _install_release(monkeypatch, tmp_path)
     work_root = tmp_path / "work"

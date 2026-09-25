@@ -132,9 +132,10 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
     from dfwb.protocols.verification import verify as run_verify
     from dfwb.protocols.verification import write_report
 
-    work_root = require_root("work", resolve_roots())
+    roots = resolve_roots()
+    work_root = require_root("work", roots)
     report = run_verify(ref, inventory=inventory, splits=splits or None, work_root=work_root)
-    report_path = write_report(report, work_root)
+    report_path = write_report(report, work_root, datasets_roots=roots["datasets"].paths)
 
     if as_json:
         emit_json({**report.to_json(), "report_path": str(report_path)})
@@ -272,7 +273,13 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
         builder = get_builder(parsed.dataset)
         records = read_jsonl(source, InventoryRecord)
         official = builder.official_splits(locate_metadata_root(builder, roots), records)
-    result = run_materialize(parsed, inventory=source, official=official, work_root=work_root)
+    result = run_materialize(
+        parsed,
+        inventory=source,
+        official=official,
+        work_root=work_root,
+        datasets_roots=roots["datasets"].paths,
+    )
 
     if as_json:
         emit_json(

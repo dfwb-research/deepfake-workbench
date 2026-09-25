@@ -34,3 +34,17 @@ def test_a_broken_env_file_is_a_config_error(tmp_path, monkeypatch, capsys):
     assert "error: " in err
     assert ".env:1" in err
     assert "hint: " in err
+
+
+def test_a_foreign_env_file_names_the_ways_around_it(tmp_path, monkeypatch, capsys):
+    # A docker-compose style .env (a bare KEY line) is not dfwb's: the hint says how to skip it.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DFWB_ENV_FILE", raising=False)
+    (tmp_path / ".env").write_text("COMPOSE_PROJECT_NAME=x\nDEBUG\n")
+    assert main(["doctor"]) == 2
+    err = capsys.readouterr().err
+    assert ".env:2: expected KEY=VALUE" in err
+    hint = next(line for line in err.splitlines() if line.startswith("hint: "))
+    assert "--no-env-file" in hint
+    assert "DFWB_ENV_FILE" in hint
+    assert main(["--no-env-file", "doctor", "--json"]) == 0

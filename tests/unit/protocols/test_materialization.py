@@ -110,6 +110,27 @@ def test_a_stale_materialized_split_hints_to_materialize_again(built):
     assert "dfwb protocols materialize packdemo/all-test" in info.value.hint
 
 
+def test_materialize_never_writes_under_a_datasets_root(built):
+    (built["dataset"] / "splits" / "all-test.tsv.gz").unlink()
+    inside = built["raw"] / "dfwb-work"  # the fixture's DFWB_DATASETS_ROOT is built["raw"]
+
+    with pytest.raises(ConfigError) as info:
+        materialize(
+            "packdemo/all-test", inventory=built["inventory"], official=None, work_root=inside
+        )
+
+    assert str(built["raw"]) in info.value.message
+    assert not inside.exists()
+    with pytest.raises(ConfigError):
+        materialize(
+            "packdemo/all-test",
+            inventory=built["inventory"],
+            official=None,
+            work_root=built["work"],
+            datasets_roots=[built["work"].parent],
+        )
+
+
 def test_materialize_defaults_to_the_card_default_scheme(built):
     (built["dataset"] / "splits" / "official.tsv.gz").unlink()
 

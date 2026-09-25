@@ -48,6 +48,21 @@ def test_the_real_environment_wins(tmp_path):
     assert applied.skipped == ("A",)
 
 
+def test_expansion_sees_the_real_environment_first(tmp_path):
+    # A key the shell sets wins over the file's value, and ${KEY} expands to the shell's value
+    # too, so the file never mixes the two.
+    environ = {"BASE": "/shell"}
+    path = write(tmp_path, 'BASE=/file\nDERIVED=${BASE}/x\nQUOTED="${BASE}/y"\n')
+    apply_env_file(path, environ)
+    assert environ == {"BASE": "/shell", "DERIVED": "/shell/x", "QUOTED": "/shell/y"}
+
+
+def test_expansion_falls_back_to_earlier_keys_of_the_file(tmp_path):
+    environ: dict[str, str] = {}
+    apply_env_file(write(tmp_path, "BASE=/file\nDERIVED=${BASE}/x\n"), environ)
+    assert environ == {"BASE": "/file", "DERIVED": "/file/x"}
+
+
 def test_find_env_file(tmp_path):
     assert find_env_file(tmp_path, {}) is None
     write(tmp_path, "A=1\n")

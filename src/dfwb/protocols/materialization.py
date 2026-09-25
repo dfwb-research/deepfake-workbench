@@ -34,6 +34,7 @@ from dfwb.core.records import (
     write_jsonl,
     write_split_tsv,
 )
+from dfwb.protocols._rawdata import check_outside_datasets_roots
 from dfwb.protocols._yaml import read_card, read_labels
 from dfwb.protocols.packs import find_dataset
 from dfwb.protocols.protocol import _check_pin
@@ -311,6 +312,7 @@ def materialize(
     inventory: Path,
     official: Mapping[str, Split] | None,
     work_root: Path,
+    datasets_roots: Sequence[Path] | None = None,
 ) -> MaterializeResult:
     """Recompute ``ref``'s split from ``inventory`` and keep it only if it matches the pack.
 
@@ -328,17 +330,20 @@ def materialize(
     would then describe videos that are not there.
 
     ``official`` is the publisher's split (record key -> split) for the rules that need it (see
-    :func:`needs_official`); ``None`` otherwise.
+    :func:`needs_official`); ``None`` otherwise. Nothing is ever written inside a datasets root
+    (``datasets_roots``, default the resolved ones), even when ``work_root`` points there.
 
     Raises:
         UnknownKeyError: the dataset, pack or scheme is unknown.
-        ConfigError: there is no inventory at ``inventory``, or the rule needs ``official`` and it
-            is ``None``.
+        ConfigError: there is no inventory at ``inventory``, the rule needs ``official`` and it
+            is ``None``, or the materialized folder would be inside a datasets root.
         ContractError: the scheme's rule cannot be recomputed, a pin does not match, the
             inventory repeats a video, the recomputed rows do not hash to the published value,
             or the materialized ``videos.jsonl.gz`` holds different records.
     """
     scheme = _resolve(ref)
+    materialized = work_root / scheme.dataset / "materialized"
+    check_outside_datasets_roots(materialized, datasets_roots, what="the materialized split")
     rule, params = scheme.card.rule, scheme.card.params
     if rule not in RULES:
         raise ContractError(
@@ -370,7 +375,6 @@ def materialize(
             hint=_VERIFY_HINT,
         )
 
-    materialized = work_root / scheme.dataset / "materialized"
     videos = materialized / "videos.jsonl.gz"
     if videos.is_file():
         _check_same_videos(videos, records, scheme.dataset)

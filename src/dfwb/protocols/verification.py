@@ -19,6 +19,7 @@ from typing import Any
 from dfwb.core.errors import ConfigError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.core.records import InventoryRecord, VideoRecord, read_jsonl
+from dfwb.protocols._rawdata import check_outside_datasets_roots
 from dfwb.protocols.protocol import load
 from dfwb.protocols.refs import ProtocolRef
 
@@ -189,9 +190,17 @@ def verify(
     )
 
 
-def write_report(report: CoverageReport, work_root: Path) -> Path:
-    """Write ``<work_root>/<dataset>/verify/<scheme>.json`` atomically, as sorted JSON."""
+def write_report(
+    report: CoverageReport, work_root: Path, *, datasets_roots: Sequence[Path] | None = None
+) -> Path:
+    """Write ``<work_root>/<dataset>/verify/<scheme>.json`` atomically, as sorted JSON.
+
+    Raises:
+        ConfigError: the report would land inside a datasets root (``datasets_roots``, default
+            the resolved ones): raw data is never written to.
+    """
     target = work_root / report.dataset / "verify" / f"{report.scheme}.json"
+    check_outside_datasets_roots(target, datasets_roots, what="the verify report")
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
     try:
