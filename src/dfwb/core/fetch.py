@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -19,6 +20,19 @@ __all__ = ["OFFLINE_ENV", "fetch"]
 
 OFFLINE_ENV = "DFWB_OFFLINE"
 _CHUNK = 1 << 20
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _offline() -> bool:
+    """Whether ``DFWB_OFFLINE`` asks for offline mode (same truthy spelling as ``--debug``)."""
+    return os.environ.get(OFFLINE_ENV, "").lower() in _TRUE_VALUES
+
+
+def _network_hint(destination: Path) -> str:
+    return (
+        f"check your network connection, or set {OFFLINE_ENV}=1 and place the file at "
+        f"{destination} yourself"
+    )
 
 
 def fetch(url: str, sha256: str, dest: str | os.PathLike[str]) -> Path:
@@ -26,8 +40,8 @@ def fetch(url: str, sha256: str, dest: str | os.PathLike[str]) -> Path:
 
     The download is atomic: bytes land in a hidden sibling of ``dest`` first, and that file
     becomes ``dest`` only once every byte has arrived and the whole thing hashes correctly.
-    Anything short of that -- a connection dropped mid-transfer, a wrong hash -- leaves no file
-    at ``dest`` at all.
+    Anything short of that -- a connection dropped mid-transfer, a wrong hash, a failed request --
+    leaves no file at ``dest`` at all.
 
     Args:
         url: Where to download from.
@@ -35,11 +49,12 @@ def fetch(url: str, sha256: str, dest: str | os.PathLike[str]) -> Path:
         dest: Local path to write the verified file to; parent directories are created.
 
     Raises:
-        InstallationError: ``DFWB_OFFLINE`` is set, so nothing is downloaded.
+        InstallationError: ``DFWB_OFFLINE`` is set, so nothing is downloaded; or the request
+            itself failed (a bad status such as 404, a refused connection, a timeout, ...).
         ContractError: the downloaded bytes do not hash to ``sha256``.
     """
     destination = Path(dest)
-    if os.environ.get(OFFLINE_ENV):
+    if _offline():
         raise InstallationError(
             f"{url}: refusing to download while {OFFLINE_ENV} is set",
             hint=f"unset {OFFLINE_ENV} to allow downloads, or place the file at "
@@ -49,10 +64,21 @@ def fetch(url: str, sha256: str, dest: str | os.PathLike[str]) -> Path:
     tmp = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
     try:
         digest = hashlib.sha256()
-        with urllib.request.urlopen(url) as response, tmp.open("wb") as handle:
-            for chunk in iter(lambda: response.read(_CHUNK), b""):
-                handle.write(chunk)
-                digest.update(chunk)
+        try:
+            with urllib.request.urlopen(url) as response, tmp.open("wb") as handle:
+                for chunk in iter(lambda: response.read(_CHUNK), b""):
+                    handle.write(chunk)
+                    digest.update(chunk)
+        except urllib.error.HTTPError as exc:
+            raise InstallationError(
+                f"{url}: download failed ({exc.code} {exc.reason})",
+                hint=_network_hint(destination),
+            ) from None
+        except urllib.error.URLError as exc:
+            raise InstallationError(
+                f"{url}: download failed ({exc.reason})",
+                hint=_network_hint(destination),
+            ) from None
         got = digest.hexdigest()
         if got != sha256.lower():
             raise ContractError(

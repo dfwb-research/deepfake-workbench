@@ -19,6 +19,8 @@ from typing import Any
 
 import platformdirs
 
+from dfwb.core.errors import ContractError
+
 __all__ = ["STATE_DIR_ENV", "Acceptance", "accept", "all_accepted", "is_accepted", "state_file"]
 
 STATE_DIR_ENV = "DFWB_STATE_DIR"
@@ -43,15 +45,32 @@ def state_file() -> Path:
     return _state_dir() / _FILE_NAME
 
 
+def _corrupt(path: Path, detail: str) -> ContractError:
+    return ContractError(
+        f"{path}: licence store is corrupt ({detail})",
+        hint="fix or delete the file; accept the licence again with --accept-license",
+    )
+
+
 def _read() -> dict[str, Acceptance]:
     path = state_file()
     if not path.is_file():
         return {}
-    data: Any = json.loads(path.read_text("utf-8"))
+    try:
+        data: Any = json.loads(path.read_text("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise _corrupt(path, f"invalid JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise _corrupt(path, f"expected a JSON object, got {type(data).__name__}")
     entries: dict[str, Acceptance] = {}
     for name, entry in data.items():
+        if not isinstance(entry, dict):
+            raise _corrupt(path, f"{name!r} is not an object")
+        license_value = entry.get("license")
+        if not isinstance(license_value, str):
+            raise _corrupt(path, f"{name!r} is missing a 'license' string")
         entries[name] = Acceptance(
-            license=entry["license"], accepted_at=str(entry.get("accepted_at", ""))
+            license=license_value, accepted_at=str(entry.get("accepted_at", ""))
         )
     return entries
 
@@ -78,7 +97,12 @@ def is_accepted(name: str) -> bool:
 
 
 def accept(name: str, *, license: str) -> None:
-    """Record that ``name`` has been acknowledged, under the terms of ``license``."""
+    """Record that ``name`` has been acknowledged, under the terms of ``license``.
+
+    This is a read-modify-write over the whole store, not locked against other processes: two
+    concurrent calls can race and the loser's update is silently lost (last writer wins). The
+    file itself is never left half-written either way -- the write underneath is always atomic.
+    """
     entries = _read()
     now = datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat()
     entries[name] = Acceptance(license=license, accepted_at=now)

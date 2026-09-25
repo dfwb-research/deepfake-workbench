@@ -87,6 +87,19 @@ def test_doctor_licences_section_is_empty_by_default(run):
     assert "no licences acknowledged yet" in run("doctor").out
 
 
+def test_doctor_exits_4_on_a_corrupt_licence_store(run, monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("DFWB_STATE_DIR", str(state))
+    (state / "licenses.json").write_text("{not json")
+    result = run("doctor")
+    assert result.code == 4
+    assert "licence store is corrupt" in result.err
+    assert "hint: fix or delete the file; accept the licence again with --accept-license" in (
+        result.err
+    )
+
+
 def test_doctor_licences_section_lists_accepted_licences(run, monkeypatch, tmp_path):
     monkeypatch.setenv("DFWB_STATE_DIR", str(tmp_path / "state"))
     from dfwb.core import licenses
