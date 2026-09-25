@@ -31,6 +31,7 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
         "DeeperForensics-1.0",
     ),
     ("wilddeepfake", "wilddeepfake:WildDeepfakeBuilder", "WildDeepfake", "WildDeepfake"),
+    ("ffiw10k", "ffiw10k:FFIW10KBuilder", "FFIW-10K", "FFIW10K"),
 )
 
 
