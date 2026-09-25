@@ -385,17 +385,23 @@ def _notice(card: DatasetCard) -> str:
 
 
 def _terms(card: DatasetCard) -> str:
-    """The NOTICE's terms paragraph, which always agrees with the card's ``distribution``."""
+    """The NOTICE's terms paragraph, which always agrees with the card's ``distribution``.
+
+    Any note already recorded on ``card.terms`` (e.g. a maintainer's proposal awaiting review)
+    is appended whether or not the distribution itself has been decided yet, so it is never
+    silently dropped from the published notice.
+    """
     if card.distribution == "undecided":
-        return (
+        text = (
             "Terms review pending: whether these lists may be redistributed has not been decided "
             "yet, so dataset.yaml records distribution: undecided. This notice is completed once "
             "the dataset's terms have been reviewed."
         )
-    text = (
-        f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
-        f"{_DISTRIBUTION_MEANING[card.distribution]}."
-    )
+    else:
+        text = (
+            f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
+            f"{_DISTRIBUTION_MEANING[card.distribution]}."
+        )
     return f"{text} {card.terms.notes}" if card.terms.notes else text
 
 
