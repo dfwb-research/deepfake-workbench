@@ -22,7 +22,6 @@ import pytest
 
 from dfwb.core import licenses
 from dfwb.core.plugins import get_registry
-from dfwb.preprocess.face._insightface_port.face_align import arcface_dst
 from dfwb.preprocess.face.backends import Face, FaceBackend, _common
 from dfwb.preprocess.face.backends import insightface as insightface_module
 from dfwb.preprocess.face.backends import mediapipe as mediapipe_module
@@ -92,20 +91,15 @@ def test_insightface_detects_and_embeds_with_the_real_models():
 
     faces = backend.detect(frames)
     _check_faces(faces, 2, 0.5)
+    # At this input size the cartoon is found in both frames, scoring about 0.75.
+    assert all(len(per_frame) >= 1 for per_frame in faces)
     for per_frame in faces:
         for face in per_frame:
             assert face.landmarks5 is not None
             assert len(face.landmarks5) == 5
     assert backend.detect(frames) == faces  # the same frames give the same faces
 
-    # Embed a detected face (at this input size the cartoon is found, with a score near 0.75), or
-    # the landmark template placed on the frame should a different model version miss it.
-    template = tuple((float(x) * 0.5 + 4, float(y) * 0.5 + 4) for x, y in arcface_dst)
-    face = next(
-        (f for per_frame in faces for f in per_frame),
-        Face(bbox=(4.0, 4.0, 60.0, 60.0), score=1.0, landmarks5=template),
-    )
-    embedding = backend.embed(frame, face)
+    embedding = backend.embed(frame, faces[0][0])
     assert embedding.dtype == np.float32
     assert embedding.shape == (512,)
     assert float(np.linalg.norm(embedding)) == pytest.approx(1.0, abs=1e-5)
@@ -136,3 +130,5 @@ def test_mediapipe_detects_with_the_real_library_and_model():
     faces = backend.detect(frames)
     _check_faces(faces, 2, 0.5)
     assert all(face.landmarks5 is None for per_frame in faces for face in per_frame)
+    backend.close()
+    backend.close()

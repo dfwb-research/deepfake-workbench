@@ -15,6 +15,7 @@ import http.server
 import importlib.machinery
 import io
 import logging
+import os
 import sys
 import threading
 import zipfile
@@ -307,21 +308,21 @@ def _home_pack(isolated: Isolated) -> Path:
     return isolated.home / ".insightface" / "models" / "buffalo_l"
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_the_cache_root_is_searched_before_the_insightface_directory(isolated):
     cached = _put(_cache_pack(isolated), "det_10g.onnx", DET_BYTES)
     _put(_home_pack(isolated), "det_10g.onnx", DET_BYTES)
     assert insightface_module.model_file("det_10g.onnx") == cached
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_the_insightface_directory_is_used_when_the_cache_lacks_the_file(isolated):
     home = _put(_home_pack(isolated), "det_10g.onnx", DET_BYTES)
     assert insightface_module.model_file("det_10g.onnx") == home
     assert not isolated.cache.exists()
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_a_file_with_the_wrong_hash_is_skipped_with_a_warning(isolated, caplog):
     _put(_cache_pack(isolated), "det_10g.onnx", b"something else")
     home = _put(_home_pack(isolated), "det_10g.onnx", DET_BYTES)
@@ -331,7 +332,7 @@ def test_a_file_with_the_wrong_hash_is_skipped_with_a_warning(isolated, caplog):
     assert "det_10g.onnx" in caplog.text
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_a_missing_model_downloads_the_pack_and_extracts_only_the_two_models(isolated, served_pack):
     path = insightface_module.model_file("det_10g.onnx")
     target = _cache_pack(isolated)
@@ -346,7 +347,7 @@ def test_a_missing_model_downloads_the_pack_and_extracts_only_the_two_models(iso
     assert served_pack.requests == ["/buffalo_l.zip"]
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_a_pack_member_with_the_wrong_hash_is_refused_and_nothing_is_kept(
     isolated, served_pack, monkeypatch
 ):
@@ -360,7 +361,7 @@ def test_a_pack_member_with_the_wrong_hash_is_refused_and_nothing_is_kept(
     assert not (target.parent / "buffalo_l.zip").exists()
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_a_pack_missing_a_model_is_refused(isolated, server, monkeypatch):
     pack = _pack({"det_10g.onnx": DET_BYTES})
     server.routes["/buffalo_l.zip"] = pack
@@ -370,12 +371,42 @@ def test_a_pack_missing_a_model_is_refused(isolated, server, monkeypatch):
         insightface_module.model_file("det_10g.onnx")
 
 
-@pytest.mark.usefixtures("stand_in_models")
+@pytest.mark.usefixtures("stand_in_models", "accepted")
 def test_offline_with_no_model_on_disk_is_an_installation_error(served_pack, monkeypatch):
     monkeypatch.setenv("DFWB_OFFLINE", "1")
     with pytest.raises(InstallationError, match="DFWB_OFFLINE"):
         insightface_module.model_file("det_10g.onnx")
     assert served_pack.requests == []
+
+
+@pytest.mark.usefixtures("stand_in_models")
+def test_model_file_itself_needs_the_licence_acknowledgement(isolated, served_pack):
+    _put(_home_pack(isolated), "det_10g.onnx", DET_BYTES)
+    with pytest.raises(InstallationError) as caught:
+        insightface_module.model_file("det_10g.onnx")
+    assert caught.value.exit_code == 5
+    assert "--accept-license" in caught.value.hint
+    assert served_pack.requests == []
+    assert not isolated.cache.exists()
+
+
+@pytest.mark.usefixtures("stand_in_models", "accepted")
+def test_each_process_downloads_the_pack_under_its_own_name(isolated, served_pack, monkeypatch):
+    # Another worker's download, next to ours, must survive our clean-up.
+    models = isolated.cache / "models"
+    other = _put(models, ".buffalo_l.99999999.zip", b"another worker's download")
+    destinations: list[Path] = []
+    real_fetch = insightface_module.fetch
+
+    def spy(url: str, sha256: str, dest: Path) -> Path:
+        destinations.append(Path(dest))
+        return real_fetch(url, sha256, dest)
+
+    monkeypatch.setattr(insightface_module, "fetch", spy)
+    insightface_module.model_file("det_10g.onnx")
+    assert destinations == [models / f".buffalo_l.{os.getpid()}.zip"]
+    assert other.read_bytes() == b"another worker's download"
+    assert sorted(p.name for p in models.iterdir()) == [".buffalo_l.99999999.zip", "buffalo_l"]
 
 
 def test_the_real_pack_and_model_hashes_are_pinned():
@@ -589,13 +620,14 @@ def test_a_cuda_device_asks_onnxruntime_for_that_gpu(runtime):
 
 
 def test_a_cuda_device_without_cuda_support_falls_back_to_the_cpu_with_a_warning(runtime, caplog):
-    backend = InsightFaceBackend(det_size=64, device="cuda:0")
     with caplog.at_level(logging.WARNING):
+        backend = InsightFaceBackend(det_size=64, device="cuda:0")
+        assert "cuda:0" in caplog.text
+        assert "CPU" in caplog.text
         backend.detect(_frames(1, 64, 64))
-    (session,) = runtime.sessions
-    assert session.providers == ["CPUExecutionProvider"]
-    assert "cuda:0" in caplog.text
-    assert "CPU" in caplog.text
+        backend.embed(_frames(1, 64, 64)[0], backend.detect(_frames(1, 64, 64))[0][0])
+    assert [s.providers for s in runtime.sessions] == [["CPUExecutionProvider"]] * 2
+    assert caplog.text.count("cuda:0") == 1  # warned once, when the backend was built
 
 
 def test_meta_records_the_models_their_hashes_and_the_settings(runtime):
@@ -639,17 +671,25 @@ def test_detect_without_opencv_names_the_extra(runtime, monkeypatch):
     assert runtime.sessions == []
 
 
-def test_meta_before_loading_names_the_providers_a_cuda_device_will_ask_for(runtime):
+def test_meta_before_loading_reports_cuda_when_onnxruntime_has_it(runtime):
+    runtime.cuda = True
     backend = InsightFaceBackend(device="cuda:2")
     assert backend.meta["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
     assert backend.meta["device"] == "cuda:2"
+    assert runtime.sessions == []
 
 
-def test_detect_without_onnxruntime_names_the_extra(accepted, monkeypatch):
+def test_meta_before_loading_reports_the_cpu_when_onnxruntime_has_no_cuda(runtime):
+    backend = InsightFaceBackend(device="cuda:2")
+    assert backend.meta["providers"] == ["CPUExecutionProvider"]
+    assert backend.meta["device"] == "cuda:2"
+    assert runtime.sessions == []
+
+
+def test_building_without_onnxruntime_names_the_extra(accepted, monkeypatch):
     monkeypatch.setitem(sys.modules, "onnxruntime", None)
-    backend = InsightFaceBackend()
     with pytest.raises(InstallationError) as caught:
-        backend.detect(_frames(1, 8, 8))
+        InsightFaceBackend()
     assert "deepfake-workbench[face-insightface]" in caught.value.hint
 
 
@@ -687,12 +727,16 @@ class FakeMediaPipe(ModuleType):
                 detector = cls()
                 detector.options = options
                 detector.images = []
+                detector.close_calls = 0
                 runtime.detectors.append(detector)
                 return detector
 
             def detect(self, image: Any) -> SimpleNamespace:
                 self.images.append(image)
                 return SimpleNamespace(detections=detections)
+
+            def close(self) -> None:
+                self.close_calls += 1
 
         self.Image = Image
         self.ImageFormat = SimpleNamespace(SRGB="srgb")
@@ -779,6 +823,19 @@ def test_mediapipe_downloads_its_model_once_and_converts_detections(
     assert [image.image_format for image in detector.images] == ["srgb"] * 3
     assert np.array_equal(detector.images[0].data, frames[0])  # RGB, as it came
     assert detector.images[0].data.flags["C_CONTIGUOUS"]
+
+
+def test_mediapipe_close_releases_the_detector_once(mediapipe_stub):
+    backend = MediaPipeBackend()
+    backend.close()  # nothing loaded yet: nothing to release
+    backend.detect(_frames(1, 8, 8))
+    (detector,) = mediapipe_stub.detectors
+    backend.close()
+    backend.close()
+    assert detector.close_calls == 1
+    backend.detect(_frames(1, 8, 8))  # a closed backend opens a fresh detector if used again
+    assert len(mediapipe_stub.detectors) == 2
+    assert mediapipe_stub.detectors[1].close_calls == 0
 
 
 def test_mediapipe_full_range_uses_the_other_model(mediapipe_stub, server, isolated):

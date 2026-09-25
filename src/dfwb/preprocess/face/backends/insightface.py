@@ -2,20 +2,28 @@
 
 Faces are detected with SCRFD (``det_10g.onnx``) and, when asked, embedded with ArcFace
 (``w600k_r50.onnx``), through a line-for-line port of insightface 0.7.3's pre- and
-post-processing (:mod:`dfwb.preprocess.face._insightface_port`). The same frame therefore gives
-the same faces as insightface 0.7.3's ``FaceAnalysis`` did, without the insightface package.
+post-processing (:mod:`dfwb.preprocess.face._insightface_port`), without the insightface package.
+Detections (boxes, scores and landmarks) are bit-identical to those of insightface 0.7.3's
+``FaceAnalysis`` on the same frame. Embeddings agree to within a small tolerance (at most about
+0.002 per value, cosine similarity at least 0.9999): OpenCV 5's ``warpAffine``, which aligns the
+face before it is embedded, rounds slightly differently from the OpenCV 4 insightface ran with.
+Only identity-guided subject selection uses embeddings, and a difference that small does not
+change which faces it groups together.
 
 The code is MIT-licensed, but the ``buffalo_l`` weights are for non-commercial research use only.
-The backend therefore refuses to be built until that licence has been acknowledged once on the
-machine (``--accept-license``), and only then, on its first ``detect``, looks for the models:
+The backend therefore refuses to be built, and :func:`model_file` refuses to find or fetch a
+model, until that licence has been acknowledged once on the machine (``--accept-license``). Only
+then, on the backend's first ``detect``, are the models looked for:
 first in ``<cache root>/models/buffalo_l/``, then in ``~/.insightface/models/buffalo_l/``, where
 insightface itself keeps them. If neither has them, it downloads the ``buffalo_l`` release archive
-into ``<cache root>/models/``, unpacks just the two models it uses and deletes the archive. Every
-model file is checked against its known sha256 before it is used.
+into ``<cache root>/models/`` under a name private to the process (so that parallel workers
+never delete each other's download), unpacks just the two models it uses and deletes the archive.
+Every model file is checked against its known sha256 before it is used.
 
 Head pose is not estimated (insightface's pose model is not part of the port), so ``Face.yaw``
-stays ``None`` and ``has_pose`` is ``False``. onnxruntime, OpenCV and numpy are imported on first
-use, not when this module is imported.
+stays ``None`` and ``has_pose`` is ``False``. onnxruntime is imported when the backend is built
+(to settle which execution providers it will use), OpenCV and numpy on first use; none of them
+when this module is imported.
 """
 
 from __future__ import annotations
@@ -96,10 +104,12 @@ def model_file(name: str) -> Path:
     """The verified model file ``name`` (a key of ``MODEL_FILES``), downloading it if needed.
 
     Raises:
-        InstallationError: The file is on disk nowhere and cannot be downloaded (``DFWB_OFFLINE``
-            is set, or the request failed).
+        InstallationError: The ``buffalo_l`` licence has not been acknowledged; or the file is on
+            disk nowhere and cannot be downloaded (``DFWB_OFFLINE`` is set, or the request
+            failed).
         ContractError: The download, or a model inside it, does not hash as expected.
     """
+    require_accepted(GATE, terms=_TERMS)
     directories = model_dirs()
     found = find_verified(name, MODEL_FILES[name], directories)
     if found is not None:
@@ -110,8 +120,14 @@ def model_file(name: str) -> Path:
 
 def _download_pack(target: Path) -> None:
     """Download the release archive next to ``target``, unpack the models this backend uses into
-    ``target`` (each checked against its sha256) and delete the archive."""
-    archive_path = target.parent / f"{PACK}.zip"
+    ``target`` (each checked against its sha256) and delete the archive.
+
+    The archive's name includes the process id: workers starting in parallel may each download it,
+    and a shared name would let one worker's clean-up delete the archive another is still
+    unpacking. Unpacking itself is safe to race, since each model is written to a private
+    temporary file and then renamed into place.
+    """
+    archive_path = target.parent / f".{PACK}.{os.getpid()}.zip"
     _log.info("downloading the insightface %s models (289 MB) from %s", PACK, PACK_URL)
     fetch(PACK_URL, PACK_SHA256, archive_path)
     try:
@@ -189,11 +205,13 @@ class InsightFaceBackend:
         min_score: Faces scoring below this are not returned.
         nms: The overlap above which the lower-scoring of two faces is dropped.
         device: ``"cpu"``, or ``"cuda:<index>"`` to run on that GPU when onnxruntime has CUDA
-            support (falling back to the CPU, with a warning, when it does not).
+            support (falling back to the CPU, with a warning when the backend is built, when it
+            does not).
 
     Raises:
         ConfigError: A parameter is out of range.
-        InstallationError: The ``buffalo_l`` licence has not been acknowledged (exit code 5).
+        InstallationError: The ``buffalo_l`` licence has not been acknowledged (exit code 5), or
+            onnxruntime is not installed.
     """
 
     name = "insightface"
@@ -234,27 +252,26 @@ class InsightFaceBackend:
             )
         self._cuda_device = parse_device(device)
         require_accepted(GATE, terms=_TERMS)
+        self._device = device
+        self._requested = self._resolve_providers(_require_onnxruntime())
         self._model = model
         self._det_size = det_size
         self._min_score = min_score
         self._nms = nms
-        self._device = device
         self._detector: SCRFD | None = None
         self._recognizer: ArcFace | None = None
-        self._requested: list[Any] | None = None
         self._providers: list[str] | None = None
 
     @property
     def meta(self) -> Mapping[str, Any]:
         """The model pack, its files and sha256s, the weights' licence, the settings, and the
-        onnxruntime execution providers: those the models run on once loaded, before that the
-        ones that will be asked for."""
+        onnxruntime execution providers: those the models run on once loaded, and before that the
+        ones settled on when the backend was built (the CPU alone when CUDA was asked for but
+        this onnxruntime cannot provide it)."""
         if self._providers is not None:
             providers = list(self._providers)
-        elif self._cuda_device is None:
-            providers = ["CPUExecutionProvider"]
         else:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = [p if isinstance(p, str) else p[0] for p in self._requested]
         return MappingProxyType(
             {
                 "model": self._model,
@@ -287,6 +304,10 @@ class InsightFaceBackend:
     def embed(self, frame: npt.NDArray[np.uint8], face: Face) -> npt.NDArray[np.float32]:
         """The identity embedding of ``face`` in the RGB ``frame``: 512 ``float32`` values scaled
         to unit length, as insightface's ``normed_embedding``.
+
+        It matches insightface 0.7.3's embedding of the same face to within about 0.002 per value
+        (cosine similarity at least 0.9999), not bit for bit: the face is aligned with OpenCV's
+        ``warpAffine``, and OpenCV 5 rounds that warp slightly differently from OpenCV 4.
 
         Raises:
             ValueError: ``face`` has no landmarks, or ``frame`` is not one ``[H, W, 3]`` image.
@@ -330,25 +351,22 @@ class InsightFaceBackend:
         options = runtime.SessionOptions()
         options.log_severity_level = 3  # errors only; insightface set this for the whole process
         session = runtime.InferenceSession(
-            str(path), sess_options=options, providers=self._provider_request(runtime)
+            str(path), sess_options=options, providers=self._requested
         )
         self._providers = list(session.get_providers())
         return session
 
-    def _provider_request(self, runtime: Any) -> list[Any]:
-        if self._requested is None:
-            if self._cuda_device is None:
-                self._requested = ["CPUExecutionProvider"]
-            elif "CUDAExecutionProvider" in runtime.get_available_providers():
-                self._requested = [
-                    ("CUDAExecutionProvider", {"device_id": self._cuda_device}),
-                    "CPUExecutionProvider",
-                ]
-            else:
-                _log.warning(
-                    "device %s was asked for, but this onnxruntime has no CUDA support; "
-                    "running on the CPU",
-                    self._device,
-                )
-                self._requested = ["CPUExecutionProvider"]
-        return self._requested
+    def _resolve_providers(self, runtime: Any) -> list[Any]:
+        """The execution providers to ask onnxruntime for, given the device."""
+        if self._cuda_device is None:
+            return ["CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in runtime.get_available_providers():
+            return [
+                ("CUDAExecutionProvider", {"device_id": self._cuda_device}),
+                "CPUExecutionProvider",
+            ]
+        _log.warning(
+            "device %s was asked for, but this onnxruntime has no CUDA support; running on the CPU",
+            self._device,
+        )
+        return ["CPUExecutionProvider"]

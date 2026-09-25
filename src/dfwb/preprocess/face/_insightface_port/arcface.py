@@ -7,8 +7,11 @@ arcface_onnx.py``, class ``ArcFaceONNX``.
 What differs from the original:
 
 - :meth:`ArcFace.get_feat` receives aligned faces in red-green-blue order and builds the network
-  input without swapping channels. insightface received blue-green-red and swapped, so the network
-  input is identical.
+  input without swapping channels. insightface received blue-green-red and swapped, so from the
+  same aligned face the network input is identical. The aligned face itself can differ by a grey
+  level or two, because OpenCV 5's ``warpAffine`` rounds slightly differently from the OpenCV 4
+  insightface ran with; the embedding then differs by at most about 0.002 per value (a cosine
+  similarity of at least 0.9999), where the detections stay bit-identical.
 - The input normalisation is passed in (``input_mean``, ``input_std``; 127.5 and 127.5 by
   default) instead of being read off the model graph, which needs the ``onnx`` package.
   insightface uses 0 and 1 for a model converted from MXNet, recognisable by ``Sub`` and ``Mul``

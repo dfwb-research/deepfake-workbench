@@ -141,7 +141,11 @@ def norm_crop(
     img: npt.NDArray[np.uint8], landmark: npt.NDArray[Any], image_size: int = 112
 ) -> npt.NDArray[Any]:
     """``img`` warped so that the five landmarks ``landmark`` land on the ArcFace template,
-    cropped to ``image_size`` x ``image_size``; outside the frame is black."""
+    cropped to ``image_size`` x ``image_size``; outside the frame is black.
+
+    The matrix is exactly insightface's; the warp is OpenCV's, and OpenCV 5 rounds it slightly
+    differently from OpenCV 4, so pixels can differ by a grey level or two between the two.
+    """
     import cv2
 
     M = estimate_norm(landmark, image_size)

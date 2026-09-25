@@ -13,6 +13,15 @@ BlazeFace's six keypoints (eyes, nose tip, mouth centre and ear tragions) are no
 landmarks ``Face.landmarks5`` holds (eyes, nose tip and mouth corners), so none are reported, and
 there is no head pose (``has_pose`` is ``False``). It runs on the CPU whatever device is asked
 for. mediapipe and numpy are imported on first use, not when this module is imported.
+
+Call :meth:`MediaPipeBackend.close` when done with the backend. mediapipe releases a detector
+through worker threads that are already gone once the interpreter has started shutting down, so
+a detector still open at exit fails to close with a (harmless, but noisy) printed traceback.
+
+Installing: mediapipe depends on ``opencv-contrib-python``, so the ``face-mediapipe`` extra puts a
+second OpenCV distribution next to the ``opencv-python-headless`` that dfwb's ``preprocess``
+extra installs. Both provide the same ``cv2`` package, so uninstalling either one breaks ``cv2``
+for the other, which then has to be reinstalled (``pip install --force-reinstall``).
 """
 
 from __future__ import annotations
@@ -87,7 +96,7 @@ class MediaPipeBackend:
     """BlazeFace face detection with MediaPipe.
 
     Building the backend only checks its parameters; the model is found (or downloaded) and
-    loaded on the first :meth:`detect`.
+    loaded on the first :meth:`detect`, and released by :meth:`close`.
 
     Args:
         min_score: Faces scoring below this are not returned.
@@ -154,6 +163,13 @@ class MediaPipeBackend:
             result = detector.detect(image)
             faces.append([_to_face(detection) for detection in result.detections])
         return faces
+
+    def close(self) -> None:
+        """Release the detector. Calling it again, or before any detection, does nothing; a
+        later :meth:`detect` opens a new detector."""
+        detector, self._detector = self._detector, None
+        if detector is not None:
+            detector.close()
 
     def _load(self, mediapipe: Any) -> Any:
         if self._detector is None:

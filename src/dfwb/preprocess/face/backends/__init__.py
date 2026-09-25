@@ -44,6 +44,8 @@ class FaceBackend(Protocol):
       3]`` RGB ``frame``, scaled to unit length (see ``Face.embedding``). Identity-guided subject
       selection needs it.
     - ``has_pose: bool``: whether ``detect`` fills in ``Face.yaw``. Missing means ``False``.
+    - ``close()``: release what the backend holds open (a native detector, say) once the caller
+      is done with it. Missing means there is nothing to release.
     """
 
     name: str

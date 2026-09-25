@@ -5,8 +5,9 @@ overlapping the last chosen one most, back to the largest when nothing overlaps 
 without a usable face simply dropped, and (for identity-guided selection) the face most similar
 to the clip's subject. With ``largest-then-iou`` a store built with this framework therefore picks
 the same face on every frame as a store built before it; with ``identity-cluster`` it does so
-given the same subject, since the subject search now weighs faces by their true head yaw and can
-settle on a different subject than the earlier pipeline did.
+given the same subject. The subject itself can differ from the earlier pipeline's, since the
+subject search weighs faces by true head yaw when the backend estimates pose, and not at all
+otherwise.
 """
 
 from __future__ import annotations
