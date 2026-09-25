@@ -383,7 +383,8 @@ def test_reason_is_none_when_every_requested_frame_was_written(tmp_path):
 # --------------------------------------------------------------------------------- atomic output
 
 
-def test_resume_after_interrupt_leaves_no_partial_output(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt])
+def test_resume_after_interrupt_leaves_no_partial_output(tmp_path, monkeypatch, error):
     video = tmp_path / "video.avi"
     _write_clip(video, 8)
     profile = _profile(sampling=SamplingSpec(mode="uniform", frames=4))
@@ -396,17 +397,23 @@ def test_resume_after_interrupt_leaves_no_partial_output(tmp_path, monkeypatch):
     def flaky_imwrite(filename: str, image: np.ndarray, params: list[int] | None = None) -> bool:
         calls["n"] += 1
         if calls["n"] == 2:
-            raise RuntimeError("simulated crash mid-write")
+            raise error("simulated crash mid-write")
         return bool(real_imwrite(filename, image, params))
 
     monkeypatch.setattr(cv2, "imwrite", flaky_imwrite)
-    with pytest.raises(RuntimeError, match="simulated crash"):
+    with pytest.raises(error, match="simulated crash"):
         process_video(video, record, profile, CenterBackend(), out_dir)
     monkeypatch.undo()
 
-    leftovers = list(tmp_path.glob("out.tmp-*"))
-    assert len(leftovers) == 1
+    # Whatever stops the video, its half-written frames go with it.
+    assert list(tmp_path.glob("out.tmp-*")) == []
     assert not out_dir.exists()
+
+    # A process killed outright gets no chance to clean up: the next attempt at the same video
+    # removes what it left.
+    killed = tmp_path / "out.tmp-99999"
+    killed.mkdir()
+    (killed / "frame_000000.png").write_bytes(b"half a frame")
 
     result = process_video(video, record, profile, CenterBackend(), out_dir)
 

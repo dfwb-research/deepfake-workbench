@@ -486,6 +486,27 @@ def test_the_shards_of_a_limited_run_add_up_to_the_limited_run(env):
     ]
 
 
+def test_a_sharded_run_never_touches_another_shards_videos_in_flight(env):
+    # Another machine is part-way through a video of shard 1 in the same store: one video is
+    # being written, another is mid-swap (its finished output renamed aside). Shard 0's run must
+    # leave both exactly as they are.
+    store = _store_path(env.work)
+    theirs = sorted(key for key in ALL_KEYS if _shard_of(key, 2) == 1)
+    assert len(theirs) >= 2
+    planted = []
+    for (key, compression), suffix in zip(theirs, (".tmp-99999", ".old-99999"), strict=False):
+        directory = store / f"{key}/{compression}{suffix}"
+        directory.mkdir(parents=True)
+        (directory / "frame_000000.png").write_bytes(b"another machine's frame")
+        planted.append(directory)
+
+    summary = _run(shard=(0, 2))
+
+    assert summary.counts_by_status.get("ok", 0) > 0
+    for directory in planted:
+        assert (directory / "frame_000000.png").read_bytes() == b"another machine's frame"
+
+
 def test_shard_merge_equals_single_run(env):
     # One video that cannot be decoded at all: its row carries a reason, which must read the same
     # on every machine (no absolute path in it) for merge to write it out.

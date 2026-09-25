@@ -295,27 +295,6 @@ def test_write_profile_allows_the_same_profile_with_different_backend_meta_but_w
     assert payload["backend"]["meta"] == {"a": 1}
 
 
-def test_cleanup_partial_removes_leftover_tmp_directories(tmp_path):
-    root = tmp_path / "store"
-    good = root / "a" / "1" / "_"
-    good.mkdir(parents=True)
-    (good / "frame_000000.png").write_bytes(b"not really a png")
-    stale = root / "a" / "2" / "_.tmp-12345"
-    stale.mkdir(parents=True)
-    (stale / "frame_000000.png").write_bytes(b"partial")
-
-    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
-    store.cleanup_partial()
-
-    assert good.is_dir()
-    assert not stale.exists()
-
-
-def test_cleanup_partial_is_a_no_op_when_the_store_root_does_not_exist_yet(tmp_path):
-    store = Store(tmp_path / "never-created", _profile(), roots=_NO_DATASETS_ROOT)
-    store.cleanup_partial()  # must not raise
-
-
 def test_a_store_root_inside_a_datasets_root_is_refused(tmp_path):
     datasets_root = tmp_path / "datasets"
     datasets_root.mkdir()
@@ -424,22 +403,6 @@ def test_recover_video_dir_is_a_no_op_when_nothing_needs_cleaning_up(tmp_path):
     assert out_dir.is_dir()
 
     recover_video_dir(tmp_path / "never-created" / "_")  # must not raise either
-
-
-def test_cleanup_partial_restores_a_stranded_old_directory(tmp_path):
-    root = tmp_path / "store"
-    out_dir = root / "a" / "1" / "_"
-    out_dir.mkdir(parents=True)
-    (out_dir / "frame_000000.png").write_bytes(b"the last known-good content")
-    old_dir = out_dir.with_name(f"{out_dir.name}.old-4242")
-    out_dir.rename(old_dir)
-
-    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
-    store.cleanup_partial()
-
-    assert out_dir.is_dir()
-    assert (out_dir / "frame_000000.png").read_bytes() == b"the last known-good content"
-    assert not old_dir.exists()
 
 
 @pytest.mark.parametrize(

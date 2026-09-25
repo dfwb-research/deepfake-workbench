@@ -360,22 +360,3 @@ class Store:
                 existing.get("backend"),
                 payload["backend"],
             )
-
-    def cleanup_partial(self) -> None:
-        """Repair or clean up every video directory under this store left mid-swap by a crash.
-
-        Every distinct ``.tmp-<pid>``/``.old-<pid>`` sibling found is resolved with
-        :func:`recover_video_dir`: a video whose last good directory is stranded in ``.old-*``
-        gets it restored, and every other stray tmp or old directory is simply removed.
-        """
-        if not self.root.is_dir():
-            return
-        slots: set[Path] = set()
-        for path in self.root.rglob("*"):
-            if not path.is_dir():
-                continue
-            match = _TMP_SUFFIX.search(path.name) or _OLD_SUFFIX.search(path.name)
-            if match:
-                slots.add(path.with_name(path.name[: match.start()]))
-        for out_dir in slots:
-            recover_video_dir(out_dir)

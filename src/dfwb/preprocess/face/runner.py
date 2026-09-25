@@ -76,7 +76,7 @@ from dfwb.core.records import (
 from dfwb.preprocess.face.backends import FaceBackend
 from dfwb.preprocess.face.process import check_backend, process_video
 from dfwb.preprocess.face.profiles import load_profile
-from dfwb.preprocess.face.store import Store, portable_reason, video_relpath
+from dfwb.preprocess.face.store import Store, portable_reason, recover_video_dir, video_relpath
 from dfwb.preprocess.inventory.runner import get_builder, read_inventory, resolve_video_path
 from dfwb.protocols.protocol import Protocol, _matches_where
 from dfwb.protocols.protocol import load as load_protocol
@@ -305,19 +305,38 @@ def _scope(
 
 def _to_do(
     records: Sequence[InventoryRecord], store: Store, redo: frozenset[str]
-) -> tuple[list[InventoryRecord], int]:
-    """``(the records to process, how many were skipped)``: a record is skipped when the store's
-    latest row for it has a status that is not in ``redo``; one with no row is always done."""
+) -> tuple[list[InventoryRecord], list[tuple[InventoryRecord, str]]]:
+    """``(the records to process, the records skipped with their latest status)``: a record is
+    skipped when the store's latest row for it has a status that is not in ``redo``; one with no
+    row is always done."""
     latest = {(row.key, row.compression): row.status for row in store.records()}
     to_do: list[InventoryRecord] = []
-    skipped = 0
+    skipped: list[tuple[InventoryRecord, str]] = []
     for record in records:
         status = latest.get((record.key, record.compression))
         if status is None or status in redo:
             to_do.append(record)
         else:
-            skipped += 1
+            skipped.append((record, status))
     return to_do, skipped
+
+
+def _restore_skipped(skipped: Sequence[tuple[InventoryRecord, str]], store: Store) -> None:
+    """Put back the output of every skipped ``ok`` video whose directory is missing.
+
+    Redoing an ``ok`` video renames its finished directory aside before swapping the new one in
+    (see :func:`~dfwb.preprocess.face.store.recover_video_dir`); a run killed between the two
+    renames leaves the index saying ``ok`` with no directory in place. A video this run processes
+    is repaired by :func:`~dfwb.preprocess.face.process.process_video` itself; one it skips is
+    repaired here. Only this run's own videos are looked at, one directory check each: never the
+    whole store, where another shard's run may be writing its own videos at this moment.
+    """
+    for record, status in skipped:
+        if status != "ok":
+            continue
+        out_dir = store.root / video_relpath(record.key, record.compression)
+        if not out_dir.is_dir():
+            recover_video_dir(out_dir)
 
 
 def _dataset_copies(dataset_id: str, roots: Mapping[RootName, ResolvedRoot]) -> tuple[Path, ...]:
@@ -768,7 +787,7 @@ def run(
     )
     copies = _dataset_copies(dataset_id, resolved)
 
-    to_do, n_skipped = _to_do(in_scope, store, redo_statuses)
+    to_do, skipped = _to_do(in_scope, store, redo_statuses)
 
     backend_name = processing.backend.name
     backend_params = _backend_params(processing)
@@ -782,8 +801,8 @@ def run(
             prepare = getattr(backend, "prepare", None)
             if prepare is not None:
                 prepare()
-            store.cleanup_partial()
             store.write_profile(_backend_record(backend))
+            _restore_skipped(skipped, store)
             if workers:
                 _close(backend)  # each worker builds its own
                 unclosed = None
@@ -825,6 +844,6 @@ def run(
     counts = recorder.counts
     return RunSummary(
         counts_by_status={status: counts[status] for status in STATUSES if counts[status]},
-        n_skipped=n_skipped,
+        n_skipped=len(skipped),
         store=store.root,
     )

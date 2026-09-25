@@ -12,8 +12,9 @@ whole clip. One :class:`~dfwb.preprocess.face.track.Tracker` is driven across ev
 turn, so a face is followed exactly as it would be if the whole clip had been decoded at once.
 
 Output never appears half-written: every frame is written straight into a private ``.tmp-<pid>``
-sibling of the final directory, and a video whose result is not ``ok`` has that sibling removed
-rather than kept or renamed. A successful result replaces any previous ``out_dir`` through
+sibling of the final directory, and a video whose result is not ``ok``, or whose processing raises
+(an interrupt included), has that sibling removed rather than kept or renamed. A successful result
+replaces any previous ``out_dir`` through
 :func:`~dfwb.preprocess.face.store.recover_video_dir`'s two-step swap (the previous directory is
 renamed aside before the new one takes its place, and only deleted once that has succeeded), so a
 process killed mid-swap never leaves ``out_dir`` missing -- the next call for the same video
@@ -194,9 +195,10 @@ def process_video(
     Writes every kept frame straight into ``out_dir``'s private ``.tmp-<pid>`` sibling as it is
     produced, at most :data:`_WINDOW` decoded frames held in memory at a time, and only swaps that
     sibling into ``out_dir``'s place once the whole clip has been processed and the result is
-    ``ok``; for any other result the sibling is removed and ``out_dir`` is left untouched. Any
-    ``.tmp-*``/``.old-*`` sibling a previous, interrupted attempt at this same video left behind
-    is resolved first (see :func:`~dfwb.preprocess.face.store.recover_video_dir`).
+    ``ok``; for any other result, and when anything raises along the way, the sibling is removed
+    and ``out_dir`` is left untouched. Any ``.tmp-*``/``.old-*`` sibling a previous attempt at
+    this same video left behind (one killed outright, with no chance to clean up) is resolved
+    first (see :func:`~dfwb.preprocess.face.store.recover_video_dir`).
 
     Args:
         source_path: The video file, or a directory of already-extracted frame images.
@@ -264,6 +266,9 @@ def process_video(
     frames_meta: list[dict[str, Any]] = []
     failed_frames: list[dict[str, Any]] = []
     cv2 = None
+    # Whatever ends this block -- a result other than ok, or an exception of any kind, an
+    # interrupt included -- the private directory goes with it; once the swap below has moved it
+    # into out_dir's place there is nothing left to remove.
     try:
         for window in _windows(source.read(requested), _WINDOW):
             per_frame = _batch_detect(backend, window)
@@ -302,40 +307,40 @@ def process_video(
                         "landmarks5": landmarks,
                     }
                 )
+
+        if not frames_meta:
+            return _failure(record, status="no_face", reason="no frame produced a usable face")
+
+        decoder = "frames" if Path(source_path).is_dir() else profile.decode.library
+        clip = {
+            "key": record.key,
+            "compression": record.compression,
+            "source": {
+                "total_frames": total_frames,
+                "fps": source.fps,
+                "width": source.width,
+                "height": source.height,
+                "decoder": decoder,
+            },
+            "frames": frames_meta,
+            "failed_frames": failed_frames,
+            "track": {
+                "strategy": profile.track.strategy,
+                "identity_switch": tracker.identity_switch,
+            },
+        }
+        (tmp_dir / "clip.json").write_text(canonical_json(clip) + "\n", encoding="utf-8")
+
+        old_dir = out_dir.with_name(f"{out_dir.name}.old-{os.getpid()}")
+        if out_dir.exists():
+            out_dir.rename(old_dir)
+        tmp_dir.rename(out_dir)
+        if old_dir.exists():
+            shutil.rmtree(old_dir, ignore_errors=True)
     except DecodeError as exc:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         return _failure(record, status="decode_error", reason=str(exc))
-
-    if not frames_meta:
+    finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        return _failure(record, status="no_face", reason="no frame produced a usable face")
-
-    decoder = "frames" if Path(source_path).is_dir() else profile.decode.library
-    clip = {
-        "key": record.key,
-        "compression": record.compression,
-        "source": {
-            "total_frames": total_frames,
-            "fps": source.fps,
-            "width": source.width,
-            "height": source.height,
-            "decoder": decoder,
-        },
-        "frames": frames_meta,
-        "failed_frames": failed_frames,
-        "track": {
-            "strategy": profile.track.strategy,
-            "identity_switch": tracker.identity_switch,
-        },
-    }
-    (tmp_dir / "clip.json").write_text(canonical_json(clip) + "\n", encoding="utf-8")
-
-    old_dir = out_dir.with_name(f"{out_dir.name}.old-{os.getpid()}")
-    if out_dir.exists():
-        out_dir.rename(old_dir)
-    tmp_dir.rename(out_dir)
-    if old_dir.exists():
-        shutil.rmtree(old_dir, ignore_errors=True)
 
     n_written = len(frames_meta)
     total_requested = (
