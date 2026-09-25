@@ -40,7 +40,7 @@ from dfwb.data.index import SourceSpec, VideoIndex
 from dfwb.eval.aggregate import aggregate as aggregate_scores
 from dfwb.protocols.protocol import Protocol
 from dfwb.protocols.protocol import load as load_protocol
-from dfwb.score.cache import DetectorIdentity, cache_key, look_up, score_path
+from dfwb.score.cache import DetectorIdentity, cache_key, canonical_where, look_up, score_path
 from dfwb.score.sources import resolve_detector
 from dfwb.score.writer import (
     FrameRecord,
@@ -486,6 +486,12 @@ def score(
     device = _normalize_device(device)
     if frames:
         require_pyarrow()
+    # Canonicalised once, here, and threaded through everything below that hashes, stores or
+    # compares it (the cache key, the C5 meta a run is recorded under, a cache hit's own match
+    # against that meta, and the split join) -- never canonicalised again at each of those points
+    # separately, which would let a freshly canonicalised incoming `where` fail to match a stored
+    # one that was never canonicalised in the first place.
+    where = canonical_where(where)
 
     from dfwb.data.adapt import adapt as adapt_input
     from dfwb.data.adapt import available_profiles
@@ -593,7 +599,7 @@ def score(
             "%s: split %r matches no videos (where=%r); writing an empty score file",
             loaded_protocol.ref,
             split,
-            dict(where or {}),
+            where,
         )
 
     meta = assemble_meta(

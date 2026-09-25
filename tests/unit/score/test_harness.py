@@ -642,3 +642,25 @@ def test_cache_keys_identical_config_is_cached_force_recomputes(score_roots, tmp
     assert identical.csv_path == first.csv_path
     assert forced.cached is False
     assert forced.csv_path == first.csv_path
+
+
+def test_cache_keys_where_membership_list_order_does_not_bust_the_cache(score_roots, tmp_path):
+    """``cache_key()`` already hashes a canonical (sorted) ``where``, so an unsorted and a sorted
+    call land at the same path -- but a cache *hit* also needs the stored C5 meta itself to be
+    canonical, or ``cache_matches()`` compares a canonicalised incoming ``where`` against a
+    differently-ordered stored one and wrongly calls it a miss."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    unsorted = _score(tmp_path, where={"identity": ["r00", "f00"]})
+    assert unsorted.cached is False
+
+    already_sorted = _score(tmp_path, where={"identity": ["f00", "r00"]})
+    assert already_sorted.csv_path == unsorted.csv_path
+    assert already_sorted.cached is True
+
+    unsorted_again = _score(tmp_path, where={"identity": ["r00", "f00"]})
+    assert unsorted_again.csv_path == unsorted.csv_path
+    assert unsorted_again.cached is True
+
+    meta = read_scores(unsorted.csv_path).meta
+    assert meta.protocol.where == {"identity": ["f00", "r00"]}  # stored canonical (sorted)
