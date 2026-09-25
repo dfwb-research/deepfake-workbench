@@ -40,7 +40,7 @@ def _profile(
         id=id,
         backend=BackendSpec(name=backend),
         track=TrackSpec(iou=0.5, strategy="greedy"),
-        crop=CropSpec(scale=scale, size=size, square=True, align="eyes"),
+        crop=CropSpec(scale=scale, size=size, square=True, align="none"),
         sampling=SamplingSpec(mode="uniform", frames=1),
         decode=DecodeSpec(library="opencv", color="rgb"),
         extras=ExtrasSpec(landmarks=False, mesh=False, masks=False),
