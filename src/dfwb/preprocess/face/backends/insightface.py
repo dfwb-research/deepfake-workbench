@@ -194,9 +194,9 @@ def _to_face(row: npt.NDArray[Any], points: npt.NDArray[Any] | None) -> Face:
 class InsightFaceBackend:
     """SCRFD detection and ArcFace embeddings from insightface's ``buffalo_l`` models.
 
-    Building the backend only checks its parameters and the licence acknowledgement; the models
-    are found (or downloaded) and loaded on the first :meth:`detect`, and the recognition model
-    on the first :meth:`embed`.
+    Building the backend checks its parameters and the licence acknowledgement, then settles
+    which onnxruntime providers it will use; the models are found (or downloaded) and loaded on
+    the first :meth:`detect`, and the recognition model on the first :meth:`embed`.
 
     Args:
         model: The model pack; ``"buffalo_l"`` is the only one supported.

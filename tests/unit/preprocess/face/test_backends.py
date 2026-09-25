@@ -358,7 +358,7 @@ def test_a_pack_member_with_the_wrong_hash_is_refused_and_nothing_is_kept(
     leftovers = sorted(p.name for p in target.iterdir()) if target.exists() else []
     assert "w600k_r50.onnx" not in leftovers
     assert all(not name.startswith(".") for name in leftovers)
-    assert not (target.parent / "buffalo_l.zip").exists()
+    assert not list(target.parent.glob(".buffalo_l.*.zip"))
 
 
 @pytest.mark.usefixtures("stand_in_models", "accepted")
