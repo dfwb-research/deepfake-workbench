@@ -300,9 +300,9 @@ def test_the_benchmark_draws_per_model_across_compressions(dfdm_root):
     }
 
 
-def test_the_compressions_are_in_name_order():
-    # The benchmark breaks ties between compressions of one key by the compression's name, so
-    # the discovery order must agree with it.
+def test_the_known_compressions_are_listed_in_name_order():
+    # Only the declared constant is checked: listed in name order, discovery order and the
+    # benchmark's tie order (by compression name) are the same.
     known = DFDMBuilder.known_compressions
     assert known == ("c0", "c10", "c23")
     assert list(known) == sorted(known)

@@ -110,9 +110,11 @@ class KoDFBuilder(BaseBuilder):
     card_info = {
         "name": "KoDF",
         "aliases": ["Korean DeepFake Detection Dataset"],
-        "release": "62,166 real clips of 403 Korean actors and 175,776 clips synthesized from "
-        "them with five methods: FaceSwap, DeepFaceLab, FSGAN, first-order motion and "
-        "audio-driven reenactment",
+        "release": "62,166 real clips of 403 Korean subjects and 175,776 clips synthesized from "
+        "them with six synthesis models, in five method folders: FaceSwap, DeepFaceLab and "
+        "FSGAN (face swapping), First Order Motion Model (FOMM; video-driven face "
+        "reenactment), and Audio-driven Talking Face Head Pose (ATFHP) and Wav2Lip (audio-driven "
+        "face reenactment), which share the audio-driven folder",
         "homepage": "https://github.com/deepbrainai-research/kodf",
         "paper": {
             "title": "KoDF: A Large-Scale Korean DeepFake Detection Dataset",

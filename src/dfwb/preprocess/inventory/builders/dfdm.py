@@ -8,10 +8,11 @@ Layout, relative to the ``DFDM`` folder (``{cX}`` is ``c0``, ``c10`` or ``c23``)
   ``DFaker``, ``DFL-H128``, ``FaceSwap``, ``IAE`` and ``LightWeight``, where ``<name>`` is
   ``<target>_<source>_<rec>_<tag>`` (e.g. ``id28_id20_0008_4dfaker``).
 
-The release ships only the fakes, made from Celeb-DF v2's 590 Celeb-real videos; those reals are
-the ones this builder expects in its own ``original_content/Celeb-real/videos``. The release's
-``DFDM_crf0``, ``DFDM_crf10`` and ``DFDM_crf23`` folders are the ``c0``, ``c10`` and ``c23``
-compressions.
+The release ships only the fakes: 430 videos per model and quality level, so 2,150 per quality
+level and 6,450 in all, made from 415 of Celeb-DF v2's 590 Celeb-real videos. This builder
+expects all 590 Celeb-real videos in its own ``original_content/Celeb-real/videos``. The
+release's ``DFDM_crf0``, ``DFDM_crf10`` and ``DFDM_crf23`` folders are the ``c0``, ``c10`` and
+``c23`` compressions.
 
 Every video is keyed by its file stem, so a fake's key repeats once per compression. A fake whose
 stem has at least four ``_``-separated parts, the first two starting with ``id``, has the first
@@ -99,10 +100,11 @@ class DFDMBuilder(BaseBuilder):
     card_info = {
         "name": "DFDM",
         "aliases": ["DeepFakes from Different Models"],
-        "release": "6,450 face swaps: 2,150 videos made from Celeb-DF v2's real videos with each "
-        "of five autoencoder models (Faceswap, Lightweight, IAE, Dfaker, DFL-H128), at three "
-        "H.264 quality levels (lossless, high and low); the reals are Celeb-DF v2's, not part "
-        "of this release",
+        "release": "6,450 face swaps: 430 videos per model and quality level from five "
+        "autoencoder models (Faceswap, Lightweight, IAE, Dfaker, DFL-H128) at three H.264 "
+        "quality levels (lossless, high and low), so 2,150 per quality level, made from 415 of "
+        "Celeb-DF v2's 590 Celeb-real videos; the reals are Celeb-DF v2's, not part of this "
+        "release, and all 590 go in the real folder",
         "homepage": "https://github.com/shanface33/Deepfake_Model_Attribution",
         "paper": {
             "title": "Model Attribution of Face-Swap Deepfake Videos",
@@ -125,9 +127,9 @@ class DFDMBuilder(BaseBuilder):
     layout_notes = (
         "The release's DFDM_crf0, DFDM_crf10 and DFDM_crf23 folders are the c0, c10 and c23 "
         "compressions: each model's videos go in manipulated_content/<model>/{cX}/videos/.\n"
-        "The release has no reals: its fakes were made from Celeb-DF v2's 590 Celeb-real "
-        "videos, which go in original_content/Celeb-real/videos/ here (the same files as "
-        "Celeb-DF v2's own Celeb-real folder).\n"
+        "The release has no reals: its fakes were made from 415 of Celeb-DF v2's 590 "
+        "Celeb-real videos. All 590 go in original_content/Celeb-real/videos/ here (the same "
+        "files as Celeb-DF v2's own Celeb-real folder).\n"
         "Fakes are named <target>_<source>_<rec>_<tag>; each pairs with the real <target>_<rec>."
     )
 

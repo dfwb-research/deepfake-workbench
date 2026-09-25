@@ -145,7 +145,7 @@ def test_fields_parsed_from_the_names(kodf_root):
 
 
 def test_fakes_nest_by_date_and_target(kodf_root):
-    # The release nests fakes as <date>/<target>/<video>: every task is searched recursively.
+    # Fakes may nest (e.g. <date>/<target>/<video>).
     _touch(
         kodf_root.joinpath("manipulated_content", "fsgan", "videos", "20200101", "100003"),
         "100003_100004_3_0001.mp4",
