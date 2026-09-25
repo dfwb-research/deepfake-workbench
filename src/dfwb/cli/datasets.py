@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,7 +13,7 @@ from dfwb.cli._output import emit_json, json_option, table
 
 if TYPE_CHECKING:
     from dfwb.core.paths import ResolvedRoot, RootName
-    from dfwb.preprocess.inventory.runner import FolderStatus
+    from dfwb.preprocess.inventory.runner import DatasetCopy, FolderStatus
 
 _MISSING = "—"
 
@@ -58,6 +58,18 @@ def _location_json(status: FolderStatus) -> dict[str, Any]:
         "path": None if location is None else str(location.path),
         "source": status.source,
         "also_found": [] if location is None else [str(p) for p in location.also_found],
+    }
+
+
+def _copies_json(status: FolderStatus, copies: Sequence[DatasetCopy]) -> dict[str, Any]:
+    """Every copy found, each naming which task x compression directories hold a video."""
+    return {
+        "source": status.source,
+        "problem": status.problem,
+        "copies": [
+            {"path": str(copy.path), "source": copy.source, "video_dirs": list(copy.video_dirs)}
+            for copy in copies
+        ],
     }
 
 
@@ -192,12 +204,13 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
 def info(dataset: str, as_json: bool) -> None:
     """Show DATASET's details, its expected layout, its local folder and its schemes."""
     from dfwb.core.registry import catalogue_requirement
-    from dfwb.preprocess.inventory.runner import folder_status, get_builder
+    from dfwb.preprocess.inventory.runner import dataset_copies, folder_status, get_builder
 
     builder = get_builder(dataset)
     dataset_id = builder.dataset_id
     roots, overrides = _locate_context()
     status = folder_status(dataset_id, builder.expected_folder, roots, overrides)
+    copies = () if status.location is None else dataset_copies(builder, status.location, roots)
     schemes, problems = _pack_schemes(dataset_id)
     card = dict(builder.card_info)
 
@@ -208,7 +221,7 @@ def info(dataset: str, as_json: bool) -> None:
                 "builder": {"id": dataset_id, "version": builder.version},
                 "card": card,
                 "layout": builder.describe_layout(),
-                "location": {**_location_json(status), "problem": status.problem},
+                "location": _copies_json(status, copies),
                 "schemes": schemes,
                 "problems": problems,
             }
@@ -223,12 +236,13 @@ def info(dataset: str, as_json: bool) -> None:
     click.echo("")
     click.echo(builder.describe_layout())
     click.echo("")
-    if status.location is None:
+    if not copies:
         click.echo(f"folder: not found ({status.problem})")
     else:
-        click.echo(f"folder: {status.location.path}  ({status.source})")
-        for path in status.location.also_found:
-            click.echo(f"also found: {path}")
+        for copy in copies:
+            videos = ", ".join(copy.video_dirs) if copy.video_dirs else "no videos found"
+            click.echo(f"{copy.source}: {copy.path}")
+            click.echo(f"  videos: {videos}")
     click.echo("")
     if schemes:
         click.echo("schemes in installed protocol packs:")

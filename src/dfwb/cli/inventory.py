@@ -69,14 +69,19 @@ def build(
                 "count": result.count,
                 "by_task": result.by_task,
                 "dataset_dir": str(result.dataset_dir),
+                "copies": [str(copy) for copy in result.copies],
                 "location_source": result.location_source,
             }
         )
         return
-    click.echo(
-        f"wrote {result.count} records to {result.path} "
-        f"(dataset folder: {result.dataset_dir}, from {result.location_source})"
+    # location_source is already in known-compressions order, "metadata" last; never re-sorted.
+    sources = ", ".join(f"{k}: {v}" for k, v in result.location_source.items())
+    where = (
+        f"dataset copies: {', '.join(str(copy) for copy in result.copies)}"
+        if len(result.copies) > 1
+        else f"dataset folder: {result.dataset_dir}"
     )
+    click.echo(f"wrote {result.count} records to {result.path} ({where}, from {sources})")
 
 
 @inventory.command("show")

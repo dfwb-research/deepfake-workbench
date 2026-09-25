@@ -13,6 +13,7 @@ dataset is without importing its builder.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -37,21 +38,31 @@ from dfwb.preprocess.inventory.base import BaseBuilder, validate_compressions
 __all__ = [
     "INVENTORY_FILE",
     "META_FILE",
+    "DatasetCopy",
     "FolderStatus",
     "InventoryResult",
     "build_inventory",
     "collect_records",
+    "dataset_copies",
     "describe_location",
+    "folder_copies",
     "folder_status",
     "get_builder",
     "inventory_path",
+    "metadata_copy",
     "read_inventory",
+    "resolve_video_path",
 ]
+
+_log = logging.getLogger(__name__)
 
 INVENTORY_FILE = "inventory.jsonl"
 META_FILE = "inventory.meta.json"
 
 _NOT_FOUND = "not found"
+
+# The location_source key for a compression-less dataset's one version (a video_dir without {cX}).
+SINGLE_VERSION = "single"
 
 
 @dataclass(frozen=True)
@@ -62,8 +73,11 @@ class InventoryResult:
     path: Path
     count: int
     by_task: dict[str, int]  # every task of the builder, in task-table order (0 if absent)
-    dataset_dir: Path
-    location_source: str  # "--root", "root N" or "override (...)"
+    dataset_dir: Path  # the metadata copy: see metadata_copy()
+    location_source: Mapping[str, str]  # {"<compression or SINGLE_VERSION>": "root N"/"--root"/
+    # "override (...)" (or several, comma-joined, in root order, when a compression's tasks
+    # resolve to different copies), ..., "metadata": <same>} -- never an absolute path
+    copies: tuple[Path, ...]  # every copy searched (or the one override/--root copy)
 
 
 @dataclass(frozen=True)
@@ -115,6 +129,227 @@ def describe_location(location: DatasetLocation, roots: Mapping[RootName, Resolv
         if path == location.root:
             return f"root {index}"
     return "a datasets root"
+
+
+@dataclass(frozen=True)
+class DatasetCopy:
+    """One folder found for a dataset: whether it holds the builder's layout, and where."""
+
+    path: Path
+    source: str  # "root N", "override (...)" or "--root"
+    has_layout: bool  # from builder.layout_present(path) -- the one hook a plugin overrides
+    video_dirs: tuple[str, ...]  # from builder.videos_present(path) -- display detail only
+
+
+def _root_source(path: Path, expected_folder: str, roots: Mapping[RootName, ResolvedRoot]) -> str:
+    """``root N`` (1-based) for the datasets root that ``path`` (``root / expected_folder``) came
+    from, or ``"a datasets root"`` if none matches (unreachable in practice: every candidate comes
+    from :func:`~dfwb.core.paths.locate_dataset`'s own search)."""
+    datasets = roots.get("datasets")
+    for index, root_path in enumerate(datasets.paths if datasets is not None else (), start=1):
+        if root_path / expected_folder == path:
+            return f"root {index}"
+    return "a datasets root"
+
+
+def dataset_copies(
+    builder: BaseBuilder, location: DatasetLocation, roots: Mapping[RootName, ResolvedRoot]
+) -> tuple[DatasetCopy, ...]:
+    """Every copy ``location`` names, in root order, each annotated with its populated video dirs.
+
+    ``location`` must come from :func:`~dfwb.core.paths.locate_dataset` for this builder's
+    dataset id and expected folder. An override (``location.root is None``) names exactly one
+    copy, used as given -- never compared against other roots. Whether a copy "has the layout" is
+    always :meth:`~dfwb.preprocess.inventory.base.BaseBuilder.layout_present`, so a builder that
+    overrides it changes the answer here too.
+    """
+    if location.root is None:
+        source = describe_location(location, roots)
+        return (
+            DatasetCopy(
+                location.path,
+                source,
+                builder.layout_present(location.path),
+                builder.videos_present(location.path),
+            ),
+        )
+    paths = (location.path, *location.also_found)
+    return tuple(
+        DatasetCopy(
+            path,
+            _root_source(path, builder.expected_folder, roots),
+            builder.layout_present(path),
+            builder.videos_present(path),
+        )
+        for path in paths
+    )
+
+
+def _warn_if_no_videos_anywhere(builder: BaseBuilder, copies: Sequence[DatasetCopy]) -> None:
+    """A warning when no copy holds a single video: the missing directories, or every copy."""
+    if any(copy.has_layout for copy in copies):
+        return
+    if len(copies) == 1:
+        copy = copies[0]
+        missing = [d for d in builder.layout_dirs() if d not in copy.video_dirs]
+        _log.warning(
+            "%s: %s (%s) does not have the expected raw layout; missing videos in %s",
+            builder.dataset_id,
+            copy.path,
+            copy.source,
+            ", ".join(missing) if missing else "its task directories",
+        )
+    else:
+        _log.warning(
+            "%s: no copy of the dataset folder has any video (searched %s)",
+            builder.dataset_id,
+            ", ".join(f"{copy.source} ({copy.path})" for copy in copies),
+        )
+
+
+def metadata_copy(builder: BaseBuilder, copies: Sequence[DatasetCopy]) -> DatasetCopy:
+    """The copy :meth:`~BaseBuilder.prepare` and ``official_splits`` read from.
+
+    When the builder declares :attr:`~BaseBuilder.metadata_files`, the first copy holding all of
+    them; otherwise (nothing declared, or none holds them all) the first copy holding any video;
+    otherwise the first copy found. Public so a later pack-building step can pick the same copy
+    without repeating this rule.
+    """
+    if builder.metadata_files:
+        for copy in copies:
+            if all((copy.path / name).is_file() for name in builder.metadata_files):
+                return copy
+    for copy in copies:
+        if copy.has_layout:
+            return copy
+    return copies[0]
+
+
+def _compression_sources(
+    copies: Sequence[DatasetCopy],
+    chosen: Mapping[tuple[str, str | None], Path],
+    known_compressions: Sequence[str],
+) -> dict[str, str]:
+    """Which copy(ies) back each compression actually built, from a pre-computed choice.
+
+    ``chosen`` is :meth:`~dfwb.preprocess.inventory.base.BaseBuilder.choose_copies`'s result, so
+    this never re-probes the filesystem. Keys are in ``known_compressions`` order (or
+    :data:`SINGLE_VERSION` for a compression-less dataset). When two tasks resolve one
+    compression to two different copies, every distinct one is listed, comma-joined in root
+    order (e.g. ``"root 1, root 2"``) -- naming a split the way ``dfwb datasets info`` shows it,
+    rather than picking one arbitrarily.
+    """
+    per_compression: dict[str | None, set[Path]] = {}
+    for (_, compression), copy_path in chosen.items():
+        per_compression.setdefault(compression, set()).add(copy_path)
+
+    sources: dict[str, str] = {}
+    for compression in (*known_compressions, None):
+        path_set = per_compression.get(compression)
+        if not path_set:
+            continue
+        label = compression or SINGLE_VERSION
+        ordered = [copy.source for copy in copies if copy.path in path_set]
+        sources[label] = ", ".join(ordered)
+    return sources
+
+
+def _warn_shadowed_copies(
+    builder: BaseBuilder,
+    copies: Sequence[DatasetCopy],
+    chosen: Mapping[tuple[str, str | None], Path],
+) -> None:
+    """A warning for every ``(task, compression)`` where a later copy's video is never used."""
+    if len(copies) < 2:
+        return
+    by_path = {copy.path: copy.source for copy in copies}
+    paths = tuple(copy.path for copy in copies)
+    tasks = {task.abbr: task for task in builder.tasks}
+    for (task_abbr, compression), chosen_path in chosen.items():
+        task = tasks[task_abbr]
+        shadowed = builder.copies_after(paths, chosen_path, task, compression)
+        if not shadowed:
+            continue
+        label = compression or SINGLE_VERSION
+        _log.warning(
+            "%s: %s/%s: using %s; %s also has a video there, never scanned",
+            builder.dataset_id,
+            task_abbr,
+            label,
+            by_path[chosen_path],
+            ", ".join(by_path[p] for p in shadowed),
+        )
+
+
+def _warn_requested_compressions_found_nowhere(
+    builder: BaseBuilder, wanted: Sequence[str] | None, location_source: Mapping[str, str]
+) -> None:
+    """A warning for a requested compression that no copy provided (0 records for it)."""
+    if not wanted:
+        return
+    missing = [c for c in wanted if c not in location_source]
+    if missing:
+        _log.warning(
+            "%s: requested compression(s) %s found in no copy; 0 records for %s",
+            builder.dataset_id,
+            ", ".join(missing),
+            "them" if len(missing) > 1 else "it",
+        )
+
+
+def folder_copies(folder: str, roots: Mapping[RootName, ResolvedRoot]) -> list[Path]:
+    """Every datasets root holding ``folder`` as a directory, in root order.
+
+    For a record whose ``folder`` names a sibling dataset's folder (see
+    :meth:`~dfwb.preprocess.inventory.base.BaseBuilder.record`): its copies are independent of
+    where the record's own dataset folder resolved, so every datasets root is searched again,
+    from scratch, for this folder name specifically.
+    """
+    datasets = roots.get("datasets")
+    search_paths = datasets.paths if datasets is not None else ()
+    return [root / folder for root in search_paths if (root / folder).is_dir()]
+
+
+def resolve_video_path(
+    record: InventoryRecord,
+    copies: Sequence[Path],
+    *,
+    datasets_roots: Mapping[RootName, ResolvedRoot] | None = None,
+) -> Path:
+    """The absolute video or frame directory backing ``record``: the first copy holding it.
+
+    A record's ``relpath`` names a video file, or, for a dataset that ships pre-cropped frames
+    instead of videos, a directory of frames; either is found. When ``record.folder`` is unset,
+    the first of ``copies`` -- the same copies
+    :func:`build_inventory` bound the record's own builder to. When it is set (the record lives
+    in a sibling dataset's folder, e.g. a TalkingHeadBench real that sits in FaceForensics++),
+    ``copies`` is ignored and :func:`folder_copies` resolves that sibling folder across every
+    datasets root instead, independent of where the record's own dataset folder resolved -- that
+    sibling folder can just as well be split across roots by compression.
+
+    Raises:
+        ConfigError: ``record.folder`` is set but ``datasets_roots`` is not given, or none of the
+            resolved copies holds the video or frame directory.
+    """
+    if record.folder is not None:
+        if datasets_roots is None:
+            raise ConfigError(
+                f"{record.key}: its folder {record.folder!r} needs the datasets roots to resolve",
+                hint="pass datasets_roots=resolve_roots() (or the roots already in hand)",
+            )
+        search_copies = folder_copies(record.folder, datasets_roots)
+    else:
+        search_copies = list(copies)
+    for copy in search_copies:
+        candidate = copy / record.relpath
+        if candidate.is_file() or candidate.is_dir():
+            return candidate
+    searched = ", ".join(str(copy) for copy in search_copies) or "no copies given"
+    raise ConfigError(
+        f"{record.key}: {record.relpath!r} was not found in any copy of the dataset folder "
+        f"(searched {searched})",
+        hint="rebuild the inventory if the dataset's layout on disk changed",
+    )
 
 
 def folder_status(
@@ -208,14 +443,17 @@ def _is_inside(path: Path, parent: Path) -> bool:
     return path.is_relative_to(parent) or path.resolve().is_relative_to(parent.resolve())
 
 
-def _check_outside(out_dir: Path, dataset_dir: Path, datasets_roots: Sequence[Path]) -> None:
-    """Raw data is never written to: refuse an output folder in the dataset or a datasets root."""
-    places = [("the dataset folder", dataset_dir)]
+def _check_outside(
+    out_dir: Path, dataset_dirs: Sequence[Path], datasets_roots: Sequence[Path]
+) -> None:
+    """Raw data is never written to: refuse an output folder in a copy or a datasets root."""
+    label = "the dataset folder" if len(dataset_dirs) == 1 else "a copy of the dataset folder"
+    places = [(label, dataset_dir) for dataset_dir in dataset_dirs]
     places += [("the datasets root", root) for root in datasets_roots]
-    for label, place in places:
+    for place_label, place in places:
         if _is_inside(out_dir, place):
             raise ConfigError(
-                f"the work root puts the inventory inside {label} {place}",
+                f"the work root puts the inventory inside {place_label} {place}",
                 hint="set DFWB_WORK_ROOT to a folder outside every datasets root",
             )
 
@@ -266,6 +504,7 @@ def build_inventory(
         )
     resolved = resolve_roots() if roots is None else roots
     work_root = require_root("work", resolved)
+    copies: tuple[DatasetCopy, ...]
     if root is not None:
         dataset_dir = absolute(root)
         if not dataset_dir.is_dir():
@@ -273,36 +512,56 @@ def build_inventory(
                 f"{dataset_id}: --root {dataset_dir} is not a directory",
                 hint=f"point --root at the dataset's {builder.expected_folder!r} folder",
             )
-        source = "--root"
+        copies = (
+            DatasetCopy(
+                dataset_dir,
+                "--root",
+                builder.layout_present(dataset_dir),
+                builder.videos_present(dataset_dir),
+            ),
+        )
     else:
         location = locate_dataset(
             dataset_id, builder.expected_folder, resolved, overrides=dataset_overrides()
         )
-        dataset_dir, source = location.path, describe_location(location, resolved)
+        copies = dataset_copies(builder, location, resolved)
+    _warn_if_no_videos_anywhere(builder, copies)
+
+    paths = tuple(copy.path for copy in copies)
+    wanted = validate_compressions(compressions, builder.known_compressions)
+    chosen = builder.choose_copies(paths, compressions=wanted)
+    builder.bind_copies(paths, chosen)
+    _warn_shadowed_copies(builder, copies, chosen)
+    meta_copy = metadata_copy(builder, copies)
 
     path = inventory_path(dataset_id, work_root)
     datasets = resolved.get("datasets")
-    _check_outside(path.parent, dataset_dir, datasets.paths if datasets is not None else ())
-    records = collect_records(builder, dataset_dir, compressions=compressions)
+    _check_outside(path.parent, paths, datasets.paths if datasets is not None else ())
+    records = collect_records(builder, meta_copy.path, compressions=compressions)
 
     by_task = {task.abbr: 0 for task in builder.tasks}
     for record in records:
         by_task[record.key.partition("/")[0]] += 1
     present = {record.compression for record in records}
+    location_source = _compression_sources(copies, chosen, builder.known_compressions)
+    _warn_requested_compressions_found_nowhere(builder, wanted, location_source)
+    location_source["metadata"] = meta_copy.source
     meta = {
         "builder": {"id": builder.dataset_id, "version": builder.version},
         "dfwb": __version__,
         "count": len(records),
         "compressions": sorted(present, key=lambda c: (c is not None, c or "")),
         "by_task": by_task,
-        "location_source": source,
+        "location_source": location_source,
     }
     assert_no_absolute_paths(meta, where=META_FILE)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(path, records)
     _write_text(path.parent / META_FILE, json.dumps(meta, indent=2, sort_keys=True) + "\n")
-    return InventoryResult(dataset_id, path, len(records), by_task, dataset_dir, source)
+    return InventoryResult(
+        dataset_id, path, len(records), by_task, meta_copy.path, location_source, paths
+    )
 
 
 def read_inventory(dataset_id: str, work_root: Path) -> list[InventoryRecord]:

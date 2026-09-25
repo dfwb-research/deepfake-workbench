@@ -19,6 +19,32 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
     ("ffpp", "ffpp:FaceForensicsBuilder", "FaceForensics++", "FaceForensics++"),
     ("dfd", "dfd:DeepFakeDetectionBuilder", "DeepFakeDetection", "FaceForensics++"),
     ("uadfv", "uadfv:UADFVBuilder", "UADFV", "UADFV"),
+    ("celebdf-v1", "celebdf:CelebDFv1Builder", "Celeb-DF v1", "Celeb-DF-v1"),
+    ("celebdf-v2", "celebdf:CelebDFv2Builder", "Celeb-DF v2", "Celeb-DF-v2"),
+    ("celebdf-v3", "celebdf:CelebDFv3Builder", "Celeb-DF v3", "Celeb-DF-v3"),
+    ("dfdc", "dfdc:DFDCBuilder", "DFDC", "DFDC"),
+    ("dfdc-p", "dfdcp:DFDCPreviewBuilder", "DFDC Preview", "DFDC-P"),
+    (
+        "deeperforensics",
+        "deeperforensics:DeeperForensicsBuilder",
+        "DeeperForensics-1.0",
+        "DeeperForensics-1.0",
+    ),
+    ("wilddeepfake", "wilddeepfake:WildDeepfakeBuilder", "WildDeepfake", "WildDeepfake"),
+    ("ffiw10k", "ffiw10k:FFIW10KBuilder", "FFIW-10K", "FFIW10K"),
+    ("kodf", "kodf:KoDFBuilder", "KoDF", "KoDF"),
+    ("dfdm", "dfdm:DFDMBuilder", "DFDM", "DFDM"),
+    (
+        "fakeavceleb",
+        "fakeavceleb:FakeAVCelebBuilder",
+        "FakeAVCeleb v1.2",
+        "FakeAVCeleb-v1_2",
+    ),
+    ("polyglotfake", "polyglotfake:PolyGlotFakeBuilder", "PolyGlotFake", "PolyGlotFake"),
+    ("deepspeak-v1", "deepspeak:DeepSpeakV1Builder", "DeepSpeak v1", "DeepSpeak-v1"),
+    ("deepspeak-v2", "deepspeak:DeepSpeakV2Builder", "DeepSpeak v2", "DeepSpeak-v2"),
+    ("idforge-v1", "idforge:IDForgeV1Builder", "IDForge-v1", "IDForge-v1"),
+    ("lav-df", "lavdf:LAVDFBuilder", "LAV-DF", "LAV-DF"),
 )
 
 # The package every built-in face backend lives in.

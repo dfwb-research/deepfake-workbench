@@ -108,6 +108,7 @@ class FaceForensicsBuilder(BaseBuilder):
         _method("FR_NT", "NeuralTextures"),
     )
     known_compressions = ("raw", "c23", "c40")
+    metadata_files = tuple(f"{_OFFICIAL_DIR}/{split}.json" for split in _OFFICIAL_SPLITS)
     labels = {
         "REAL": LabelSpec(binary=0, binary_av=0, multiclass=1, family="real"),
         "FS_DF": LabelSpec(binary=1, binary_av=1, multiclass=2, family="face-swap"),

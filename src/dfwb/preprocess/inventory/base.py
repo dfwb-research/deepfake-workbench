@@ -49,6 +49,7 @@ __all__ = [
     "SchemeSpec",
     "TaskSpec",
     "expand_compressions",
+    "has_videos",
     "scan_videos",
     "validate_compressions",
 ]
@@ -262,6 +263,20 @@ def scan_videos(directory: Path, *, recursive: bool = False) -> list[Path]:
     return sorted(path for path in directory.iterdir() if _is_video(path))
 
 
+def has_videos(directory: Path, *, recursive: bool = False) -> bool:
+    """Whether ``directory`` holds at least one video, without listing or sorting the rest.
+
+    Same rules as :func:`scan_videos` (hidden files skipped, suffix matched ignoring case,
+    symlinks followed, a missing directory has none), but stops at the first match: the cheaper
+    check when only presence matters, e.g. choosing which copy of a dataset to scan.
+    """
+    if not directory.is_dir():
+        return False
+    if recursive:
+        return next(_walk(directory, frozenset({_identity(directory)})), None) is not None
+    return any(_is_video(path) for path in directory.iterdir())
+
+
 def validate_compressions(
     requested: Sequence[str] | None, known: Sequence[str]
 ) -> list[str] | None:
@@ -294,7 +309,13 @@ def expand_compressions(
 
     Raises:
         ConfigError: a requested compression is not known (with a did-you-mean).
+        ContractError: ``known`` repeats a compression.
     """
+    if len(set(known)) != len(known):
+        raise ContractError(
+            f"known_compressions has a repeated entry: {list(known)!r}",
+            hint="list each compression once, in the order it should be tried",
+        )
     wanted = validate_compressions(requested, known)
     if COMPRESSION_TOKEN not in video_dir:
         return [None]
@@ -321,10 +342,20 @@ class BaseBuilder:
     layout that is not one folder per task.
 
     A builder that needs a metadata file (a CSV or JSON listing labels, identities or sources)
-    reads it once per build in :meth:`prepare`, which the runner calls with the dataset folder
-    before :meth:`discover`, and keeps what it needs on ``self`` for ``discover`` and
-    ``record_for_video`` to use. A missing file should leave the builder with nothing to yield
-    rather than raise: an empty or partial download is reported by ``dfwb protocols verify``.
+    reads it once per build in :meth:`prepare`, which the runner calls with the metadata root
+    (see :attr:`metadata_files`) before :meth:`discover`, and keeps what it needs on ``self`` for
+    ``discover`` and ``record_for_video`` to use. A missing file should leave the builder with
+    nothing to yield rather than raise: an empty or partial download is reported by
+    ``dfwb protocols verify``.
+
+    A dataset can sit under the same folder name in more than one datasets root on a real
+    machine, and a different compression's videos can live in a different one of those copies
+    (one root holding ``c40``, say, another ``c23`` and ``raw``). The runner finds every copy and
+    passes them to :meth:`bind_copies` before :meth:`prepare`/:meth:`discover`, so the default
+    ``discover`` can merge across them: for each task and compression, the first bound copy whose
+    concrete directory holds at least one video is scanned. Unbound (the default), ``discover``
+    scans exactly the ``root`` it is given, so a direct call such as ``builder.discover(some_dir)``
+    (as most builder-level tests make) is unaffected.
 
     Class attributes:
         dataset_id: The registry key, e.g. ``"ffpp"``.
@@ -333,6 +364,9 @@ class BaseBuilder:
         label_prefix: The label-key prefix: ``"FF"`` gives ``"FF-FS_DF"``.
         tasks: The task table; its order is the task rank used to break ties.
         known_compressions: The values ``{cX}`` can take, in order.
+        metadata_files: Paths, relative to the dataset folder, of every file :meth:`prepare` or
+            :meth:`official_splits` reads (e.g. the official split lists). Used to pick the
+            metadata root among several copies: the first that holds all of them.
         labels: Each task's :class:`LabelSpec`, by abbr; it covers every task.
         schemes: The split schemes the dataset supports, by name.
         default_scheme: The scheme used when a protocol names none.
@@ -350,6 +384,7 @@ class BaseBuilder:
     label_prefix: ClassVar[str]
     tasks: ClassVar[tuple[TaskSpec, ...]]
     known_compressions: ClassVar[tuple[str, ...]] = ()
+    metadata_files: ClassVar[tuple[str, ...]] = ()
     labels: ClassVar[Mapping[str, LabelSpec]]
     schemes: ClassVar[Mapping[str, SchemeSpec]]
     default_scheme: ClassVar[str]
@@ -359,30 +394,145 @@ class BaseBuilder:
     card_info: ClassVar[Mapping[str, Any]]
     layout_notes: ClassVar[str] = ""
 
+    _copies: tuple[Path, ...] | None = None
+    _chosen_copies: dict[tuple[str, str | None], Path] | None = None
+    _copies_bound: bool = False
+
     # ----------------------------------------------------------------------------- discovery
 
     def prepare(self, root: Path) -> None:
         """Load whatever the build needs once (e.g. a metadata file); the default does nothing.
 
-        Called by the runner with the dataset folder, once per build, before :meth:`discover`.
+        Called by the runner with the metadata root, once per build, before :meth:`discover`.
+        Unless :meth:`bind_copies` was already called, this also sets :attr:`copies` to
+        ``(root,)``, so a metadata-driven builder can read it from inside an overriding
+        ``prepare`` and see the same single-copy fallback :meth:`discover` will use.
         """
+        if not self._copies_bound:
+            self._copies = (root,)
+
+    def bind_copies(
+        self,
+        copies: Sequence[Path],
+        chosen: Mapping[tuple[str, str | None], Path] | None = None,
+    ) -> None:
+        """Bind every copy of the dataset folder the runner found, in root order.
+
+        See the class docstring: this lets the default :meth:`discover` merge a dataset that is
+        split across several datasets roots by compression. ``chosen`` is the result of
+        :meth:`choose_copies` on these same ``copies``, computed once by the runner and reused
+        here and in its provenance report, so the filesystem is never probed for the same choice
+        twice; left out, :meth:`discover` falls back to computing it itself, per call.
+        """
+        self._copies = tuple(copies)
+        self._chosen_copies = None if chosen is None else dict(chosen)
+        self._copies_bound = True
+
+    @property
+    def copies(self) -> tuple[Path, ...]:
+        """Every copy of the dataset folder :meth:`discover` scans.
+
+        The copies :meth:`bind_copies` was given; unbound, ``()`` until :meth:`prepare` has run,
+        after which it is ``(root,)`` -- the single root ``prepare``/``discover`` were called
+        with. A metadata-driven builder (one that overrides :meth:`prepare` to read something
+        under the dataset folder) reads this from inside its own ``prepare`` to look across every
+        copy for its metadata, not just the one ``prepare`` itself was called with -- which, once
+        copies are bound by the runner, is the metadata root (see the runner's copy resolution),
+        not necessarily the first copy.
+        """
+        return self._copies if self._copies is not None else ()
+
+    def _task_compression_dirs(self) -> tuple[tuple[TaskSpec, str | None, str], ...]:
+        """Every ``(task, compression, concrete video_dir)`` combination this builder scans."""
+        return tuple(
+            (task, compression, _concrete_dir(task.video_dir, compression))
+            for task in self.tasks
+            for compression in expand_compressions(task.video_dir, self.known_compressions, None)
+        )
+
+    def video_copy_for(
+        self, copies: Sequence[Path], task: TaskSpec, compression: str | None
+    ) -> Path | None:
+        """The first of ``copies`` whose ``task``/``compression`` directory holds a video."""
+        video_dir = _concrete_dir(task.video_dir, compression)
+        for copy in copies:
+            if has_videos(copy / video_dir, recursive=task.recursive):
+                return copy
+        return None
+
+    def copies_after(
+        self, copies: Sequence[Path], chosen: Path, task: TaskSpec, compression: str | None
+    ) -> list[Path]:
+        """Every one of ``copies`` after ``chosen`` that also holds a video for this combination.
+
+        Used to warn when a later copy's task/compression is shadowed by an earlier one's (the
+        one :meth:`video_copy_for` would pick).
+        """
+        video_dir = _concrete_dir(task.video_dir, compression)
+        index = list(copies).index(chosen)
+        return [
+            copy
+            for copy in copies[index + 1 :]
+            if has_videos(copy / video_dir, recursive=task.recursive)
+        ]
+
+    def choose_copies(
+        self, copies: Sequence[Path], *, compressions: Sequence[str] | None = None
+    ) -> dict[tuple[str, str | None], Path]:
+        """The copy chosen for every ``(task abbr, compression)`` this builder would scan.
+
+        Computed once by the runner (restricted to the requested ``compressions``, so a copy
+        that holds only an uninteresting compression is never probed) and given to
+        :meth:`bind_copies`, so :meth:`discover` and the runner's provenance report share this
+        one filesystem probe instead of each repeating it.
+
+        Raises:
+            ConfigError: ``compressions`` names a compression this dataset does not have.
+        """
+        chosen: dict[tuple[str, str | None], Path] = {}
+        for task in self.tasks:
+            for compression in expand_compressions(
+                task.video_dir, self.known_compressions, compressions
+            ):
+                copy = self.video_copy_for(copies, task, compression)
+                if copy is not None:
+                    chosen[(task.abbr, compression)] = copy
+        return chosen
 
     def discover(
         self, root: Path, *, compressions: Sequence[str] | None = None
     ) -> Iterator[InventoryRecord]:
         """Yield a record for every video of every task, once per compression.
 
-        A ``recursive`` task's videos may sit in sub-folders; their relpath keeps that path.
+        Scans across every bound copy (see :meth:`bind_copies`); unbound, just ``root`` (once
+        copies are bound, ``root`` itself is no longer consulted -- see :attr:`copies`). For each
+        task and compression, the first copy whose concrete directory holds a video is scanned
+        (the pre-computed choice from :meth:`bind_copies`, when it covers this combination, else
+        computed on the spot); a ``recursive`` task's videos may sit in sub-folders, and their
+        relpath keeps that path, identical regardless of which copy backs it. Two videos that
+        give the same ``(key, compression)`` -- e.g. ``000.mp4`` and ``000.avi`` in one copy -- are
+        both yielded, exactly as two files in one folder always were; the runner's duplicate check
+        catches it.
 
         Raises:
             ConfigError: ``compressions`` names a compression this dataset does not have.
         """
+        copies = self._copies if self._copies is not None else (root,)
+        chosen = self._chosen_copies
         for task in self.tasks:
             for compression in expand_compressions(
                 task.video_dir, self.known_compressions, compressions
             ):
+                key = (task.abbr, compression)
+                copy = (
+                    chosen[key]
+                    if chosen is not None and key in chosen
+                    else self.video_copy_for(copies, task, compression)
+                )
+                if copy is None:
+                    continue
                 video_dir = _concrete_dir(task.video_dir, compression)
-                base = root / video_dir
+                base = copy / video_dir
                 for path in scan_videos(base, recursive=task.recursive):
                     relpath = f"{video_dir}/{path.relative_to(base).as_posix()}"
                     record = self.record_for_video(task, path, relpath, compression)
@@ -397,6 +547,42 @@ class BaseBuilder:
         The default keys the video by its file stem and sets nothing else.
         """
         return self.record(task, path.stem, relpath, compression)
+
+    def layout_dirs(self) -> tuple[str, ...]:
+        """Every concrete task directory the default :meth:`layout_present` looks for.
+
+        ``{cX}`` is expanded over :attr:`known_compressions`; a ``video_dir`` without it is
+        listed as is. A builder that overrides :meth:`layout_present` with a check other than
+        "one of these directories holds a video" (e.g. a metadata file) should override this
+        too, so a caller can still describe what is missing.
+        """
+        return tuple(dir_ for _, _, dir_ in self._task_compression_dirs())
+
+    def videos_present(self, folder: Path) -> tuple[str, ...]:
+        """Which of :meth:`layout_dirs` hold at least one video under ``folder``, table order."""
+        return tuple(
+            dir_
+            for task, _, dir_ in self._task_compression_dirs()
+            if has_videos(folder / dir_, recursive=task.recursive)
+        )
+
+    def layout_present(self, folder: Path) -> bool:
+        """Whether ``folder`` holds the builder's raw layout, not just its name.
+
+        This is the one hook the runner calls to decide whether a copy counts as holding the
+        dataset (whether it is worth being the metadata copy, and whether to warn that no copy
+        has anything at all): every caller goes through this method, never through
+        :meth:`videos_present` directly, so overriding it is enough to change the answer
+        everywhere. A copy of a dataset's folder can hold only a processed copy (frames instead
+        of videos, say) left over from an earlier run, sometimes with empty placeholder
+        directories that still carry the expected names, so the default check is content, not
+        just existence: at least one of :meth:`layout_dirs` holds a video file under ``folder``.
+        A builder whose layout is not a set of video directories overrides this, e.g. by checking
+        for a metadata file instead (and should override :meth:`videos_present` too, if its
+        default -- listing which video directories are populated -- would otherwise be
+        meaningless for that builder's display in ``dfwb datasets info``).
+        """
+        return bool(self.videos_present(folder))
 
     def record(
         self,
@@ -416,8 +602,11 @@ class BaseBuilder:
         """Build one record: key ``<abbr>/<legacy_key>``, label key ``<prefix>-<abbr>``.
 
         ``attrs`` always gets ``task_name``. ``method`` defaults to the task's method.
-        ``relpath`` is relative to the dataset folder, or to ``folder`` -- the name of another
-        dataset's folder under the same datasets root -- when the video lives there.
+        ``relpath`` is relative to the dataset folder, or to ``folder`` -- another dataset's
+        folder name -- when the video lives there. That sibling folder is resolved independently
+        of where this dataset's own folder was found: every datasets root holding it is a
+        candidate copy, in root order, exactly as for this dataset's own folder (see
+        ``runner.folder_copies``), so it can just as well be split across roots by compression.
 
         Raises:
             ContractError: ``legacy_key`` is empty, ``folder`` is not a single folder name, or
@@ -457,6 +646,9 @@ class BaseBuilder:
 
     def official_splits(self, root: Path, records: Sequence[InventoryRecord]) -> dict[str, Split]:
         """The publisher's split: record key -> split, read from files under ``root``.
+
+        ``root`` is the metadata root: the copy of the dataset folder holding every path in
+        :attr:`metadata_files` (see the runner's copy resolution).
 
         Raises:
             ContractError: the dataset has no official split (the default).

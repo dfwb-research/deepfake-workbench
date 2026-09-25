@@ -15,8 +15,10 @@ from dfwb.preprocess.inventory.base import (
     SchemeSpec,
     TaskSpec,
     expand_compressions,
+    has_videos,
     scan_videos,
 )
+from dfwb.preprocess.inventory.runner import collect_records
 
 REAL, FAKE = DemoBuilder.tasks
 
@@ -301,6 +303,177 @@ def test_describe_layout_lists_every_task():
     assert "<task>/<file stem>" in text
     assert "Fakes are named <target>_<source>." in text
     assert text == DemoBuilder().describe_layout()
+
+
+def test_layout_dirs_expands_compressions_over_every_task():
+    assert DemoBuilder().layout_dirs() == (
+        "originals/c23",
+        "originals/c40",
+        "swapped/c23",
+        "swapped/c40",
+    )
+
+
+def test_layout_present_needs_at_least_one_video_file(tmp_path):
+    builder = DemoBuilder()
+    assert not builder.layout_present(tmp_path)  # nothing at all
+    (tmp_path / "originals" / "c23").mkdir(parents=True)
+    assert not builder.layout_present(tmp_path)  # an empty placeholder directory is not enough
+    (tmp_path / "originals" / "c23" / "000.mp4").touch()
+    assert builder.layout_present(tmp_path)
+    assert builder.videos_present(tmp_path) == ("originals/c23",)
+
+
+def test_layout_present_ignores_a_task_dir_that_is_actually_a_file(tmp_path):
+    class _FlatDemo(DemoBuilder):
+        tasks = (TaskSpec("REAL", "Originals", "real", "originals", "original"),)
+        known_compressions = ()
+
+    builder = _FlatDemo()
+    (tmp_path / "originals").touch()  # a file, not a directory
+    assert not builder.layout_present(tmp_path)
+    assert builder.layout_dirs() == ("originals",)
+
+
+def test_metadata_files_defaults_to_empty():
+    assert DemoBuilder().metadata_files == ()
+
+
+def test_video_copy_for_picks_the_first_copy_with_a_video(tmp_path):
+    builder = DemoBuilder()
+    empty, full = tmp_path / "empty", tmp_path / "full"
+    (empty / "originals" / "c23").mkdir(parents=True)  # a placeholder, no video
+    make_demo_tree(full, compressions=("c23",))
+    task = REAL
+    assert builder.video_copy_for((empty, full), task, "c23") == full
+    assert builder.video_copy_for((full, empty), task, "c23") == full
+    assert builder.video_copy_for((empty,), task, "c23") is None
+
+
+def test_unbound_discover_scans_only_the_given_root(tmp_path):
+    # No bind_copies call: discover(root) scans exactly root, nothing else.
+    make_demo_tree(tmp_path, compressions=("c23",))
+    keys = [r.key for r in DemoBuilder().discover(tmp_path, compressions=["c23"])]
+    assert keys == ["REAL/000", "REAL/001", "FS_SWAP/000_001", "FS_SWAP/001_000"]
+
+
+def test_bind_copies_merges_records_across_copies_per_task_and_compression(tmp_path):
+    # One copy holds c23 originals only; another holds c40 originals and every fake.
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    make_demo_tree(copy_a, reals=("000", "001"), fakes=(), compressions=("c23",))
+    make_demo_tree(copy_b, reals=("000", "001"), compressions=("c40",))
+
+    builder = DemoBuilder()
+    builder.bind_copies((copy_a, copy_b))
+    records = sorted(builder.discover(copy_a), key=lambda r: (r.key, r.compression))
+
+    assert [(r.key, r.compression) for r in records] == [
+        ("FS_SWAP/000_001", "c40"),
+        ("FS_SWAP/001_000", "c40"),
+        ("REAL/000", "c23"),
+        ("REAL/000", "c40"),
+        ("REAL/001", "c23"),
+        ("REAL/001", "c40"),
+    ]
+    # c23 originals come from copy_a's tree, not copy_b's (which has no c23 at all).
+    c23_real = next(r for r in records if r.key == "REAL/000" and r.compression == "c23")
+    assert (copy_a / c23_real.relpath).is_file()
+
+
+def test_bind_copies_falls_back_to_a_later_copy_when_the_first_lacks_a_video(tmp_path):
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    (copy_a / "originals" / "c23").mkdir(parents=True)  # a placeholder, no video
+    make_demo_tree(copy_b, reals=("000",), fakes=(), compressions=("c23",))
+
+    builder = DemoBuilder()
+    builder.bind_copies((copy_a, copy_b))
+    records = list(builder.discover(copy_a, compressions=["c23"]))
+    assert [r.key for r in records] == ["REAL/000"]
+
+
+def test_two_video_suffixes_sharing_a_stem_raise_a_contract_error(tmp_path):
+    # discover() yields both 000.mp4 and 000.avi; collect_records's duplicate-key check catches
+    # the resulting repeated (key, compression), exactly as it would for one copy on its own.
+    make_demo_tree(tmp_path, fakes=(), compressions=("c23",))
+    (tmp_path / "originals" / "c23" / "000.avi").touch()
+    with pytest.raises(ContractError, match=r"duplicate record 'REAL/000' \(compression 'c23'\)"):
+        collect_records(DemoBuilder(), tmp_path)
+
+
+def test_a_repeated_known_compression_is_rejected_loudly(tmp_path):
+    class _RepeatedCompression(DemoBuilder):
+        known_compressions = ("c23", "c23")
+
+    with pytest.raises(ContractError, match="known_compressions has a repeated entry"):
+        list(_RepeatedCompression().discover(tmp_path))
+
+
+def test_has_videos_matches_scan_videos_content_check(tmp_path):
+    assert not has_videos(tmp_path)  # nothing at all
+    (tmp_path / "notes.txt").touch()
+    assert not has_videos(tmp_path)  # clutter only
+    (tmp_path / "a.mp4").touch()
+    assert has_videos(tmp_path)
+    assert has_videos(tmp_path) == bool(scan_videos(tmp_path))
+
+
+def test_has_videos_recursive_follows_sub_folders(tmp_path):
+    (tmp_path / "a" / "deep").mkdir(parents=True)
+    assert not has_videos(tmp_path, recursive=True)
+    (tmp_path / "a" / "deep" / "1.mp4").touch()
+    assert has_videos(tmp_path, recursive=True)
+    assert not has_videos(tmp_path)  # flat: doesn't look inside "a"
+
+
+def test_copies_property_is_bound_or_falls_back_to_the_prepare_root(tmp_path):
+    builder = DemoBuilder()
+    assert builder.copies == ()
+    make_demo_tree(tmp_path, compressions=("c23",))
+    collect_records(builder, tmp_path)  # calls prepare(tmp_path); bind_copies was never called
+    assert builder.copies == (tmp_path,)
+
+    bound = DemoBuilder()
+    elsewhere = tmp_path / "elsewhere"
+    bound.bind_copies((tmp_path, elsewhere))
+    assert bound.copies == (tmp_path, elsewhere)
+
+
+def test_choose_copies_picks_per_task_and_compression(tmp_path):
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    make_demo_tree(copy_a, reals=("000",), fakes=(), compressions=("c23",))
+    make_demo_tree(copy_b, reals=("000",), compressions=("c40",))
+
+    chosen = DemoBuilder().choose_copies((copy_a, copy_b))
+
+    assert chosen[("REAL", "c23")] == copy_a
+    assert chosen[("REAL", "c40")] == copy_b
+    assert chosen[("FS_SWAP", "c40")] == copy_b
+    assert ("FS_SWAP", "c23") not in chosen  # neither copy has a c23 fake
+
+
+def test_bind_copies_with_a_precomputed_choice_is_reused_by_discover(tmp_path, monkeypatch):
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    make_demo_tree(copy_a, reals=("000",), fakes=(), compressions=("c23",))
+    make_demo_tree(copy_b, reals=("000",), compressions=("c40",))
+    builder = DemoBuilder()
+    chosen = builder.choose_copies((copy_a, copy_b))
+
+    calls: list[tuple[str, str | None]] = []
+    original = DemoBuilder.video_copy_for
+
+    def counting(self, copies, task, compression):
+        calls.append((task.abbr, compression))
+        return original(self, copies, task, compression)
+
+    monkeypatch.setattr(DemoBuilder, "video_copy_for", counting)
+    builder.bind_copies((copy_a, copy_b), chosen)
+    records = list(builder.discover(copy_a))
+
+    assert {r.key for r in records} == {"REAL/000", "FS_SWAP/000_001", "FS_SWAP/001_000"}
+    # Every combination the pre-computed choice covered was reused, not re-probed.
+    assert ("REAL", "c23") not in calls
+    assert ("REAL", "c40") not in calls
+    assert ("FS_SWAP", "c40") not in calls
 
 
 def test_the_demo_builder_satisfies_the_protocol():
