@@ -25,12 +25,14 @@ def _dump(model) -> str:
 
 
 def write_import_fixture_dataset(dataset_dir: Path, dataset_id: str) -> None:
-    """5 ``CDF/0000N`` videos (2 real, 3 fake), all in ``test``; ``binary`` labels, no excludes.
+    """5 ``CDF/0000N`` videos (2 real, 3 fake), all in ``test``.
 
     A small, purpose-built pack for ``dfwb eval import`` tests: real keys already look like the
     thesis convention (``<task>/<video_id>``), so a key template test can compose them exactly,
     and mismatched keys (an extension, a foreign prefix, a missing task prefix) can be built
-    against it precisely.
+    against it precisely. Two label mappings: ``binary`` (no excludes, the default used by most
+    tests) and ``binary-exclude-fake`` (the same, but ``CDF-FAKE`` maps to ``"exclude"``), for
+    tests of import's "a label mapped to exclude is skipped entirely" behaviour.
     """
     dataset_dir.mkdir(parents=True)
     (dataset_dir / "splits").mkdir()
@@ -63,7 +65,11 @@ def write_import_fixture_dataset(dataset_dir: Path, dataset_id: str) -> None:
     )
     (dataset_dir / "dataset.yaml").write_text(_dump(card))
     vocab = {"CDF-REAL": {"binary": 0}, "CDF-FAKE": {"binary": 1}}
-    labels = LabelVocab(vocab=vocab, mappings={"binary": LabelMappingSpec(from_="binary")})
+    mappings = {
+        "binary": LabelMappingSpec(from_="binary"),
+        "binary-exclude-fake": LabelMappingSpec(from_="binary", override={"CDF-FAKE": "exclude"}),
+    }
+    labels = LabelVocab(vocab=vocab, mappings=mappings)
     (dataset_dir / "labels.yaml").write_text(_dump(labels))
 
 

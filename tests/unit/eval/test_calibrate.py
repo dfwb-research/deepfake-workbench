@@ -199,11 +199,21 @@ def test_calibrate_file_preserves_non_ok_rows_and_recalibrates_ok_rows(tmp_path)
     assert by_key["error0"].status == "error"
     assert by_key["error0"].score is None
 
+    # Every ok row's new score must be exactly what applying the fitted calibration to its
+    # *original* score gives -- not merely "some number in [0, 1]" -- and, since the underlying
+    # detector is deliberately miscalibrated (see `_synthetic`), at least one must actually move.
     original_by_key = {r.key: r for r in apply_rows}
+    any_score_changed = False
     for row in result.rows:
-        if row.status == "ok":
-            assert row.score != original_by_key[row.key].score or True  # allowed to be equal
-            assert 0.0 <= row.score <= 1.0
+        if row.status != "ok":
+            continue
+        original_score = original_by_key[row.key].score
+        expected = float(apply_calibration(result.calibration, np.array([original_score]))[0])
+        assert row.score == pytest.approx(expected)
+        assert 0.0 <= row.score <= 1.0
+        if abs(row.score - original_score) > 1e-9:
+            any_score_changed = True
+    assert any_score_changed
 
 
 def test_calibrate_file_round_trips_through_write_scores(tmp_path):

@@ -186,6 +186,60 @@ def test_import_missing_rows_become_status_missing(tmp_path, import_pack):
     assert result.meta.coverage.expected == 5
 
 
+def test_import_excluded_labels_are_skipped_not_written_as_rows(tmp_path, import_pack):
+    # "binary-exclude-fake" maps every CDF-FAKE video to "exclude": the three fake videos must be
+    # absent from the result entirely -- not an "ok" row, and not a "missing" row either -- even
+    # though the file provides scores for every video and the split has all five.
+    path = _csv(
+        tmp_path,
+        "videos.csv",
+        ["video_id", "task", "prediction"],
+        [
+            ("00001", "CDF", 0.1),
+            ("00002", "CDF", 0.2),
+            ("00003", "CDF", 0.9),
+            ("00004", "CDF", 0.8),
+            ("00005", "CDF", 0.7),
+        ],
+    )
+    result = import_scores(
+        path,
+        protocol="cdf/official",
+        split="test",
+        key="{task}/{video_id}",
+        score="prediction",
+        labels="binary-exclude-fake",
+    )
+    keys = {r.key for r in result.rows}
+    assert keys == {"CDF/00001", "CDF/00002"}
+    assert {"CDF/00003", "CDF/00004", "CDF/00005"}.isdisjoint(keys)
+    assert result.meta.coverage.expected == 2
+    assert result.meta.coverage.ok == 2
+    assert result.meta.coverage.missing == 0
+
+
+def test_import_excluded_labels_are_skipped_even_when_the_file_lacks_them(tmp_path, import_pack):
+    # Same mapping, but the file also lacks scores for the excluded videos: still no "missing"
+    # rows for them (excluded, not merely absent).
+    path = _csv(
+        tmp_path,
+        "videos.csv",
+        ["video_id", "task", "prediction"],
+        [("00001", "CDF", 0.1), ("00002", "CDF", 0.2)],
+    )
+    result = import_scores(
+        path,
+        protocol="cdf/official",
+        split="test",
+        key="{task}/{video_id}",
+        score="prediction",
+        labels="binary-exclude-fake",
+    )
+    assert {r.key for r in result.rows} == {"CDF/00001", "CDF/00002"}
+    assert result.meta.coverage.expected == 2
+    assert result.meta.coverage.missing == 0
+
+
 def test_import_delimiter_option(tmp_path, import_pack):
     path = _csv(
         tmp_path,
@@ -235,6 +289,49 @@ def test_import_status_col(tmp_path, import_pack):
     by_key = {r.key: r for r in result.rows}
     assert by_key["CDF/00002"].status == "error"
     assert by_key["CDF/00002"].score is None
+
+
+# --------------------------------------------------------------------------- duplicate keys
+
+
+def test_import_duplicate_keys_raise_naming_the_key_and_both_lines(tmp_path, import_pack):
+    # two input rows (physical lines 2 and 4, after the header) both compose to CDF/00001.
+    path = _csv(
+        tmp_path,
+        "videos.csv",
+        ["video_id", "task", "prediction"],
+        [
+            ("00001", "CDF", 0.1),
+            ("00002", "CDF", 0.2),
+            ("00001", "CDF", 0.15),
+            ("00003", "CDF", 0.9),
+        ],
+    )
+    with pytest.raises(ContractError) as excinfo:
+        import_scores(
+            path,
+            protocol="cdf/official",
+            split="test",
+            key="{task}/{video_id}",
+            score="prediction",
+        )
+    assert "CDF/00001" in excinfo.value.message
+    assert "lines 2 and 4" in excinfo.value.message
+    assert "deduplicate" in excinfo.value.hint
+    assert "key template" in excinfo.value.hint
+
+
+def test_import_duplicate_keys_detected_even_with_a_key_column_not_a_template(
+    tmp_path, import_pack
+):
+    path = _csv(
+        tmp_path,
+        "videos.csv",
+        ["key", "prediction"],
+        [("CDF/00001", 0.1), ("CDF/00002", 0.2), ("CDF/00001", 0.15), ("CDF/00003", 0.9)],
+    )
+    with pytest.raises(ContractError, match="CDF/00001"):
+        import_scores(path, protocol="cdf/official", split="test", key="key", score="prediction")
 
 
 # --------------------------------------------------------------------------- key-fix suggestions

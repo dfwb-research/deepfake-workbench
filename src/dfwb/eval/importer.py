@@ -130,16 +130,17 @@ def suggest_key_fixes(bad_keys: Sequence[str], expected_keys: Sequence[str]) -> 
     return unique
 
 
-def _read_csv(path: Path, delimiter: str) -> tuple[list[str], list[dict[str, str]]]:
+def _read_csv(path: Path, delimiter: str) -> tuple[list[str], list[tuple[int, dict[str, str]]]]:
+    """Every data row of ``path``, paired with its physical line number (the header is line 1)."""
     try:
-        text = path.read_text("utf-8-sig")
+        with path.open(encoding="utf-8-sig", newline="") as handle:  # tolerate a BOM
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            columns = list(reader.fieldnames or [])
+            rows = [(reader.line_num, dict(raw)) for raw in reader]
     except OSError as exc:
         raise ContractError(
             f"{path}: cannot read ({type(exc).__name__}: {exc})", hint="check the path"
         ) from None
-    reader = csv.DictReader(text.splitlines(), delimiter=delimiter)
-    columns = list(reader.fieldnames or [])
-    rows = [dict(row) for row in reader]
     return columns, rows
 
 
@@ -211,14 +212,19 @@ def import_scores(
     ``key`` is a column name or a ``{col}`` template (:func:`parse_map` parses ``--map`` into the
     keyword arguments here). Labels always come from the pack's ``labels`` mapping; a supplied
     ``label`` column is cross-checked against it. A pack video the file lacks becomes a
-    ``status="missing"`` row; a file row whose key is not one of the split's pack videos fails the
-    whole import (see :func:`suggest_key_fixes`) rather than silently narrowing the join.
+    ``status="missing"`` row; a video whose mapped label is ``"exclude"`` (a pack label mapping may
+    legitimately say so) is skipped entirely -- neither a row nor counted as missing, the same as
+    it would be for any other consumer of that mapping. A file row whose key is not one of the
+    split's pack videos fails the whole import (see :func:`suggest_key_fixes`) rather than silently
+    narrowing the join; two file rows that resolve to the *same* pack video also fail the whole
+    import (naming the key and both input line numbers) rather than the second silently winning.
 
     Raises:
         ConfigError: ``polarity`` is invalid, the file has no data rows, the split is empty, or a
             column named by ``key``/``score``/``label``/``compression`` does not exist.
         ContractError: the file cannot be read, a key in the file does not match any pack video,
-            a supplied label disagrees with the pack, or a score/label value is not a number.
+            two rows resolve to the same pack video, a supplied label disagrees with the pack, or
+            a score/label value is not a number.
     """
     if polarity not in _POLARITIES:
         raise ConfigError(
@@ -241,9 +247,9 @@ def import_scores(
     for record in videos:
         by_key.setdefault(record.key, []).append(record)
 
-    matched: dict[tuple[str, str | None], dict[str, str]] = {}
+    matched: dict[tuple[str, str | None], tuple[int, dict[str, str]]] = {}
     unmatched_keys: list[str] = []
-    for source_row in raw_rows:
+    for lineno, source_row in raw_rows:
         composed = _compose(key, source_row, columns)
         comp_value = source_row.get(compression) if compression else None
         matched_video = _match_video(
@@ -252,7 +258,15 @@ def import_scores(
         if matched_video is None:
             unmatched_keys.append(composed)
             continue
-        matched[(matched_video.key, matched_video.compression)] = source_row
+        ident = (matched_video.key, matched_video.compression)
+        if ident in matched:
+            prev_lineno, _prev_row = matched[ident]
+            raise ContractError(
+                f"{source.name}: lines {prev_lineno} and {lineno} both resolve to key "
+                f"{matched_video.key!r}",
+                hint="deduplicate the file, or pass a key template that distinguishes the rows",
+            )
+        matched[ident] = (lineno, source_row)
 
     if unmatched_keys:
         expected_keys = [v.key for v in videos]
@@ -278,8 +292,8 @@ def import_scores(
                 f"{mapped!r}",
                 hint="use an integer label mapping, e.g. 'binary'",
             )
-        matched_row = matched.get((video.key, video.compression))
-        if matched_row is None:
+        matched_entry = matched.get((video.key, video.compression))
+        if matched_entry is None:
             rows.append(
                 ScoreRow(
                     proto.dataset,
@@ -293,6 +307,7 @@ def import_scores(
                 )
             )
             continue
+        _lineno, matched_row = matched_entry
         if label is not None:
             _check_label(source, video, matched_row, label, mapped)
         status = _row_status(source, video, matched_row, status_col)
