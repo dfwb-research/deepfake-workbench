@@ -32,6 +32,8 @@ dependencies = [
 [project.optional-dependencies]
 rich = ["rich>=13"]
 preprocess = ["av>=12", "opencv-python-headless>=4.9"]
+face-insightface = ["deepfake-workbench[preprocess]", "onnxruntime>=1.17"]
+face-mediapipe = ["deepfake-workbench[preprocess]", "mediapipe>=0.10"]
 
 [project.scripts]
 dfwb = "dfwb.cli.main:main"
@@ -98,6 +100,12 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 # torch is optional; the core names its types only for annotations.
 module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The face backends' optional libraries ship no type information; they are only imported inside
+# the functions that use them, and handled as Any there.
+module = ["onnxruntime", "onnxruntime.*", "mediapipe", "mediapipe.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

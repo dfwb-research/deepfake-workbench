@@ -33,3 +33,6 @@ uadfv = "dfwb-protocols"
 # [imports] maps an import name to the deepfake-workbench extra that installs it.
 [imports]
 rich = "rich"
+cv2 = "preprocess"
+onnxruntime = "face-insightface"
+mediapipe = "face-mediapipe"
