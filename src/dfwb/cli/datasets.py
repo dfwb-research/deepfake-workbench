@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,7 +13,7 @@ from dfwb.cli._output import emit_json, json_option, table
 
 if TYPE_CHECKING:
     from dfwb.core.paths import ResolvedRoot, RootName
-    from dfwb.preprocess.inventory.runner import FolderStatus, LayoutChoice
+    from dfwb.preprocess.inventory.runner import DatasetCopy, FolderStatus
 
 _MISSING = "—"
 
@@ -61,17 +61,15 @@ def _location_json(status: FolderStatus) -> dict[str, Any]:
     }
 
 
-def _layout_location_json(status: FolderStatus, layout: LayoutChoice | None) -> dict[str, Any]:
-    """Like :func:`_location_json`, but naming every copy found and which has the raw layout."""
-    if layout is None:
-        return {"path": None, "source": status.source, "copies": [], "problem": status.problem}
+def _copies_json(status: FolderStatus, copies: Sequence[DatasetCopy]) -> dict[str, Any]:
+    """Every copy found, each naming which task x compression directories hold a video."""
     return {
-        "path": str(layout.path),
-        "source": layout.source,
+        "source": status.source,
+        "problem": status.problem,
         "copies": [
-            {"path": str(copy.path), "has_layout": copy.has_layout} for copy in layout.copies
+            {"path": str(copy.path), "source": copy.source, "video_dirs": list(copy.video_dirs)}
+            for copy in copies
         ],
-        "problem": None,
     }
 
 
@@ -206,13 +204,13 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
 def info(dataset: str, as_json: bool) -> None:
     """Show DATASET's details, its expected layout, its local folder and its schemes."""
     from dfwb.core.registry import catalogue_requirement
-    from dfwb.preprocess.inventory.runner import choose_layout, folder_status, get_builder
+    from dfwb.preprocess.inventory.runner import dataset_copies, folder_status, get_builder
 
     builder = get_builder(dataset)
     dataset_id = builder.dataset_id
     roots, overrides = _locate_context()
     status = folder_status(dataset_id, builder.expected_folder, roots, overrides)
-    layout = None if status.location is None else choose_layout(builder, status.location, roots)
+    copies = () if status.location is None else dataset_copies(builder, status.location, roots)
     schemes, problems = _pack_schemes(dataset_id)
     card = dict(builder.card_info)
 
@@ -223,7 +221,7 @@ def info(dataset: str, as_json: bool) -> None:
                 "builder": {"id": dataset_id, "version": builder.version},
                 "card": card,
                 "layout": builder.describe_layout(),
-                "location": _layout_location_json(status, layout),
+                "location": _copies_json(status, copies),
                 "schemes": schemes,
                 "problems": problems,
             }
@@ -238,14 +236,13 @@ def info(dataset: str, as_json: bool) -> None:
     click.echo("")
     click.echo(builder.describe_layout())
     click.echo("")
-    if layout is None:
+    if not copies:
         click.echo(f"folder: not found ({status.problem})")
     else:
-        click.echo(f"folder: {layout.path}  ({layout.source})")
-        for copy in layout.copies:
-            if copy.path != layout.path:
-                note = "raw layout" if copy.has_layout else "no raw layout"
-                click.echo(f"also found: {copy.path}  ({note})")
+        for copy in copies:
+            videos = ", ".join(copy.video_dirs) if copy.video_dirs else "no videos found"
+            click.echo(f"{copy.source}: {copy.path}")
+            click.echo(f"  videos: {videos}")
     click.echo("")
     if schemes:
         click.echo("schemes in installed protocol packs:")

@@ -73,9 +73,10 @@ def build(
             }
         )
         return
+    sources = ", ".join(f"{k}: {v}" for k, v in sorted(result.location_source.items()))
     click.echo(
         f"wrote {result.count} records to {result.path} "
-        f"(dataset folder: {result.dataset_dir}, from {result.location_source})"
+        f"(dataset folder: {result.dataset_dir}, from {sources})"
     )
 
 

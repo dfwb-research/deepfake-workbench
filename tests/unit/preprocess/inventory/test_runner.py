@@ -23,17 +23,19 @@ from dfwb.core.errors import (
     PluginError,
     UnknownKeyError,
 )
-from dfwb.core.paths import resolve_roots
-from dfwb.core.records import InventoryRecord, read_jsonl
+from dfwb.core.paths import locate_dataset, resolve_roots
+from dfwb.core.records import BuilderRef, InventoryRecord, read_jsonl
 from dfwb.preprocess.inventory.base import TaskSpec
 from dfwb.preprocess.inventory.runner import (
     InventoryResult,
     build_inventory,
     collect_records,
+    dataset_copies,
     folder_status,
     get_builder,
     inventory_path,
     read_inventory,
+    resolve_video_path,
 )
 
 _MODULE = "tests.unit.preprocess.inventory._demo"
@@ -68,7 +70,7 @@ def test_build_writes_a_sorted_inventory_and_a_meta_without_paths(env, monkeypat
         count=8,
         by_task={"REAL": 4, "FS_SWAP": 4},
         dataset_dir=raw / "Demo",
-        location_source="root 1",
+        location_source={"c23": "root 1", "c40": "root 1", "metadata": "root 1"},
     )
     records = read_jsonl(result.path, InventoryRecord)
     assert [(r.key, r.compression) for r in records] == [
@@ -90,7 +92,7 @@ def test_build_writes_a_sorted_inventory_and_a_meta_without_paths(env, monkeypat
         "count": 8,
         "compressions": ["c23", "c40"],
         "by_task": {"REAL": 4, "FS_SWAP": 4},
-        "location_source": "root 1",
+        "location_source": {"c23": "root 1", "c40": "root 1", "metadata": "root 1"},
     }
     assert str(tmp_path) not in meta_text
     assert str(tmp_path) not in result.path.read_text("utf-8")
@@ -124,12 +126,14 @@ def test_a_later_root_and_an_override_are_named_in_the_source(env, monkeypatch, 
     second = tmp_path / "second"
     make_demo_tree(second / "Demo", compressions=("c23",))
     monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
-    assert build_inventory("demo").location_source == "root 2"
+    result = build_inventory("demo")
+    assert result.location_source == {"c23": "root 2", "metadata": "root 2"}
 
     elsewhere = make_demo_tree(tmp_path / "anywhere" / "renamed", compressions=("c23",))
     monkeypatch.setenv("DFWB_DATASET_DEMO", str(elsewhere))
     result = build_inventory("demo")
-    assert result.location_source == "override (env: DFWB_DATASET_DEMO)"
+    override_source = "override (env: DFWB_DATASET_DEMO)"
+    assert result.location_source == {"c23": override_source, "metadata": override_source}
     assert result.dataset_dir == elsewhere
 
 
@@ -138,27 +142,38 @@ def test_an_override_from_a_config_file_names_only_the_file(env, monkeypatch, tm
     folder = make_demo_tree(tmp_path / "mine", compressions=("c23",))
     (tmp_path / "dfwb.toml").write_text(f'[datasets]\ndemo = "{folder}"\n')
     result = build_inventory("demo")
-    assert result.location_source == "override (dfwb.toml)"
+    assert result.location_source == {
+        "c23": "override (dfwb.toml)",
+        "metadata": "override (dfwb.toml)",
+    }
     meta = (result.path.parent / "inventory.meta.json").read_text("utf-8")
     assert str(tmp_path) not in meta
 
 
-def test_the_root_that_actually_has_the_layout_is_used(env, monkeypatch, tmp_path):
+def test_a_dataset_split_across_roots_by_compression_is_merged(env, monkeypatch, tmp_path):
+    # root 1 has only c23 originals; root 2 has c40 originals and every fake -- the inventory
+    # merges both, unlike picking a single copy for the whole dataset.
     raw, _ = env
     install(monkeypatch)
-    (raw / "Demo").mkdir()  # same folder name, but no raw layout (e.g. a processed copy)
+    make_demo_tree(raw / "Demo", reals=("000", "001"), fakes=(), compressions=("c23",))
     second = tmp_path / "second"
-    make_demo_tree(second / "Demo", compressions=("c23",))
+    make_demo_tree(second / "Demo", reals=("000", "001"), compressions=("c40",))
     monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
 
     result = build_inventory("demo")
 
-    assert result.dataset_dir == second / "Demo"
-    assert result.location_source == "root 2 (raw layout; root 1 has the folder without it)"
-    assert result.count == 4
+    assert result.count == 6  # 2 c23 reals (root 1) + 2 c40 reals + 2 c40 fakes (root 2)
+    assert result.location_source == {"c23": "root 1", "c40": "root 2", "metadata": "root 1"}
+    records = read_inventory("demo", result.path.parent.parent)
+    c23_real = next(r for r in records if r.key == "REAL/000" and r.compression == "c23")
+    assert (raw / "Demo" / c23_real.relpath).is_file()
+    c40_real = next(r for r in records if r.key == "REAL/000" and r.compression == "c40")
+    assert (second / "Demo" / c40_real.relpath).is_file()
 
 
-def test_falls_back_to_the_first_root_when_none_has_the_layout(env, monkeypatch, tmp_path, caplog):
+def test_falls_back_to_the_first_root_when_no_copy_has_any_video(
+    env, monkeypatch, tmp_path, caplog
+):
     raw, _ = env
     install(monkeypatch)
     (raw / "Demo").mkdir()
@@ -170,14 +185,14 @@ def test_falls_back_to_the_first_root_when_none_has_the_layout(env, monkeypatch,
         result = build_inventory("demo")
 
     assert result.dataset_dir == raw / "Demo"
-    assert result.location_source == "root 1"
+    assert result.location_source == {"metadata": "root 1"}
     assert result.count == 0
-    assert "no copy of the dataset folder has the expected raw layout" in caplog.text
+    assert "no copy of the dataset folder has any video" in caplog.text
     assert "root 1" in caplog.text
     assert "root 2" in caplog.text
 
 
-def test_an_override_without_the_layout_is_used_with_a_warning(env, monkeypatch, tmp_path, caplog):
+def test_an_override_without_any_video_is_used_with_a_warning(env, monkeypatch, tmp_path, caplog):
     install(monkeypatch)
     empty = tmp_path / "elsewhere"
     empty.mkdir()
@@ -187,13 +202,13 @@ def test_an_override_without_the_layout_is_used_with_a_warning(env, monkeypatch,
         result = build_inventory("demo")
 
     assert result.dataset_dir == empty
-    assert result.location_source == "override (env: DFWB_DATASET_DEMO)"
+    assert result.location_source == {"metadata": "override (env: DFWB_DATASET_DEMO)"}
     assert result.count == 0
     assert "does not have the expected raw layout" in caplog.text
     assert "originals" in caplog.text
 
 
-def test_root_flag_without_the_layout_is_used_with_a_warning(env, monkeypatch, tmp_path, caplog):
+def test_root_flag_without_any_video_is_used_with_a_warning(env, monkeypatch, tmp_path, caplog):
     install(monkeypatch)
     empty = tmp_path / "chosen"
     empty.mkdir()
@@ -202,7 +217,7 @@ def test_root_flag_without_the_layout_is_used_with_a_warning(env, monkeypatch, t
         result = build_inventory("demo", root=empty)
 
     assert result.dataset_dir == empty
-    assert result.location_source == "--root"
+    assert result.location_source == {"metadata": "--root"}
     assert result.count == 0
     assert "does not have the expected raw layout" in caplog.text
     assert "originals" in caplog.text
@@ -225,9 +240,38 @@ def test_a_real_builder_picks_the_root_with_the_raw_videos_over_frames(env, monk
     result = build_inventory("ffpp", compressions=["c23"])
 
     assert result.dataset_dir == second / "FaceForensics++"
-    assert result.location_source == "root 2 (raw layout; root 1 has the folder without it)"
+    assert result.location_source == {"c23": "root 2", "metadata": "root 2"}
     assert result.count == 2
     assert result.by_task["REAL"] == 2
+
+
+def test_ffpp_merges_compressions_split_across_roots_and_reads_metadata_from_its_copy(
+    env, monkeypatch, tmp_path
+):
+    # root 1: c40 videos only, no official split files. root 2: c23 videos and the official
+    # split files -- exactly the real-machine shape this fix targets.
+    raw, _ = env
+    c40_dir = raw / "FaceForensics++" / "original_content" / "YouTube" / "c40" / "videos"
+    c40_dir.mkdir(parents=True)
+    (c40_dir / "000.mp4").touch()
+
+    second = tmp_path / "second"
+    c23_dir = second / "FaceForensics++" / "original_content" / "YouTube" / "c23" / "videos"
+    c23_dir.mkdir(parents=True)
+    (c23_dir / "000.mp4").touch()
+    official = second / "FaceForensics++" / ".official_files" / "splits"
+    official.mkdir(parents=True)
+    for split in ("train", "val", "test"):
+        (official / f"{split}.json").write_text("[]")
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+
+    result = build_inventory("ffpp")
+
+    assert result.count == 2
+    assert result.location_source["c23"] == "root 2"
+    assert result.location_source["c40"] == "root 1"
+    assert result.location_source["metadata"] == "root 2"  # holds every official split file
+    assert result.dataset_dir == second / "FaceForensics++"
 
 
 def test_root_wins_over_the_roots_search(env, monkeypatch, tmp_path):
@@ -238,7 +282,7 @@ def test_root_wins_over_the_roots_search(env, monkeypatch, tmp_path):
     result = build_inventory("demo", root=chosen)
     assert result.count == 1
     assert result.dataset_dir == chosen
-    assert result.location_source == "--root"
+    assert result.location_source == {"c40": "--root", "metadata": "--root"}
     assert [r.key for r in read_inventory("demo", result.path.parent.parent)] == ["REAL/007"]
 
 
@@ -380,6 +424,68 @@ def test_the_inventory_is_never_written_under_a_datasets_root(env, monkeypatch, 
     with pytest.raises(ConfigError, match="inside the datasets root"):
         build_inventory("demo", root=chosen)
     assert not (raw / "work").exists()
+
+
+def test_dataset_copies_annotates_each_with_its_populated_video_dirs(env, monkeypatch, tmp_path):
+    raw, _ = env
+    install(monkeypatch)
+    (raw / "Demo" / "originals" / "c23").mkdir(parents=True)  # a placeholder, no video
+    second = tmp_path / "second"
+    make_demo_tree(second / "Demo", compressions=("c23",))
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+    roots = resolve_roots()
+    location = locate_dataset("demo", "Demo", roots, overrides={})
+
+    copies = dataset_copies(DemoBuilder(), location, roots)
+
+    assert [(c.path, c.source, c.has_layout) for c in copies] == [
+        (raw / "Demo", "root 1", False),
+        (second / "Demo", "root 2", True),
+    ]
+    assert copies[1].video_dirs == ("originals/c23", "swapped/c23")
+
+
+def test_dataset_copies_of_an_override_is_a_single_copy(env, monkeypatch, tmp_path):
+    install(monkeypatch)
+    folder = make_demo_tree(tmp_path / "mine", compressions=("c23",))
+    monkeypatch.setenv("DFWB_DATASET_DEMO", str(folder))
+    roots = resolve_roots()
+    location = locate_dataset("demo", "Demo", roots, overrides={"demo": (folder, "env: X")})
+
+    copies = dataset_copies(DemoBuilder(), location, roots)
+
+    assert len(copies) == 1
+    assert copies[0].path == folder
+    assert copies[0].source == "override (env: X)"
+    assert copies[0].has_layout
+
+
+def test_resolve_video_path_uses_the_first_copy_that_has_the_file(tmp_path):
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    (copy_b / "originals" / "c23").mkdir(parents=True)
+    (copy_b / "originals" / "c23" / "000.mp4").touch()
+    record = InventoryRecord(
+        key="REAL/000",
+        compression="c23",
+        label_key="DEMO-REAL",
+        method="original",
+        relpath="originals/c23/000.mp4",
+        builder=BuilderRef("demo", "1"),
+    )
+    assert resolve_video_path(record, (copy_a, copy_b)) == copy_b / "originals" / "c23" / "000.mp4"
+
+
+def test_resolve_video_path_raises_when_no_copy_has_the_file(tmp_path):
+    record = InventoryRecord(
+        key="REAL/000",
+        compression="c23",
+        label_key="DEMO-REAL",
+        method="original",
+        relpath="originals/c23/000.mp4",
+        builder=BuilderRef("demo", "1"),
+    )
+    with pytest.raises(ConfigError, match=r"REAL/000.*was not found in any copy"):
+        resolve_video_path(record, (tmp_path / "a", tmp_path / "b"))
 
 
 # ------------------------------------------------------------------------------ collect_records

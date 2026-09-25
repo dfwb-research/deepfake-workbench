@@ -312,11 +312,14 @@ def test_layout_dirs_expands_compressions_over_every_task():
     )
 
 
-def test_layout_present_needs_only_one_task_directory(tmp_path):
+def test_layout_present_needs_at_least_one_video_file(tmp_path):
     builder = DemoBuilder()
     assert not builder.layout_present(tmp_path)  # nothing at all
-    (tmp_path / "originals" / "c23").mkdir(parents=True)  # just one of the four
+    (tmp_path / "originals" / "c23").mkdir(parents=True)
+    assert not builder.layout_present(tmp_path)  # an empty placeholder directory is not enough
+    (tmp_path / "originals" / "c23" / "000.mp4").touch()
     assert builder.layout_present(tmp_path)
+    assert builder.videos_present(tmp_path) == ("originals/c23",)
 
 
 def test_layout_present_ignores_a_task_dir_that_is_actually_a_file(tmp_path):
@@ -328,6 +331,74 @@ def test_layout_present_ignores_a_task_dir_that_is_actually_a_file(tmp_path):
     (tmp_path / "originals").touch()  # a file, not a directory
     assert not builder.layout_present(tmp_path)
     assert builder.layout_dirs() == ("originals",)
+
+
+def test_metadata_files_defaults_to_empty():
+    assert DemoBuilder().metadata_files == ()
+
+
+def test_video_copy_for_picks_the_first_copy_with_a_video(tmp_path):
+    builder = DemoBuilder()
+    empty, full = tmp_path / "empty", tmp_path / "full"
+    (empty / "originals" / "c23").mkdir(parents=True)  # a placeholder, no video
+    make_demo_tree(full, compressions=("c23",))
+    task = REAL
+    assert builder.video_copy_for((empty, full), task, "c23") == full
+    assert builder.video_copy_for((full, empty), task, "c23") == full
+    assert builder.video_copy_for((empty,), task, "c23") is None
+
+
+def test_unbound_discover_scans_only_the_given_root(tmp_path):
+    # Without bind_copies, discover(root) behaves exactly as before this change.
+    make_demo_tree(tmp_path, compressions=("c23",))
+    keys = [r.key for r in DemoBuilder().discover(tmp_path, compressions=["c23"])]
+    assert keys == ["REAL/000", "REAL/001", "FS_SWAP/000_001", "FS_SWAP/001_000"]
+
+
+def test_bind_copies_merges_records_across_copies_per_task_and_compression(tmp_path):
+    # One copy holds c23 originals only; another holds c40 originals and every fake.
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    make_demo_tree(copy_a, reals=("000", "001"), fakes=(), compressions=("c23",))
+    make_demo_tree(copy_b, reals=("000", "001"), compressions=("c40",))
+
+    builder = DemoBuilder()
+    builder.bind_copies((copy_a, copy_b))
+    records = sorted(builder.discover(copy_a), key=lambda r: (r.key, r.compression))
+
+    assert [(r.key, r.compression) for r in records] == [
+        ("FS_SWAP/000_001", "c40"),
+        ("FS_SWAP/001_000", "c40"),
+        ("REAL/000", "c23"),
+        ("REAL/000", "c40"),
+        ("REAL/001", "c23"),
+        ("REAL/001", "c40"),
+    ]
+    # c23 originals come from copy_a's tree, not copy_b's (which has no c23 at all).
+    c23_real = next(r for r in records if r.key == "REAL/000" and r.compression == "c23")
+    assert (copy_a / c23_real.relpath).is_file()
+
+
+def test_bind_copies_falls_back_to_a_later_copy_when_the_first_lacks_a_video(tmp_path):
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    (copy_a / "originals" / "c23").mkdir(parents=True)  # a placeholder, no video
+    make_demo_tree(copy_b, reals=("000",), fakes=(), compressions=("c23",))
+
+    builder = DemoBuilder()
+    builder.bind_copies((copy_a, copy_b))
+    records = list(builder.discover(copy_a, compressions=["c23"]))
+    assert [r.key for r in records] == ["REAL/000"]
+
+
+def test_discover_deduplicates_a_repeated_key_and_compression(tmp_path):
+    # Copy-merging can't repeat a (key, compression) itself (one copy wins per task x
+    # compression), but discover() guards anyway -- exercised here through a builder authoring
+    # slip (a compression repeated in known_compressions) that would otherwise scan it twice.
+    class _RepeatedCompression(DemoBuilder):
+        known_compressions = ("c23", "c23")
+
+    make_demo_tree(tmp_path, reals=("000",), fakes=(), compressions=("c23",))
+    records = list(_RepeatedCompression().discover(tmp_path))
+    assert [(r.key, r.compression) for r in records] == [("REAL/000", "c23")]
 
 
 def test_the_demo_builder_satisfies_the_protocol():

@@ -68,8 +68,10 @@ def test_info_shows_the_card_layout_folder_and_schemes(run, monkeypatch, tmp_pat
     assert result.code == 0, result.err
     assert "Demo" in result.out
     assert "originals/{cX}/" in result.out  # the layout text
-    assert str(raw / "Demo") in result.out
-    assert str(second / "Demo") in result.out  # also found
+    assert f"root 1: {raw / 'Demo'}" in result.out
+    assert "videos: originals/c23, swapped/c23" in result.out
+    assert f"root 2: {second / 'Demo'}" in result.out
+    assert "videos: no videos found" in result.out
     assert "demo-pack" in result.out
     assert "official" in result.out
 
@@ -79,21 +81,24 @@ def test_info_shows_the_card_layout_folder_and_schemes(run, monkeypatch, tmp_pat
     assert data["card"]["name"] == "Demo"
     assert "swapped/{cX}/" in data["layout"]
     assert data["location"] == {
-        "path": str(raw / "Demo"),
         "source": "root 1",
-        "copies": [
-            {"path": str(raw / "Demo"), "has_layout": True},
-            {"path": str(second / "Demo"), "has_layout": False},
-        ],
         "problem": None,
+        "copies": [
+            {
+                "path": str(raw / "Demo"),
+                "source": "root 1",
+                "video_dirs": ["originals/c23", "swapped/c23"],
+            },
+            {"path": str(second / "Demo"), "source": "root 2", "video_dirs": []},
+        ],
     }
     assert data["schemes"] == [
         {"pack": "demo-pack", "scheme": "official", "kind": "official", "default": True}
     ]
 
 
-def test_info_marks_the_copy_with_the_raw_layout(run, monkeypatch, tmp_path):
-    # root 1 has the folder but not the layout (e.g. a processed copy); root 2 has it.
+def test_info_lists_every_copy_and_its_populated_video_dirs(run, monkeypatch, tmp_path):
+    # root 1 has the folder but no video (e.g. a processed copy); root 2 has the raw layout.
     raw, second = tmp_path / "raw", tmp_path / "second"
     (raw / "Demo").mkdir(parents=True)
     make_demo_tree(second / "Demo", compressions=("c23",))
@@ -102,21 +107,23 @@ def test_info_marks_the_copy_with_the_raw_layout(run, monkeypatch, tmp_path):
 
     result = run("datasets", "info", "demo")
     assert result.code == 0, result.err
-    assert (
-        f"folder: {second / 'Demo'}  (root 2 (raw layout; root 1 has the folder without it))"
-        in result.out
-    )
-    assert f"also found: {raw / 'Demo'}  (no raw layout)" in result.out
+    assert f"root 1: {raw / 'Demo'}" in result.out
+    assert f"root 2: {second / 'Demo'}" in result.out
+    assert "videos: no videos found" in result.out
+    assert "videos: originals/c23, swapped/c23" in result.out
 
     data = json.loads(run("datasets", "info", "demo", "--json").out)
     assert data["location"] == {
-        "path": str(second / "Demo"),
-        "source": "root 2 (raw layout; root 1 has the folder without it)",
-        "copies": [
-            {"path": str(raw / "Demo"), "has_layout": False},
-            {"path": str(second / "Demo"), "has_layout": True},
-        ],
+        "source": "root 1",
         "problem": None,
+        "copies": [
+            {"path": str(raw / "Demo"), "source": "root 1", "video_dirs": []},
+            {
+                "path": str(second / "Demo"),
+                "source": "root 2",
+                "video_dirs": ["originals/c23", "swapped/c23"],
+            },
+        ],
     }
 
 
