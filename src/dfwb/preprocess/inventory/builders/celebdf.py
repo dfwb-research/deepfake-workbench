@@ -35,7 +35,7 @@ from typing import ClassVar, Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["CelebDFv1Builder", "CelebDFv2Builder", "CelebDFv3Builder"]
 
@@ -184,7 +184,7 @@ _CELEB_SYNTHESIS: Final = _fake(
 _CELEB_SYNTHESIS_LABEL: Final = LabelSpec(binary=1, binary_av=1, multiclass=3, family="face-swap")
 _RANDOM_BENCHMARK: Final = (
     "a small, seeded evaluation set: up to 100 fakes drawn at random from the official test "
-    "list, balanced with as many reals"
+    f"list, {BENCHMARK_REALS}"
 )
 _V1_V2_KEY_RULE: Final = (
     "real: CR/<id>_<rec> or YTR/<n>; fake: FS_CS/<target>_<source>_<rec> (the file stem)"
@@ -354,7 +354,7 @@ class CelebDFv3Builder(_CelebDFBuilder):
     schemes = _schemes(
         testing_list,
         "a small, seeded evaluation set drawn from the official test list: up to 2 fakes per "
-        "identity and method, balanced with as many reals",
+        f"identity and method, {BENCHMARK_REALS}",
     )
     benchmark = BenchmarkSpec(k_fake=2, strata=("identity", "task"))
     card_info = _card(

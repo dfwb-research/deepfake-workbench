@@ -41,7 +41,7 @@ from typing import Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["IDForgeV1Builder"]
 
@@ -161,7 +161,7 @@ class IDForgeV1Builder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set drawn from the official test: up to 5 "
-            "fakes per person and task, balanced with as many reals; real video with cloned or "
+            f"fakes per person and task, {BENCHMARK_REALS}; real video with cloned or "
             "synthesised speech is left out, since a visual detector cannot see it",
         ),
     }

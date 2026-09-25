@@ -33,7 +33,7 @@ from typing import Any, Final, get_args
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import DatasetCard, InventoryRecord, SchemeCard
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split
 
 __all__ = [
     "FOLDER",
@@ -157,7 +157,7 @@ class ToyfakeBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: 20 fakes drawn at random from the "
-            "official test split, balanced with as many reals",
+            f"official test split, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official"

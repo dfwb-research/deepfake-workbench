@@ -48,7 +48,8 @@ schemes:
       - BLEND_A
       - BLEND_B
     rationale: 'a small, seeded evaluation set: 20 fakes drawn at random from the
-      official test split, balanced with as many reals'
+      official test split, with as many reals as fakes, or every real when there are
+      fewer'
     ratios: null
     rule: benchmark
     sha256: f12ee688a2eab239377ed747eee42f4e19f9d2a5703aa5b7e116edcbd3e03653

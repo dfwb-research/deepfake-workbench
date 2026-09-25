@@ -57,8 +57,9 @@ small number of general families:
   all: every video's identity decides its split, by the same seeded, deterministic rule.
 - **all-test** — every video is test. Useful for evaluating a detector on a dataset it was never
   trained on.
-- **benchmark** — a small, seeded, class-balanced subset of a dataset's test videos, for a fast
-  comparison across datasets rather than an exhaustive evaluation. A benchmark can be defined at
+- **benchmark** — a small, seeded subset of a dataset's test videos, for a fast comparison
+  across datasets rather than an exhaustive evaluation. It holds as many reals as fakes, or every
+  real when there are fewer, so it is not always class-balanced. A benchmark can be defined at
   given compressions, recorded in its scheme card's parameters, so it is the same subset
   whichever other compressions a local copy holds: the FaceForensics++ and DeepFakeDetection
   benchmarks are defined at c23.
