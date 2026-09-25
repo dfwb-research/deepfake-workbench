@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,11 +43,20 @@ def _dfwb(*args: str, exe: Path = DFWB, **env: str) -> subprocess.CompletedProce
     )
 
 
+def _plugin_entries(data: dict) -> list[dict]:
+    """The listed components that come from plugins, not the framework's own built-ins.
+
+    The built-ins (e.g. one inventory builder per supported dataset) grow with every release and
+    are checked by their own tests; these tests are about third-party distributions.
+    """
+    return [e for e in data["entries"] if e["provider"] != "dfwb"]
+
+
 def _check(exe: Path, **env: str) -> None:
     done = _dfwb("plugins", "list", "--all", "--json", exe=exe, **env)
     assert done.returncode == 0, done.stderr
     data = json.loads(done.stdout)
-    components = {f"{e['registry']}/{e['key']}": e["provider"] for e in data["entries"]}
+    components = {f"{e['registry']}/{e['key']}": e["provider"] for e in _plugin_entries(data)}
     assert components == {
         "layers/fake-stem": "dfwb-fake-plugin-ok",
         "losses/fake-loss": "dfwb-fake-plugin-ok",
@@ -57,7 +67,10 @@ def _check(exe: Path, **env: str) -> None:
     assert status["fake-broken"] == ("failed", "RuntimeError: simulated failure inside register()")
 
     human = _dfwb("plugins", "list", exe=exe, **env)
-    assert "layers/fake-stem  dfwb-fake-plugin-ok  Fake stem layer" in human.stdout
+    # columns are as wide as the longest listed name, built-ins included
+    assert re.search(
+        r"^layers/fake-stem +dfwb-fake-plugin-ok +Fake stem layer$", human.stdout, re.M
+    )
     assert "1 plugin(s) failed or were skipped" in human.stderr
 
     lookup = _dfwb("plugins", "info", "heads/half-registered", exe=exe, **env)
@@ -80,7 +93,7 @@ def test_fake_distributions_on_the_path(tmp_path):
             "plugins", "list", "--all", "--json", PYTHONPATH=pythonpath, DFWB_PLUGINS="none"
         ).stdout
     )
-    assert off["entries"] == []
+    assert _plugin_entries(off) == []
     assert {p["name"]: p["status"] for p in off["plugins"]} == {
         "dfwb": "ok",
         "fake-broken": "disabled",

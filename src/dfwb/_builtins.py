@@ -15,7 +15,9 @@ _BUILDERS_PACKAGE: Final = "dfwb.preprocess.inventory.builders"
 #    display name, the dataset's expected folder under a datasets root)
 # The folder is stored as registry metadata, so `dfwb datasets list` and `dfwb doctor` can
 # locate every dataset without importing a single builder module.
-INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = ()
+INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
+    ("ffpp", "ffpp:FaceForensicsBuilder", "FaceForensics++", "FaceForensics++"),
+)
 
 
 def register(api: PluginAPI) -> None:
