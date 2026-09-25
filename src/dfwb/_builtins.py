@@ -34,6 +34,12 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
     ("ffiw10k", "ffiw10k:FFIW10KBuilder", "FFIW-10K", "FFIW10K"),
     ("kodf", "kodf:KoDFBuilder", "KoDF", "KoDF"),
     ("dfdm", "dfdm:DFDMBuilder", "DFDM", "DFDM"),
+    (
+        "fakeavceleb",
+        "fakeavceleb:FakeAVCelebBuilder",
+        "FakeAVCeleb v1.2",
+        "FakeAVCeleb-v1_2",
+    ),
 )
 
 
