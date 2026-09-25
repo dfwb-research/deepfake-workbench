@@ -40,6 +40,7 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
         "FakeAVCeleb v1.2",
         "FakeAVCeleb-v1_2",
     ),
+    ("polyglotfake", "polyglotfake:PolyGlotFakeBuilder", "PolyGlotFake", "PolyGlotFake"),
 )
 
 
