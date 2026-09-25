@@ -24,6 +24,12 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
     ("celebdf-v3", "celebdf:CelebDFv3Builder", "Celeb-DF v3", "Celeb-DF-v3"),
     ("dfdc", "dfdc:DFDCBuilder", "DFDC", "DFDC"),
     ("dfdc-p", "dfdcp:DFDCPreviewBuilder", "DFDC Preview", "DFDC-P"),
+    (
+        "deeperforensics",
+        "deeperforensics:DeeperForensicsBuilder",
+        "DeeperForensics-1.0",
+        "DeeperForensics-1.0",
+    ),
 )
 
 
