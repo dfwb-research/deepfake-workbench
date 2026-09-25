@@ -1,8 +1,8 @@
 # Writing a plugin
 
 A **plugin** is a small, separately-installable Python distribution that registers components
-into dfwb's registries: `layers`, `backbones`, `temporal_pools`, `heads`, `losses`, `metrics`,
-`eval_suites`, `face_backends`, `inventory_builders`, `protocol_packs`, `detectors`,
+into dfwb's registries: `layers`, `transforms`, `backbones`, `temporal_pools`, `heads`, `losses`,
+`metrics`, `eval_suites`, `face_backends`, `inventory_builders`, `protocol_packs`, `detectors`,
 `detector_sources` and `callbacks`. Inventory builders and protocol packs are covered in
 `docs/guides/add-a-dataset.md`; this guide covers the model and training side — a stem layer, a
 backbone, a temporal pool, a head, a loss, or a `detector_sources` entry — since those are what
@@ -135,7 +135,7 @@ the stem hook (`dfwb.models.stem.build_stem`) automatically appends a `1x1` conv
 channels, so any backbone can still follow it. A layer that already outputs 3 channels is used as
 is, with no adapter appended. `dfwb plugins list` shows `layers/channel-mean` and
 `losses/weighted-bce` once the plugin is installed; `dfwb plugins info layers/channel-mean` shows
-its target, requirements and accepted parameters.
+its target, its provider, what it requires and the params model it names, if any.
 
 ## The component contracts
 
@@ -229,11 +229,12 @@ installing a plugin.
 ## How config parameters are validated
 
 `api.<registry>.build(key, **params)` (what a config's `{name: ..., **params}` ultimately calls)
-validates `params` before ever importing the target:
+validates `params` before the target is ever called:
 
-- **By default**, against the target's own `__init__`/call signature — a keyword the target
-  doesn't accept is a `ConfigError` naming it (with a did-you-mean suggestion), and a missing
-  required one or a wrong type is reported the same way, all without invoking the target.
+- **By default**, against the target's own `__init__`/call signature, which means importing the
+  target's module to read it — a keyword the target doesn't accept is a `ConfigError` naming it
+  (with a did-you-mean suggestion), and a missing required one or a wrong type is reported the
+  same way, all without invoking the target.
 - **With `params="module:Model"`** (a pydantic `BaseModel`, a dataclass, or a `TypedDict`),
   against that model instead — useful when the target's own signature is untyped or takes
   `**kwargs`, since a params model validates without importing the (possibly heavy) target class
@@ -250,7 +251,7 @@ import.
 
 ```bash
 dfwb plugins list                       # every registered component, once your plugin is installed
-dfwb plugins info layers/channel-mean   # target, requirements, accepted parameters
+dfwb plugins info layers/channel-mean   # target, provider, requirements, params model
 dfwb plugins list --all                 # also shows plugins that failed or were skipped, and why
 ```
 
