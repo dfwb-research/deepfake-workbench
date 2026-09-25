@@ -16,7 +16,13 @@ from tests.unit.preprocess.test_packbuild import PACK_NAME, setup_packdemo
 from tests.unit.protocols.conftest import make_pack, register_packs
 
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
-from dfwb.core.records import InventoryRecord, read_jsonl, read_split_tsv, write_jsonl
+from dfwb.core.records import (
+    InventoryRecord,
+    VideoRecord,
+    read_jsonl,
+    read_split_tsv,
+    write_jsonl,
+)
 from dfwb.preprocess.inventory.runner import build_inventory, get_builder
 from dfwb.preprocess.packbuild import add_to_pack_yaml, build_dataset
 from dfwb.protocols.materialization import (
@@ -217,7 +223,35 @@ def test_benchmark_params_reproduce_the_benchmark_rule(built):
         "seed": 7,
         "task_order": ["REAL", "FS_A", "FS_B"],
         "pool": "all",
+        "compressions": None,
     }
+
+
+def test_benchmark_params_record_and_reproduce_the_compressions():
+    records = [
+        VideoRecord(f"{task}/{task.lower()}{i}", compression, f"X-{task}", "m")
+        for task in ("REAL", "FS_A")
+        for i in range(6)
+        for compression in ("c23", "c40")
+    ]
+    spec = BenchmarkSpec(k_fake=3, compressions=("c23",))
+    params = benchmark_params(spec, task_order=["REAL", "FS_A"], pool="all")
+    assert params["compressions"] == ["c23"]
+
+    def is_real(record: VideoRecord) -> bool:
+        return record.key.startswith("REAL/")
+
+    direct = assign_benchmark(
+        records, spec=spec, is_real=is_real, task_rank={"REAL": 0, "FS_A": 1}, pool_keys=None
+    )
+    via_params = assign_rule("benchmark", params, records, official=None, is_real=is_real)
+    assert via_params == direct
+    assert {compression for _, compression in via_params} == {"c23"}
+
+    # A card written before the compressions were recorded draws from every compression.
+    legacy = {name: value for name, value in params.items() if name != "compressions"}
+    every = assign_rule("benchmark", legacy, records, official=None, is_real=is_real)
+    assert {compression for _, compression in every} == {"c23", "c40"}
 
 
 def test_materialize_does_not_touch_the_pack(built):
@@ -287,6 +321,14 @@ def test_a_benchmark_over_an_unknown_label_is_a_contract_error(built, tmp_path):
             work_root=built["work"],
         )
     assert "'PD-NOPE'" in info.value.message
+
+
+@pytest.mark.parametrize("compressions", ["c23", [23], []])
+def test_malformed_benchmark_compressions_are_a_contract_error(compressions):
+    params = {"k_fake": 1, "task_order": ["REAL"], "pool": "all", "compressions": compressions}
+    with pytest.raises(ContractError) as info:
+        assign_rule("benchmark", params, [], official=None, is_real=lambda r: True)
+    assert "compressions" in info.value.message
 
 
 def test_benchmark_pools_are_checked():

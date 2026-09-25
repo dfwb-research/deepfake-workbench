@@ -344,6 +344,7 @@ def test_scheme_card_has_rule_params_counts_and_hash(demo):
         "seed": 0,
         "task_order": ["REAL", "FS_A", "FS_B"],
         "pool": "official-test",
+        "compressions": None,
     }
     assert benchmark.counts == {"test": 4}
 
@@ -636,6 +637,47 @@ def test_a_benchmark_draws_from_every_record_when_the_official_split_has_no_test
     assert needs_official("packdemo-valonly/benchmark") is False
     materialized = materialize(
         "packdemo-valonly/benchmark", inventory=inventory, official=None, work_root=demo["work"]
+    )
+    assert materialized.sha256 == benchmark.sha256
+
+
+def _at_compressions(rows: Sequence[InventoryRecord], *names: str) -> list[InventoryRecord]:
+    """Every row once per compression, as a dataset stored at several compressions is."""
+    return [
+        InventoryRecord(**{**_as_dict(r), "compression": name, "relpath": f"{name}/{r.relpath}"})
+        for r in rows
+        for name in names
+    ]
+
+
+def test_a_benchmark_defined_at_one_compression_ignores_the_others(demo, monkeypatch, tmp_path):
+    # The same release with c40 and raw copies on disk as well draws exactly the benchmark an
+    # inventory holding c23 alone draws; the card records the compression, and materializing
+    # the recipe from the full inventory gives the published hash.
+    monkeypatch.setattr(
+        PackDemoBuilder, "benchmark", BenchmarkSpec(k_fake=2, compressions=("c23",))
+    )
+    rows = read_inventory("packdemo", demo["work"])
+    only_c23, full = tmp_path / "c23.jsonl", tmp_path / "full.jsonl"
+    write_jsonl(only_c23, _at_compressions(rows, "c23"))
+    write_jsonl(full, _at_compressions(rows, "raw", "c23", "c40"))
+
+    alone = build_dataset("packdemo", out=tmp_path / "alone" / "packdemo", inventory=only_c23)
+    result = build_dataset("packdemo", out=demo["pack"] / "packdemo", inventory=full)
+
+    benchmark = result.schemes["benchmark"]
+    assert benchmark.params["compressions"] == ["c23"]
+    assert benchmark.sha256 == alone.schemes["benchmark"].sha256
+    assert benchmark.counts == {"test": 4}
+    split = demo["pack"] / "packdemo" / "splits" / "benchmark.tsv.gz"
+    assert {row.compression for row in read_split_tsv(split)} == {"c23"}
+
+    add_to_pack_yaml(demo["pack"], "packdemo")
+    split.unlink()
+    records = read_jsonl(full, InventoryRecord)
+    official = get_builder("packdemo").official_splits(demo["raw"] / "PackDemo", records)
+    materialized = materialize(
+        "packdemo/benchmark", inventory=full, official=official, work_root=demo["work"]
     )
     assert materialized.sha256 == benchmark.sha256
 

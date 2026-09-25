@@ -11,6 +11,7 @@
     },
     "benchmark": {
       "params": {
+        "compressions": null,
         "exclude_tasks": [],
         "k_fake": 20,
         "k_real_cap": null,
