@@ -233,3 +233,39 @@ def test_paired_dataset_from_a_real_protocols_pairs_and_videoindex_join(tmp_path
     samples = [dataset[i] for i in range(len(dataset))]
     assert {s.key for s in samples} == {"REAL/r1", "FAKE_A/a1"}
     assert {s.extras["dfwb/pair_id"] for s in samples} == {0}
+
+
+# ------------------------------------------------------------------------ several paired sources
+
+
+def _paired_source(tmp_path: Path, prefix: str, n_pairs: int) -> PairedClipDataset:
+    items = []
+    pairs = []
+    for i in range(n_pairs):
+        real, fake = f"{prefix}/REAL/{i}", f"{prefix}/FAKE/{i}"
+        items += [_item(tmp_path, key=real, label=0), _item(tmp_path, key=fake, label=1)]
+        pairs.append((real, fake))
+    index = VideoIndex(items=items, excluded=[], _summaries=[])
+    return PairedClipDataset(index, pairs, _spec(clips_per_video=2), train=True, seed=0)
+
+
+def test_pair_ids_never_collide_across_paired_sources_in_one_batch(tmp_path):
+    from dfwb.data.dataset import MultiSource
+    from dfwb.data.samplers import PairGrouped
+
+    first = _paired_source(tmp_path, "a", n_pairs=3)
+    second = _paired_source(tmp_path, "b", n_pairs=2)
+    multi = MultiSource([first, second], weights=[1.0, 1.0])
+
+    # one batch big enough for every pair of both sources, so the two sources' pairs mix in it
+    (indices,) = list(PairGrouped(multi, batch_size=len(multi), seed=0))
+    batch = collate_clips([multi[i] for i in indices])
+
+    by_pair: dict[int, set[str]] = {}
+    for pair_id, key in zip(batch.extras["dfwb/pair_id"].tolist(), batch.keys, strict=True):
+        by_pair.setdefault(pair_id, set()).add(key)
+    assert sorted(by_pair) == list(range(5))  # 3 + 2 pairs, one id each
+    for keys in by_pair.values():
+        # a pair id names exactly one real video and its own fake, never another source's
+        (real,) = [key for key in keys if "/REAL/" in key]
+        assert keys == {real, real.replace("/REAL/", "/FAKE/")}

@@ -92,6 +92,9 @@ class DataSource(ConfigModel):
     protocol: str
     split: Literal["train", "val", "test"]
     where: dict[str, WhereValue | list[WhereValue]] = Field(default_factory=dict)
+    #: A training source's share of the draws under ``data.loader.balance: source``, relative to
+    #: the other training sources' weights.
+    weight: float = Field(default=1.0, gt=0)
 
 
 class SuiteRef(ConfigModel):

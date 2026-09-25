@@ -116,6 +116,19 @@ def test_balance_is_one_of_three_modes():
     assert "(did you mean 'video-label'?)" in _problems(_config(data={"loader": typo}))[0]
 
 
+def test_a_source_weight_defaults_to_one_and_must_be_positive():
+    config = validate_config(BASE, source="exp.yaml")
+    assert isinstance(config, TrainConfig)
+    assert config.data.train[0].weight == 1.0
+    weighted = [{"protocol": "toyfake/official", "split": "train", "weight": 2.5}]
+    config = validate_config(_config(data={"train": weighted}), source="exp.yaml")
+    assert isinstance(config, TrainConfig)
+    assert config.data.train[0].weight == 2.5
+    zero = [{"protocol": "toyfake/official", "split": "train", "weight": 0}]
+    (line,) = _problems(_config(data={"train": zero}))
+    assert line.startswith("  data.train[0].weight: ")
+
+
 def test_pairs_and_allow_input_mismatch_are_booleans():
     config = validate_config(
         _config(data={"pairs": True, "allow_input_mismatch": True}), source="exp.yaml"

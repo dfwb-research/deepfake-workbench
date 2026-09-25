@@ -8,7 +8,9 @@ reason: ``__getitem__`` keeps returning one :class:`~dfwb.data.dataset.ClipSampl
 :func:`~dfwb.data.collate.collate_clips` collates a batch of them completely unchanged. Every
 sample is tagged ``extras["dfwb/pair_id"]`` with its pair's position, so a pairwise loss finds a
 row's partner by matching that value within the collated batch -- rows do not need to sit next to
-each other for that to work, only to agree on the id.
+each other for that to work, only to agree on the id. When several paired sources are
+concatenated, :class:`~dfwb.data.dataset.MultiSource` offsets each source's ids past the previous
+sources' pairs, so an id still names exactly one pair in a batch that mixes sources.
 """
 
 from __future__ import annotations
@@ -105,6 +107,11 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
     def __len__(self) -> int:
         return len(self._real) + len(self._fake)
 
+    @property
+    def pair_count(self) -> int:
+        """How many pairs survived (each one has an id in ``0 .. pair_count - 1``)."""
+        return len(self._real) // self._clips_per_pair if self._clips_per_pair else 0
+
     def pair_groups(self) -> list[list[int]]:
         """The dataset indices of each surviving pair, in pair order: that pair's real rows, then
         its fake rows. A batch sampler that keeps a pair together keeps one of these together."""
@@ -112,7 +119,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
         size = self._clips_per_pair
         return [
             [*range(p * size, (p + 1) * size), *range(n_real + p * size, n_real + (p + 1) * size)]
-            for p in range(n_real // size if size else 0)
+            for p in range(self.pair_count)
         ]
 
     def __getitem__(self, i: int) -> ClipSample:

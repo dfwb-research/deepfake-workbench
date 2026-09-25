@@ -14,6 +14,7 @@ from dfwb.core.records._base import RecordModel
 from dfwb.core.records.protocol import VideoRecord
 
 __all__ = [
+    "FRAME_FILE",
     "BuilderRef",
     "InventoryRecord",
     "Probe",
@@ -92,6 +93,13 @@ def to_video_record(record: InventoryRecord) -> VideoRecord:
 class TrackStats:
     mean_confidence: float | None = None
     identity_switch: bool | None = None
+
+
+#: One stored frame's file name inside its video's directory (``ProcessedRecord.relpath``), from
+#: the frame's number in the source video: ``FRAME_FILE.format(index=12)`` is
+#: ``frame_000012.png``. The face pipeline writes frames under this name and the data layer reads
+#: them back by it, so it is spelled once, here.
+FRAME_FILE = "frame_{index:06d}.png"
 
 
 @with_config(ConfigDict(extra="forbid"))

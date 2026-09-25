@@ -96,14 +96,20 @@ def _refuse(
     return ContractError(message, hint=hint)
 
 
-def _step(transform: ClipTransform) -> Callable[[Tensor], Tensor]:
+# Every step of a chain is a module-level class or function, never a closure: a DataLoader whose
+# workers are started by spawn or forkserver (the default start method on Python 3.14) pickles
+# the dataset, this chain included, into every worker, and a local function cannot be pickled.
+
+
+class _Step:
     """A registered clip transform, called without a generator (the adaptation chain is never
     random), narrowed to the plain ``Tensor -> Tensor`` shape :class:`AdaptResult.chain` needs."""
 
-    def _call(clip: Tensor) -> Tensor:
-        return transform(clip)
+    def __init__(self, transform: ClipTransform) -> None:
+        self.transform = transform
 
-    return _call
+    def __call__(self, clip: Tensor) -> Tensor:
+        return self.transform(clip)
 
 
 def _channel_flip(clip: Tensor) -> Tensor:
@@ -111,14 +117,15 @@ def _channel_flip(clip: Tensor) -> Tensor:
     return clip.flip(dims=(1,))
 
 
-def _value_range(lo: float, hi: float) -> Callable[[Tensor], Tensor]:
+class _ValueRange:
     """``x * (hi - lo) + lo``, mapping a clip already in ``[0, 1]`` into ``[lo, hi]``."""
-    scale = hi - lo
 
-    def _apply(clip: Tensor) -> Tensor:
-        return clip * scale + lo
+    def __init__(self, lo: float, hi: float) -> None:
+        self.lo = lo
+        self.scale = hi - lo
 
-    return _apply
+    def __call__(self, clip: Tensor) -> Tensor:
+        return clip * self.scale + self.lo
 
 
 class _Chain:
@@ -201,22 +208,22 @@ def adapt(
             reason = problem
         else:
             derived_px = round(profile.crop.size * spec.crop_scale / profile.crop.scale)
-            steps.append(_step(CenterCrop(size=derived_px)))
+            steps.append(_Step(CenterCrop(size=derived_px)))
             derived_crop = True
             current_size = derived_px
 
     if spec.size != (current_size, current_size):
-        steps.append(_step(Resize(size=spec.size)))
+        steps.append(_Step(Resize(size=spec.size)))
 
     if spec.color == "bgr":
         steps.append(_channel_flip)
 
     lo, hi = spec.value_range
     if (lo, hi) != (0.0, 1.0):
-        steps.append(_value_range(lo, hi))
+        steps.append(_ValueRange(lo, hi))
 
     if spec.mean is not None and spec.std is not None:
-        steps.append(_step(Normalize(mean=spec.mean, std=spec.std)))
+        steps.append(_Step(Normalize(mean=spec.mean, std=spec.std)))
 
     return AdaptResult(
         chain=_Chain(steps), derived_crop=derived_crop, mismatch=mismatch, reason=reason

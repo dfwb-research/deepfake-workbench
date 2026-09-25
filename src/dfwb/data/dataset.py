@@ -23,9 +23,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
-from torchvision.io import decode_png, read_file
 
 from dfwb.core.errors import ConfigError
+from dfwb.core.records.local import FRAME_FILE
+from dfwb.data._images import read_frame
 from dfwb.data.clips import ClipSpec, clip_windows_padded
 from dfwb.data.index import VideoIndex
 
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     from dfwb.data.paired import PairedClipDataset
 
 __all__ = ["ClipDataset", "ClipSample", "ClipTransform", "MultiSource"]
+
+_PAIR_ID = "dfwb/pair_id"
 
 
 class ClipTransform(Protocol):
@@ -132,8 +135,7 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
 
         frame_numbers = [item.frame_indices[position] for position in positions]
         frames = [
-            decode_png(read_file(str(item.video_dir / f"frame_{number:06d}.png")))
-            for number in frame_numbers
+            read_frame(item.video_dir / FRAME_FILE.format(index=number)) for number in frame_numbers
         ]
         clip = torch.stack(frames).to(torch.float32) / 255.0
 
@@ -160,7 +162,9 @@ class MultiSource(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
     the dataset (its position in ``datasets``) it came from, in ``extras["dfwb/source_id"]``.
 
     A source may also be a :class:`~dfwb.data.paired.PairedClipDataset` (one per training source
-    when a run trains on real/fake pairs): it is concatenated exactly the same way."""
+    when a run trains on real/fake pairs): it is concatenated exactly the same way, and its
+    ``extras["dfwb/pair_id"]`` values are offset by the number of pairs in the sources before it,
+    so pair ids never collide between sources that share a batch."""
 
     def __init__(
         self, datasets: Sequence[ClipDataset | PairedClipDataset], weights: Sequence[float]
@@ -182,6 +186,8 @@ class MultiSource(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         self.weights = tuple(weight / total for weight in weights)
         lengths = [len(dataset) for dataset in datasets]
         self._offsets = list(itertools.accumulate(lengths, initial=0))
+        pair_counts = [getattr(dataset, "pair_count", 0) for dataset in datasets]
+        self._pair_offsets = list(itertools.accumulate(pair_counts, initial=0))
 
     def __len__(self) -> int:
         return self._offsets[-1]
@@ -196,4 +202,7 @@ class MultiSource(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
     def __getitem__(self, i: int) -> ClipSample:
         source = self.source_of(i)
         sample = self.datasets[source][i - self._offsets[source]]
-        return replace(sample, extras={**sample.extras, "dfwb/source_id": source})
+        extras = {**sample.extras, "dfwb/source_id": source}
+        if _PAIR_ID in extras:
+            extras[_PAIR_ID] += self._pair_offsets[source]
+        return replace(sample, extras=extras)

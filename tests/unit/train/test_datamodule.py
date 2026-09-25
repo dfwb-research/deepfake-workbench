@@ -150,13 +150,13 @@ def test_transforms_apply_to_train_only(toy_work_root):
     train_multi = datamodule.train_dataset
     assert train_multi is not None
 
-    # the train source and a val-mode dataset over the same videos place clips identically
-    # (uniform sampling, same clip count), so the only difference is the transform.
+    # the train source and an untransformed train dataset over the same videos, seed and epoch
+    # draw the same frames, so the only difference is the transform.
     train_sample = train_multi[0]
     same_video = ClipDataset(
         datamodule.train_sources[0].index,
         datamodule.train_sources[0].dataset.spec,
-        train=False,
+        train=True,
         adapt_chain=datamodule.train_sources[0].adaptation.chain,
         seed=0,
     )[0]
@@ -188,6 +188,37 @@ def test_balance_chooses_the_train_sampler(toy_work_root, balance, mode, expecte
         assert sorted(sampler) == list(range(len(datamodule.train_dataset)))
     else:
         assert isinstance(sampler, expected)
+
+
+def test_source_weights_drive_source_balancing(toy_work_root):
+    group_a = {**toy_source("train", **{"attrs.group": "a"}), "weight": 3.0}
+    group_b = toy_source("train", **{"attrs.group": "b"})
+    config = toy_config(
+        data={
+            "train": [group_a, group_b],
+            "loader": {"batch_size": 8, "num_workers": 0, "balance": "source"},
+        }
+    )
+    datamodule = _datamodule(config, toy_work_root)
+    datamodule.setup("fit")
+    assert datamodule.train_dataset.weights == pytest.approx((0.75, 0.25))
+    sampler = datamodule.train_dataloader().sampler
+    n_a = len(datamodule.train_dataset.datasets[0])
+    draws = []
+    for epoch in range(20):
+        sampler.set_epoch(epoch)
+        draws += list(sampler)
+    share_a = sum(index < n_a for index in draws) / len(draws)
+    assert share_a == pytest.approx(0.75, abs=0.05)
+
+
+def test_a_source_weight_without_source_balancing_is_warned_about(toy_work_root, caplog):
+    config = toy_config(data={"train": [{**toy_source("train"), "weight": 2.0}]})
+    datamodule = _datamodule(config, toy_work_root)
+    with caplog.at_level("WARNING"):
+        datamodule.setup("fit")
+    assert "data.train[0].weight" in caplog.text
+    assert "balance: source" in caplog.text
 
 
 def test_an_unknown_balance_is_a_config_error_naming_video_label(toy_work_root):
@@ -256,6 +287,45 @@ def test_workers_persist_when_there_are_workers(toy_work_root):
     single = _datamodule(toy_config(), toy_work_root)
     single.setup("fit")
     assert single.train_dataloader().persistent_workers is False
+
+
+@pytest.mark.parametrize("pairs", [False, True], ids=["plain", "pairs"])
+def test_every_dataset_pickles_for_loader_workers(toy_work_root, pairs):
+    # spawn and forkserver workers (forkserver is Python 3.14's default) receive the dataset,
+    # its transforms and its adaptation chain pickled
+    from multiprocessing.reduction import ForkingPickler
+
+    import torch.multiprocessing  # registers torch's tensor reductions with ForkingPickler
+
+    config = toy_config(
+        data={
+            "transforms": {"train": [{"name": "hflip", "p": 0.5}, {"name": "jpeg", "quality": 50}]}
+        }
+    )
+    datamodule = ProtocolDataModule(
+        config.data,
+        input_spec=InputSpec(size=(24, 24), mean=(0.5, 0.5, 0.5), std=(0.2, 0.2, 0.2)),
+        work_root=toy_work_root,
+        seed=0,
+        pairs=pairs,
+    )
+    datamodule.setup("fit")
+    datasets = [datamodule.train_dataset, *(source.dataset for source in datamodule.val_sources)]
+    for dataset in datasets:
+        restored = ForkingPickler.loads(ForkingPickler.dumps(dataset))
+        assert len(restored) == len(dataset)
+        torch.testing.assert_close(restored[0].clip, dataset[0].clip)
+
+
+@pytest.mark.parametrize("context", ["forkserver", "spawn"])
+def test_the_train_loader_runs_in_forkserver_and_spawn_workers(toy_work_root, context):
+    config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 2}})
+    datamodule = _datamodule(config, toy_work_root)
+    datamodule.setup("fit")
+    loader = datamodule.train_dataloader()
+    loader.multiprocessing_context = context
+    batches = list(loader)
+    assert [len(batch.keys) for batch in batches] == [8] * 4
 
 
 def test_set_epoch_reaches_the_train_datasets_and_sampler(toy_work_root):

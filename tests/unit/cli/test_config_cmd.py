@@ -43,7 +43,7 @@ def test_validate_accepts_the_toy_cpu_template(run, requires_torch):
     shown = json.loads(run("config", "show", "-c", str(path), "--json").out)["config"]
     assert shown["data"]["processing"] == "toy-64-center-8f"
     assert shown["data"]["train"] == [
-        {"protocol": "toyfake/official", "split": "train", "where": {}}
+        {"protocol": "toyfake/official", "split": "train", "where": {}, "weight": 1.0}
     ]
     assert shown["data"]["clip"]["frames"] == 1
     assert shown["data"]["loader"]["batch_size"] == 16

@@ -158,6 +158,12 @@
           "title": "Split",
           "type": "string"
         },
+        "weight": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        },
         "where": {
           "additionalProperties": {
             "anyOf": [

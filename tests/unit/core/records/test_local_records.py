@@ -187,3 +187,18 @@ def test_extras_mesh_true_is_invalid():
 def test_extras_masks_true_is_invalid():
     with pytest.raises(ValidationError, match="masks"):
         ProcessingProfile.model_validate(_profile(**{"masks: false": "masks: true"}))
+
+
+def test_the_stored_frame_file_name_is_spelled_once_in_core():
+    # the face pipeline writes stored frames under this name and the data layer reads them back
+    # by it: both take it from here, so they can never drift apart
+    from pathlib import Path
+
+    from dfwb.core.records.local import FRAME_FILE
+
+    assert FRAME_FILE.format(index=12) == "frame_000012.png"
+    src = Path(__file__).resolve().parents[4] / "src" / "dfwb"
+    for user in ("preprocess/face/process.py", "data/dataset.py"):
+        text = (src / user).read_text("utf-8")
+        assert "FRAME_FILE" in text, user
+        assert "frame_{" not in text, user

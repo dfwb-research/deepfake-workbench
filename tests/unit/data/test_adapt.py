@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 from pathlib import Path
 
 import pytest
@@ -332,6 +333,30 @@ def test_chain_is_deterministic_and_has_no_randomness():
     result = adapt(spec, profile)
     clip = torch.rand(1, 3, 100, 100)
     torch.testing.assert_close(result.chain(clip), result.chain(clip))
+
+
+def test_the_chain_pickles_so_loader_workers_can_receive_it():
+    # a DataLoader started by spawn or forkserver (the default on Python 3.14) sends its dataset,
+    # adaptation chain included, to every worker pickled.
+    from multiprocessing.reduction import ForkingPickler
+
+    import torch.multiprocessing  # registers torch's tensor reductions with ForkingPickler
+
+    profile = _profile(scale=1.3, size=100)
+    spec = _spec(
+        crop_scale=1.2,
+        size=(64, 64),
+        color="bgr",
+        value_range=(-1.0, 1.0),
+        mean=(0.1, 0.2, 0.3),
+        std=(0.5, 0.6, 0.7),
+    )
+    chain = adapt(spec, profile).chain
+    clip = torch.rand(2, 3, 100, 100)
+
+    for dumps in (pickle.dumps, ForkingPickler.dumps):
+        restored = pickle.loads(dumps(chain))
+        torch.testing.assert_close(restored(clip), chain(clip))
 
 
 # ------------------------------------------------------------------------------ available_profiles

@@ -6,6 +6,7 @@ registry.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import pytest
@@ -141,38 +142,61 @@ def test_global_rng_state_is_unchanged_even_when_torch_is_used_elsewhere_first()
 
 def test_jpeg_draws_one_quality_per_clip(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
-    original = transforms_module.encode_jpeg
+    original = transforms_module.jpeg_round_trip
 
     def spy(frames: list[torch.Tensor], quality: int) -> list[torch.Tensor]:
         calls.append(quality)
-        result: list[torch.Tensor] = original(frames, quality=quality)
+        result: list[torch.Tensor] = original(frames, quality)
         return result
 
-    monkeypatch.setattr(transforms_module, "encode_jpeg", spy)
+    monkeypatch.setattr(transforms_module, "jpeg_round_trip", spy)
 
     transform = _build("jpeg", quality=(20, 80))
     clip = _clip(_frame(0), t=6)
     transform(clip, generator=torch.Generator().manual_seed(5))
 
-    assert len(calls) == 1  # every frame of the clip goes through one encode_jpeg call
+    assert len(calls) == 1  # every frame of the clip goes through one round trip, one quality
     assert 20 <= calls[0] <= 80
 
 
 def test_jpeg_with_a_fixed_quality_uses_it_every_time(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
-    original = transforms_module.encode_jpeg
+    original = transforms_module.jpeg_round_trip
 
     def spy(frames: list[torch.Tensor], quality: int) -> list[torch.Tensor]:
         calls.append(quality)
-        result: list[torch.Tensor] = original(frames, quality=quality)
+        result: list[torch.Tensor] = original(frames, quality)
         return result
 
-    monkeypatch.setattr(transforms_module, "encode_jpeg", spy)
+    monkeypatch.setattr(transforms_module, "jpeg_round_trip", spy)
 
     transform = _build("jpeg", quality=42)
     transform(_clip(_frame(0), t=3), generator=None)
 
     assert calls == [42]
+
+
+@pytest.mark.parametrize("quality", [10, 42, 90])
+def test_jpeg_round_trip_is_pixel_identical_to_torchvisions_codec(quality: int) -> None:
+    # the round trip used to go through torchvision's (now deprecated) encode_jpeg/decode_jpeg;
+    # Pillow's libjpeg must give exactly the same pixels back
+    io = pytest.importorskip("torchvision.io")
+    if not hasattr(io, "encode_jpeg"):
+        pytest.skip("this torchvision no longer has its own JPEG codec to compare with")
+    generator = torch.Generator().manual_seed(quality)
+    clip = torch.rand((3, 3, 37, 53), generator=generator)
+    frames = [(frame * 255.0).round().clamp(0, 255).to(torch.uint8) for frame in clip]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        expected = io.decode_jpeg(io.encode_jpeg(frames, quality=quality))
+    out = _build("jpeg", quality=quality)(clip)
+    assert torch.equal(out, torch.stack(expected).to(torch.float32) / 255.0)
+
+
+def test_jpeg_raises_no_deprecation_warning() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        _build("jpeg", quality=50)(_clip(_frame(0), t=2))
 
 
 def test_jpeg_with_a_range_needs_a_generator() -> None:

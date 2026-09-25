@@ -223,10 +223,30 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
         self.val_sources = self._build_sources(self.data.val, spec, None, train=False)
         self.train_dataset = MultiSource(
             [source.dataset for source in self.train_sources],
-            weights=[1.0] * len(self.train_sources),
+            weights=[source.entry.weight for source in self.train_sources],
         )
         self._check_train_size(len(self.train_dataset))
+        self._warn_unused_weights()
         self._is_setup = True
+
+    def _warn_unused_weights(self) -> None:
+        """A source weight only steers ``balance: source``; say so where one is set but has no
+        effect, rather than let it look applied."""
+        unused = [
+            f"data.{role}[{i}].weight"
+            for role, entries, used in (
+                ("train", self.data.train, self.balance == "source"),
+                ("val", self.data.val, False),
+            )
+            for i, entry in enumerate(entries)
+            if entry.weight != 1.0 and not used
+        ]
+        if unused:
+            _log.warning(
+                "%s: a source weight only applies to training sources under "
+                "data.loader.balance: source; ignored here",
+                ", ".join(unused),
+            )
 
     def _check_train_size(self, n_clips: int) -> None:
         """Unpaired training drops a trailing short batch, so it needs at least one full batch;
