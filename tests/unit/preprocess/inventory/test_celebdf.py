@@ -417,6 +417,13 @@ def test_label_vocab_covers_every_task_v1_v2():
         assert vocab[f"{prefix}-FS_CS"]["method"] == "Celeb-synthesis"
 
 
+def test_v1_and_v2_have_equal_but_separate_tables():
+    assert CelebDFv2Builder.tasks == CelebDFv1Builder.tasks
+    assert CelebDFv2Builder.labels == CelebDFv1Builder.labels
+    assert CelebDFv2Builder.tasks is not CelebDFv1Builder.tasks
+    assert CelebDFv2Builder.labels is not CelebDFv1Builder.labels
+
+
 def test_label_vocab_covers_every_task_v3():
     builder = CelebDFv3Builder()
     vocab = builder.label_vocab().vocab

@@ -1,14 +1,14 @@
 """DFDC Preview: the preview release of the Deepfake Detection Challenge dataset.
 
 Layout, relative to the ``DFDC-P`` folder (a single version, no compression levels). Every task
-nests its videos in a folder per target identity and one per recording, so each task directory
-is searched recursively:
+nests its videos in sub-folders, so each task directory is searched recursively:
 
-* reals: ``original_content/original/videos/<id>/<id>_<suffix>/<id>_<suffix>_<counter>.mp4``,
-  clip ``<counter>`` of recording ``<suffix>`` of the actor ``<id>``;
-* fakes: ``manipulated_content/method_A/videos/`` and ``manipulated_content/method_B/videos/``,
-  nested the same way, each named ``<swapped>_<target>_<suffix>_<counter>``: the face of actor
-  ``<swapped>`` put onto clip ``<target>_<suffix>_<counter>``.
+* reals: ``original_content/original/videos/<id>/<id>_<suffix>_<counter>.mp4``, one folder per
+  actor: clip ``<counter>`` of recording ``<suffix>`` of the actor ``<id>``;
+* fakes: ``manipulated_content/method_A/videos/<target>/<target>_<suffix>/<video>.mp4`` (and the
+  same under ``method_B``), a folder per target actor and one per recording, each named
+  ``<swapped>_<target>_<suffix>_<counter>``: the face of actor ``<swapped>`` put onto clip
+  ``<target>_<suffix>_<counter>``.
 
 Every video is keyed by its file stem; the relpath keeps the nested folders. A real's identity and
 target are its first part (a name needs at least three parts). A fake's identity and target are
@@ -188,7 +188,7 @@ class DFDCPreviewBuilder(BaseBuilder):
         "<task>/<swapped>_<target>_<suffix>_<counter> (the file stem)",
     }
     layout_notes = (
-        "Every task nests its videos as <target>/<target>_<suffix>/<video>.\n"
+        "Videos are nested: reals as <id>/<video>, fakes as <target>/<target>_<suffix>/<video>.\n"
         f"The official split reads {_METADATA} (the preview's train/test sets)."
     )
 

@@ -176,6 +176,12 @@ def _card(
     }
 
 
+# The v1/v2 fake task and its label. Each release builds its own task tuple and label dict from
+# them, so the two classes never share a table object.
+_CELEB_SYNTHESIS: Final = _fake(
+    "FS_CS", "Celeb-synthesis", "manipulated_content/Celeb-synthesis/videos"
+)
+_CELEB_SYNTHESIS_LABEL: Final = LabelSpec(binary=1, binary_av=1, multiclass=3, family="face-swap")
 _RANDOM_BENCHMARK: Final = (
     "a small, seeded evaluation set: up to 100 fakes drawn at random from the official test "
     "list, balanced with as many reals"
@@ -246,14 +252,8 @@ class CelebDFv1Builder(_CelebDFBuilder):
     label_prefix = "CDFv1"
     testing_list = _testing_list("v1")
     metadata_files = (testing_list,)
-    tasks = (
-        *_REALS,
-        _fake("FS_CS", "Celeb-synthesis", "manipulated_content/Celeb-synthesis/videos"),
-    )
-    labels = {
-        **_REAL_LABELS,
-        "FS_CS": LabelSpec(binary=1, binary_av=1, multiclass=3, family="face-swap"),
-    }
+    tasks = (*_REALS, _CELEB_SYNTHESIS)
+    labels = {**_REAL_LABELS, "FS_CS": _CELEB_SYNTHESIS_LABEL}
     schemes = _schemes(testing_list, _RANDOM_BENCHMARK)
     benchmark = BenchmarkSpec(k_fake=100)
     card_info = _card(
@@ -277,8 +277,8 @@ class CelebDFv2Builder(_CelebDFBuilder):
     label_prefix = "CDFv2"
     testing_list = _testing_list("v2")
     metadata_files = (testing_list,)
-    tasks = CelebDFv1Builder.tasks
-    labels = CelebDFv1Builder.labels
+    tasks = (*_REALS, _CELEB_SYNTHESIS)
+    labels = {**_REAL_LABELS, "FS_CS": _CELEB_SYNTHESIS_LABEL}
     schemes = _schemes(testing_list, _RANDOM_BENCHMARK)
     benchmark = BenchmarkSpec(k_fake=100)
     card_info = _card(

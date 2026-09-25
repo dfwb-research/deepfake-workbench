@@ -31,10 +31,7 @@ METHOD_B_DIR = ("manipulated_content", "method_B", "videos")
 
 
 def _make_synthetic_dfdcp_root(tmp_path: Path) -> Path:
-    """A tiny DFDC Preview tree: two reals and two method_A fakes.
-
-    As on the real release, videos are nested ``<target>/<target>_<suffix>/`` in every task.
-    """
+    """A tiny DFDC Preview tree: two reals and two method_A fakes, in nested folders."""
     root = tmp_path / "DFDC-P"
     real_1 = root.joinpath(*REAL_DIR, "1003254", "1003254_A")
     real_2 = root.joinpath(*REAL_DIR, "1004567", "1004567_B")
@@ -408,6 +405,9 @@ def test_the_layout_names_the_nesting_and_the_metadata():
     text = DFDCPreviewBuilder().describe_layout()
     assert "'DFDC-P'" in text
     assert "original_content/original/videos/**/<video>" in text
+    # Reals nest one level (per actor); fakes two (per target, then per recording).
+    assert "reals as <id>/<video>" in text
+    assert "fakes as <target>/<target>_<suffix>/<video>" in text
     assert ".official_files/dataset.json" in text
     assert "{cX}" not in text
 
