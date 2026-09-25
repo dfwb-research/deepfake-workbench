@@ -19,6 +19,9 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
     ("ffpp", "ffpp:FaceForensicsBuilder", "FaceForensics++", "FaceForensics++"),
     ("dfd", "dfd:DeepFakeDetectionBuilder", "DeepFakeDetection", "FaceForensics++"),
     ("uadfv", "uadfv:UADFVBuilder", "UADFV", "UADFV"),
+    ("celebdf-v1", "celebdf:CelebDFv1Builder", "Celeb-DF v1", "Celeb-DF-v1"),
+    ("celebdf-v2", "celebdf:CelebDFv2Builder", "Celeb-DF v2", "Celeb-DF-v2"),
+    ("celebdf-v3", "celebdf:CelebDFv3Builder", "Celeb-DF v3", "Celeb-DF-v3"),
 )
 
 
