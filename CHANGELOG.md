@@ -6,6 +6,87 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b1] - 2026-09-26
+
+### Added
+
+- The `dfwb.data` layer: clip sampling (`ClipSpec`: frames, `uniform`/`consecutive`/`random-window`
+  sampling, train windows seeded by `(seed, epoch, worker, index)`, deterministic evenly-spaced
+  eval windows that repeat a video's last frame and record `padded=true` when it is shorter than
+  the clip), clip-consistent torchvision v2 transforms (`resize`, `center-crop`,
+  `random-resized-crop`, `hflip`, `color-jitter`, `grayscale`, `gaussian-blur`, `gaussian-noise`,
+  `jpeg`, `normalize` — parameters drawn once per clip and applied to every frame), `MultiSource`
+  and paired (`data.pairs: true`) datasets, label- and source-balanced and pair-grouped samplers,
+  and `VideoIndex`: the join of a protocol split against a processed face store, which records
+  every video's outcome, including one missing from the store (`not-processed`), rather than
+  dropping it silently.
+- `dfwb.data.adapt`: the deterministic chain (derived crop, resize, colour order, value range,
+  mean/std normalisation) that turns a processed store's clips into exactly what a detector's
+  `InputSpec` asks for. A crop-kind mismatch or a store narrower than the detector needs raises
+  `ContractError` naming a compatible profile; `allow_input_mismatch: true` proceeds instead and
+  records the gap. Normalisation lives here, never hard-coded on a backbone — the old fixed
+  ImageNet-normalisation-on-GPU bug is not carried over.
+- The `dfwb.models` layer: `Backbone`/`TemporalPool`/`Head` interfaces assembled into
+  `AssembledDetector`, the concrete `Detector` (contract C4) that training builds. Built-in
+  backbones `tiny-cnn` (CPU tests and toy runs), `timm` (any timm image model) and `hf-vision`
+  (`[hf]`: CLIP, DINOv2, SigLIP 2 and others via `AutoModel`); temporal pools `mean`, `max`,
+  `attention`; heads `linear` and `mlp`. Freeze modes `none`, `full`, `norm-only`, `partial`
+  (by a backbone's own declared block groups, never a name pattern over parameters — the fix for
+  the old partial-freeze bug that froze everything) and `lora` (`[peft]`, on the `timm` and
+  `hf-vision` backbones). An optional `model.stem` hook puts any registered `layers` component (a
+  forensic front-end such as an SRM filter bank, published separately) in front of a backbone,
+  adapting its channel count back to 3 automatically when it isn't already.
+- Checkpoints: `model.safetensors` (weights only) plus `detector.json` (`DetectorMeta`, the
+  resolved `model:` config, and every component's registry key, provider and installed version) —
+  no pickled modules anywhere, and loading a checkpoint never calls `torch.load`. A missing or
+  version-incompatible provider raises `InstallationError` naming it. The `run:<dir>[#best|#last]`
+  detector source (registry `detector_sources`) rebuilds a checkpoint's detector purely from
+  registries and JSON.
+- The `dfwb.train` layer, wrapping Lightning 2: losses `bce`, `ce`, `focal` and
+  `label-smoothing-bce` (registry `losses`, dispatched through the registry, fixing the old
+  if-chain); optimisers `adamw`/`sgd`, with per-group `lr_scale`/`weight_decay` and geometric
+  layer-wise LR decay (`layer_decay: γ` gives block `i` the multiplier `γ^(K−i)`) over a backbone's
+  own declared parameter groups; schedules `constant`/`cosine`/`step`, each with linear warmup;
+  and the three Lightning precision settings (`32-true`, `bf16-mixed`, `16-mixed`) via
+  `train.precision`. Optimisers and schedules are validated against the already-assembled
+  detector, not a plugin registry, since group names come from the detector itself.
+- Validation reuses the same `dfwb.eval` metric code as final evaluation, so there is no metric
+  drift between the two: a single-class validation split reports its metric as not defined, with a
+  warning, instead of a silent 0.5, and the checkpoint monitor falls back to `val/loss` (with a
+  warning) once every validation source is undefined — several defined sources are averaged.
+- Training callbacks: best/last safetensors checkpointing (`best` by the monitor, `best` mirrors
+  `last` when there is nothing to monitor), a per-validation-source score dump
+  (`scores/val/<source>.scores.{csv,meta.json}`, exactly the rows the logged metrics were computed
+  from), early stopping, a non-finite-loss guard (stops after `nan_tolerance` bad steps in a row,
+  naming the step), a heartbeat file, and Lightning's learning-rate monitor; loggers CSV (always,
+  so a run's numbers never depend on an optional extra), TensorBoard (when installed) and Weights
+  & Biases (`[wandb]`, only when listed in `train.loggers`).
+- Self-describing run directories: `runs/<run.name>/<timestamp>-s<seed>/` holding the resolved
+  config, its fingerprint, `env.json` (versions, device, git state, command, plugin providers),
+  `data.json` (per source: protocol ref, pack version, split hash, profile id and hash, join
+  counts), `checkpoints/{best,last}/`, `logs/`, the validation score dumps and a final
+  `report.md`/`metrics.json`; `runs/<run.name>/latest` is a relative symlink to the newest run.
+- `dfwb train`: trains a config, one run per seed. Every config problem — including a typo in a
+  nested component parameter — is reported with its exact dotted path and a did-you-mean before
+  any data loads. `dfwb train --resume <run dir>` continues an interrupted run from its
+  safetensors weights and optimiser state and its JSON-encoded epoch/step counters, schedule,
+  callback and RNG state (never a pickle), giving the same final metrics as an uninterrupted run
+  (checked on a tiny, deterministic CPU model).
+- `dfwb runs`: `list` (every run under the runs root, the newest of each name marked) and `show`
+  (one run's full detail — data sources, validation metrics, environment, and the config
+  fingerprint that identifies the experiment); both read plain files and JSON, needing no torch
+  installed.
+- Templates: `binary-frame.yaml` (a filled-in starter for face-crop binary training) and
+  `toy-cpu.yaml` (`tiny-cnn` on the toyfake tree, two epochs, CPU, batch 16, no workers — used by
+  the README quickstart and by the toyfake training tests).
+- The torch-free guarantee holds through this release: `core`, `protocols`, `eval` and
+  `preprocess` still import and run with torch blocked; only `train`, `hf`, `peft`, `wandb` and
+  `zoo` pull torch in, each its own extra, and `pip install deepfake-workbench` alone never does.
+- User docs: the `Detector` contract, what a run directory holds, the `run:` detector source and
+  input adaptation (`docs/concepts/detectors.md`); registering a stem layer, backbone, temporal
+  pool, head, loss or detector source as a plugin (`docs/guides/write-a-plugin.md`); the README
+  quickstart extended through training a toy run and reading it back with `dfwb runs`.
+
 ## [0.1.0a3] - 2026-09-25
 
 ### Added
