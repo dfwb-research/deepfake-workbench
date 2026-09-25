@@ -18,16 +18,31 @@ _TAGS = ("best", "last")
 _DEFAULT_TAG = "best"
 
 
+def _follow(candidate: Path) -> Path:
+    """Resolve ``candidate`` if it is a symlink, raising a clear error if it dangles.
+
+    ``Path.exists()`` follows symlinks and silently reports ``False`` for a broken one, which
+    would otherwise make a dangling ``latest`` look just like a missing directory; this checks
+    for that case specifically so the error names the missing target.
+    """
+    if candidate.is_symlink() and not candidate.exists():
+        raise ConfigError(
+            f"run: {candidate} is a symlink to {candidate.readlink()}, which does not exist",
+            hint="the run directory may have been moved, renamed or partially cleaned up",
+        )
+    return candidate.resolve() if candidate.is_symlink() else candidate
+
+
 def _resolve_checkpoint_dir(root: Path, tag: str) -> Path:
     """Find ``checkpoints/<tag>`` under ``root``, a ``latest`` symlink of ``root``, or a
     ``latest`` symlink inside ``root``, in that order."""
     tried: list[Path] = []
     candidates = [root]
     named_latest = root / "latest"
-    if named_latest.exists():
+    if named_latest.is_symlink() or named_latest.exists():
         candidates.append(named_latest)
     for candidate in candidates:
-        target = candidate.resolve() if candidate.is_symlink() else candidate
+        target = _follow(candidate)
         checkpoint_dir = target / "checkpoints" / tag
         tried.append(checkpoint_dir)
         if checkpoint_dir.is_dir():

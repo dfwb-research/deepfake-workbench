@@ -135,7 +135,8 @@ def _restore_input_spec(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def load(directory: str | Path) -> AssembledDetector:
-    """Rebuild the detector recorded in ``directory``'s ``detector.json`` and load its weights.
+    """Rebuild the detector recorded in ``directory``'s ``detector.json``, load its weights, and
+    return it in eval mode.
 
     Raises:
         InstallationError: A recorded component's provider is missing, or installed at an
@@ -151,4 +152,5 @@ def load(directory: str | Path) -> AssembledDetector:
     )
     state = load_file(str(src / _MODEL_FILE))
     detector.load_state_dict(state, strict=True)
+    detector.eval()
     return detector

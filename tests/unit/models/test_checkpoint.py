@@ -98,6 +98,15 @@ def test_checkpoint_round_trip_with_a_stem(tmp_path):
     assert torch.allclose(before.score, after.score)
 
 
+def test_checkpoint_load_returns_the_detector_in_eval_mode(tmp_path):
+    cfg = _model_cfg()
+    detector = build_detector(cfg)
+    detector.train()  # deliberately saved mid-training, in train mode
+    checkpoint.save(tmp_path, detector, cfg)
+    restored = checkpoint.load(tmp_path)
+    assert restored.training is False
+
+
 def test_detector_json_records_meta_as_json_safe_types(tmp_path):
     cfg = _model_cfg()
     detector = build_detector(cfg, source="run:xyz")

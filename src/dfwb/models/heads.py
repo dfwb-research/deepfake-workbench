@@ -19,7 +19,14 @@ def _init_linear(module: nn.Linear) -> None:
 
 
 class Head(nn.Module):
-    """``[B,D] -> [B]`` (``num_classes=1``) or ``[B,K]``. ``dim`` is given by the assembler."""
+    """``[B,D] -> [B]`` (``num_classes=1``) or ``[B,K]``. ``dim`` is given by the assembler.
+
+    ``num_classes`` is part of the interface (every head sets it in ``__init__``): scoring
+    (``AssembledDetector.predict``) only supports ``num_classes == 1``, so it can check this
+    upfront without knowing the concrete head class.
+    """
+
+    num_classes: int
 
     def forward(self, x: Tensor) -> Tensor:
         raise NotImplementedError

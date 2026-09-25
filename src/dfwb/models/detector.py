@@ -20,6 +20,7 @@ from dfwb.core.detector import (
     DetectorMeta,
     DetectorOutput,
 )
+from dfwb.core.errors import ContractError
 from dfwb.core.plugins import api
 from dfwb.models.backbone import Backbone
 from dfwb.models.heads import Head
@@ -65,7 +66,11 @@ class AssembledDetector(nn.Module):
             x = self.stem(x)
         out = self.backbone(x)
         per_frame = out.pooled.reshape(b, t, -1)
-        assert self.pool is not None  # every image backbone is assembled with a pool
+        if self.pool is None:
+            raise RuntimeError(
+                "AssembledDetector: an image backbone must be assembled with a temporal pool "
+                "(this instance was built with pool=None)"
+            )
         pooled = self.pool(per_frame)
         return pooled, per_frame
 
@@ -76,20 +81,38 @@ class AssembledDetector(nn.Module):
         return DetectorOutput(score=torch.sigmoid(logit), logit=logit, features=pooled)
 
     def predict(self, batch: ClipBatch) -> DetectorOutput:
-        """Inference path, under ``torch.inference_mode()``: scores in ``[0, 1]``, plus
-        per-frame scores for image backbones."""
-        with torch.inference_mode():
-            pooled, per_frame = self._pooled_and_per_frame(batch)
-            logit = self.head(pooled)
-            score = torch.sigmoid(logit)
-            frame_scores = None
-            if per_frame is not None:
-                b, t, d = per_frame.shape
-                frame_logit = self.head(per_frame.reshape(b * t, d)).reshape(b, t)
-                frame_scores = torch.sigmoid(frame_logit)
-            return DetectorOutput(
-                score=score, logit=logit, frame_scores=frame_scores, features=pooled
+        """Inference path: switches to eval mode for the duration (restoring whatever mode this
+        module was in beforehand, even on error), and runs under ``torch.inference_mode()``.
+        Scores are in ``[0, 1]``; ``frame_scores`` is filled for image backbones.
+
+        Raises:
+            ContractError: The head has ``num_classes != 1``. Scoring is defined for binary
+                heads only (one logit per clip); a multi-class head still trains through
+                ``forward()``.
+        """
+        if self.head.num_classes != 1:
+            raise ContractError(
+                "predict(): scoring supports binary heads only (one logit per clip), but this "
+                f"head has num_classes={self.head.num_classes}",
+                hint="train a multi-class head through forward(); predict() is for scoring",
             )
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.inference_mode():
+                pooled, per_frame = self._pooled_and_per_frame(batch)
+                logit = self.head(pooled)
+                score = torch.sigmoid(logit)
+                frame_scores = None
+                if per_frame is not None:
+                    b, t, d = per_frame.shape
+                    frame_logit = self.head(per_frame.reshape(b * t, d)).reshape(b, t)
+                    frame_scores = torch.sigmoid(frame_logit)
+                return DetectorOutput(
+                    score=score, logit=logit, frame_scores=frame_scores, features=pooled
+                )
+        finally:
+            self.train(was_training)
 
 
 def _framework_version() -> str:

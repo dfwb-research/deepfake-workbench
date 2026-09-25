@@ -9,8 +9,10 @@ from torch import nn
 
 from dfwb.core.config.schema import ComponentSpec, ModelSection
 from dfwb.core.detector import DETECTOR_CONTRACT_VERSION, ClipBatch, DetectorMeta, InputSpec
+from dfwb.core.errors import ContractError
 from dfwb.core.plugins import api
 from dfwb.models.backbone import Backbone, BackboneOutput
+from dfwb.models.backbones.tiny_cnn import TinyCNN
 from dfwb.models.detector import AssembledDetector, build_detector
 from dfwb.models.heads import LinearHead
 
@@ -78,6 +80,75 @@ def test_predict_runs_under_inference_mode():
     assert prediction.score.requires_grad is False
     assert prediction.frame_scores is not None
     assert prediction.frame_scores.requires_grad is False
+
+
+def test_predict_with_high_dropout_gives_identical_scores_across_calls():
+    cfg = ModelSection(
+        backbone=ComponentSpec(name="tiny-cnn"),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="linear", dropout=0.9),
+    )
+    detector = build_detector(cfg)
+    detector.train()  # deliberately left in train mode; predict() must switch out of it
+    batch = _batch(2, 3)
+    first = detector.predict(batch)
+    second = detector.predict(batch)
+    assert torch.allclose(first.score, second.score)
+    assert torch.allclose(first.logit, second.logit)
+
+
+def test_predict_with_a_batchnorm_head_works_at_batch_size_one():
+    cfg = ModelSection(
+        backbone=ComponentSpec(name="tiny-cnn"),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="mlp", norm=True),
+    )
+    detector = build_detector(cfg)
+    detector.train()  # BatchNorm1d in train mode cannot compute batch statistics for size 1
+    batch = _batch(1, 2)
+    prediction = detector.predict(batch)
+    assert prediction.score.shape == (1,)
+
+
+@pytest.mark.parametrize("was_training", [True, False])
+def test_predict_restores_the_previous_training_mode(was_training):
+    detector = build_detector(_model_cfg())
+    detector.train(was_training)
+    detector.predict(_batch(2, 2))
+    assert detector.training is was_training
+
+
+def test_predict_raises_contract_error_for_a_multiclass_head():
+    cfg = ModelSection(
+        backbone=ComponentSpec(name="tiny-cnn"),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="linear", num_classes=3),
+    )
+    detector = build_detector(cfg)
+    batch = _batch(2, 2)
+    with pytest.raises(ContractError, match="binary"):
+        detector.predict(batch)
+    # forward() still serves multi-class training
+    out = detector.forward(batch)
+    assert out.logit.shape == (2, 3)
+
+
+def test_missing_pool_on_an_image_backbone_raises_a_clear_runtime_error():
+    backbone = TinyCNN()
+    head = LinearHead(dim=backbone.out_dim)
+    meta = DetectorMeta(
+        name="tiny-cnn-none-linear",
+        version="0.0.0",
+        contract_version=DETECTOR_CONTRACT_VERSION,
+        input=backbone.native_input,
+        license="MIT",
+        weights_license=None,
+        citation=None,
+        source=None,
+    )
+    detector = AssembledDetector(backbone=backbone, stem=None, pool=None, head=head, meta=meta)
+    with pytest.raises(RuntimeError):
+        detector.forward(_batch(2, 2))
 
 
 def test_detector_meta_is_filled():

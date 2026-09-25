@@ -31,10 +31,23 @@ def _make_run(tmp_path, tag="best"):
     return run_dir, name_dir
 
 
+def _make_dangling_latest(tmp_path):
+    name_dir = tmp_path / "runs" / "toy"
+    name_dir.mkdir(parents=True)
+    (name_dir / "latest").symlink_to("20260925-120000-s0-does-not-exist")
+    return name_dir
+
+
 def test_run_source_resolves_a_run_directory_directly(tmp_path):
     run_dir, _ = _make_run(tmp_path)
     detector = load_run(f"{run_dir}#best")
     assert detector.meta.source == "run:best-fingerprint"
+
+
+def test_run_source_returns_the_detector_in_eval_mode(tmp_path):
+    run_dir, _ = _make_run(tmp_path)
+    detector = load_run(f"{run_dir}#best")
+    assert detector.training is False
 
 
 def test_run_source_defaults_to_best(tmp_path):
@@ -72,6 +85,20 @@ def test_run_source_rejects_an_unknown_tag(tmp_path):
     run_dir, _ = _make_run(tmp_path)
     with pytest.raises(ConfigError, match="tag"):
         load_run(f"{run_dir}#worst")
+
+
+def test_run_source_dangling_latest_inside_a_run_name_dir_names_the_missing_target(tmp_path):
+    name_dir = _make_dangling_latest(tmp_path)
+    with pytest.raises(ConfigError) as info:
+        load_run(f"{name_dir}#best")
+    assert "20260925-120000-s0-does-not-exist" in info.value.message
+
+
+def test_run_source_dangling_latest_symlink_given_directly_names_the_missing_target(tmp_path):
+    name_dir = _make_dangling_latest(tmp_path)
+    with pytest.raises(ConfigError) as info:
+        load_run(f"{name_dir / 'latest'}#best")
+    assert "20260925-120000-s0-does-not-exist" in info.value.message
 
 
 def test_registered_as_a_builtin_detector_source():
