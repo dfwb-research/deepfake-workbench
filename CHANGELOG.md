@@ -18,9 +18,10 @@ All notable changes to this project are documented here. The format follows
   DeepFakeDetection benchmarks are defined at c23.
 - `dfwb protocols`: `list`, `info`, `verify` (coverage buckets, partial-coverage and mismatch
   exit codes, and a release-mismatch heuristic), `build` (deterministic pack files from a local
-  inventory; a rebuild keeps the terms review already recorded in the card, and its notice always
-  carries any note recorded there, decided or not), `materialize` (recompute and hash-check a recipe scheme), `lint`, `diff` (SemVer
-  bump checking) and `new-pack` (scaffold a dependency-free protocol pack distribution).
+  inventory; a rebuild keeps the terms review already recorded in the card, and its notice
+  always carries any note recorded there, decided or not), `materialize` (recompute and
+  hash-check a recipe scheme), `lint`, `diff` (SemVer bump checking) and `new-pack` (scaffold a
+  dependency-free protocol pack distribution).
 - `dfwb inventory`: `build` and `show`, backed by a table-driven `BaseBuilder` and 21 built-in
   dataset inventory builders; raw folders are scanned deterministically, skipping hidden files and
   non-video clutter, matching video suffixes without regard to case, and following symlinks.
