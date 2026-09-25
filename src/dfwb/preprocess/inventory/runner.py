@@ -46,7 +46,7 @@ from dfwb.core.records import (
     write_jsonl,
 )
 from dfwb.preprocess.inventory.base import BaseBuilder, validate_compressions
-from dfwb.preprocess.inventory.probe import probe_file
+from dfwb.preprocess.inventory.probe import probe_file, require_pyav
 
 __all__ = [
     "INVENTORY_FILE",
@@ -491,7 +491,7 @@ def _probe_one(
     except ConfigError:
         _log.warning("%s: %s not found for probing", record.key, record.relpath)
         return dataclasses.replace(record, probe=Probe())
-    return dataclasses.replace(record, probe=probe_file(path))
+    return dataclasses.replace(record, probe=probe_file(path, display=record.relpath))
 
 
 def _probe_records(
@@ -506,7 +506,11 @@ def _probe_records(
     PyAV releases the GIL while decoding, so a thread pool parallelises real work; ``jobs=1``
     and ``jobs=4`` write byte-identical inventories, since :meth:`ThreadPoolExecutor.map` returns
     results in the order ``records`` was given, not completion order.
+
+    Raises:
+        InstallationError: PyAV is not installed (checked once, before any record is touched).
     """
+    require_pyav()
 
     def _run(record: InventoryRecord) -> InventoryRecord:
         return _probe_one(record, copies, datasets_roots)

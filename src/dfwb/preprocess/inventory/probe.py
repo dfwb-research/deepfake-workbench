@@ -1,9 +1,11 @@
 """The optional media probe (``--probe``): PyAV video probing and frame-directory counting.
 
 :func:`probe_file` never raises for one bad file: a decode or open failure, or a path that does
-not exist, gives an empty :class:`~dfwb.core.records.Probe` and logs a warning naming the file.
-It raises :class:`~dfwb.core.errors.InstallationError` only when the file is a video and PyAV
-itself is not installed.
+not exist, gives an empty :class:`~dfwb.core.records.Probe` and logs a warning naming ``display``
+(the caller's choice -- a record's relpath, never an absolute path). It raises
+:class:`~dfwb.core.errors.InstallationError` only when the file is a video and PyAV itself is not
+installed. :func:`require_pyav` is the same check on its own, for a caller that wants to fail
+before touching any file at all.
 
 PyAV is imported lazily, inside :func:`probe_file`, so this module -- and every module that
 imports it -- stays import-safe without the ``preprocess`` extra: importing it costs nothing, and
@@ -14,6 +16,7 @@ PyAV at all.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from pathlib import Path
 from typing import Any
@@ -21,12 +24,30 @@ from typing import Any
 from dfwb.core.errors import InstallationError
 from dfwb.core.records import Probe
 
-__all__ = ["probe_file"]
+__all__ = ["probe_file", "require_pyav"]
 
 _log = logging.getLogger(__name__)
 
 # The same suffixes a frame-directory decoder reads: matched ignoring case, hidden files skipped.
 _FRAME_SUFFIXES: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".bmp"})
+
+_MISSING_PYAV_MESSAGE = "--probe needs PyAV"
+_MISSING_PYAV_HINT = 'pip install "deepfake-workbench[preprocess]"'
+
+
+def require_pyav() -> None:
+    """Raise :class:`~dfwb.core.errors.InstallationError` now if PyAV is not installed.
+
+    A cheap preflight for ``--probe``: :func:`importlib.util.find_spec` only locates the module,
+    it never runs its code. Call this once, before touching any record, so a missing
+    ``preprocess`` extra fails immediately rather than partway through a probe run.
+    """
+    try:
+        found = importlib.util.find_spec("av") is not None
+    except ImportError:
+        found = False
+    if not found:
+        raise InstallationError(_MISSING_PYAV_MESSAGE, hint=_MISSING_PYAV_HINT)
 
 
 def _is_frame(path: Path) -> bool:
@@ -78,7 +99,7 @@ def _probe_open_video(av_module: Any, path: Path) -> Probe:
         container.close()
 
 
-def probe_file(path: Path) -> Probe:
+def probe_file(path: Path, *, display: str | None = None) -> Probe:
     """The media properties of ``path``: a video file, or a directory of frames.
 
     A directory is counted by its image files (:data:`_FRAME_SUFFIXES`, matched ignoring case,
@@ -89,19 +110,24 @@ def probe_file(path: Path) -> Probe:
     base when the container does not report one; ``has_audio`` is whether the container has an
     audio stream.
 
+    Args:
+        path: The file or frame directory to probe.
+        display: What a decode/open-failure warning names; ``str(path)`` by default. A caller
+            that resolved a record's relpath to this absolute ``path`` should pass the relpath
+            instead, so a warning never names an absolute filesystem path.
+
     Raises:
         InstallationError: ``path`` is not a directory and PyAV is not installed.
     """
+    name = str(path) if display is None else display
     if path.is_dir():
         return _probe_frame_dir(path)
     try:
         import av
     except ImportError as exc:
-        raise InstallationError(
-            "--probe needs PyAV", hint='pip install "deepfake-workbench[preprocess]"'
-        ) from exc
+        raise InstallationError(_MISSING_PYAV_MESSAGE, hint=_MISSING_PYAV_HINT) from exc
     try:
         return _probe_open_video(av, path)
     except Exception:  # a broken or missing video must not abort the rest of the inventory
-        _log.warning("%s: could not be probed (open or decode failed)", path)
+        _log.warning("%s: could not be probed (open or decode failed)", name)
         return Probe()
