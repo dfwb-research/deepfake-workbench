@@ -42,6 +42,11 @@ def sample_indices(
     Raises:
         ValueError: ``frames`` or ``stride`` is missing for a mode that needs it.
     """
+    if total_frames <= 0:
+        # The old pipeline never had to sample an empty source, so it never had a formula for
+        # this case; every mode here simply has nothing to pick from. Without this, "uniform"
+        # would divide up a source that has nothing in it and produce a made-up negative index.
+        return []
     if mode == "all":
         return list(range(total_frames))
     if mode == "uniform":

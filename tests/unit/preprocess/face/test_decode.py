@@ -97,6 +97,47 @@ def test_pyav_total_frames_falls_back_to_a_full_decode_count_when_the_container_
     assert [index for index, _ in decoded] == list(range(12))
 
 
+def test_pyav_reopen_failure_after_a_count_fallback_raises_decode_error(monkeypatch):
+    av = pytest.importorskip("av")
+    real_open = av.open
+    calls = {"n": 0}
+
+    def flaky_open(path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_open(path, *args, **kwargs)
+        raise av.error.InvalidDataError(
+            1094995529, "Invalid data found when processing input", str(path)
+        )
+
+    monkeypatch.setattr(av, "open", flaky_open)
+
+    # CLEAN_MKV has no in-header frame count, so opening it always takes the count-by-decoding
+    # fallback, which is exactly the path that reopens the container a second time.
+    with pytest.raises(DecodeError, match="reopen") as excinfo:
+        open_source(CLEAN_MKV, library="pyav")
+    assert not isinstance(excinfo.value, av.error.FFmpegError)
+    assert calls["n"] == 2
+
+
+def test_pyav_reopen_onto_a_file_with_no_video_stream_raises_decode_error(monkeypatch):
+    av = pytest.importorskip("av")
+    real_open = av.open
+    calls = {"n": 0}
+
+    def flaky_open(path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_open(path, *args, **kwargs)
+        return real_open(str(AUDIO_ONLY), *args, **kwargs)
+
+    monkeypatch.setattr(av, "open", flaky_open)
+
+    with pytest.raises(DecodeError, match="no video stream"):
+        open_source(CLEAN_MKV, library="pyav")
+    assert calls["n"] == 2
+
+
 @pytest.mark.parametrize("library", ["opencv", "pyav"])
 def test_decoder_stops_at_real_end(library):
     pytest.importorskip("cv2" if library == "opencv" else "av")
@@ -141,6 +182,16 @@ def test_a_uniform_sample_only_yields_the_requested_indices(library):
     for _, frame in decoded:
         assert frame.shape == (24, 32, 3)
         assert frame.dtype == np.uint8
+
+
+@pytest.mark.parametrize("library", ["opencv", "pyav"])
+def test_read_with_unsorted_duplicate_indices_yields_each_once_in_ascending_order(library):
+    pytest.importorskip("cv2" if library == "opencv" else "av")
+
+    source = open_source(CLEAN_AVI, library=library)
+    decoded = list(source.read([5, 0, 5, 2, 11, 2, 0]))
+
+    assert [index for index, _ in decoded] == [0, 2, 5, 11]
 
 
 @pytest.mark.parametrize("library", ["opencv", "pyav"])

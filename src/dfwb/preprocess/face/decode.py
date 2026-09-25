@@ -96,6 +96,7 @@ class _OpenCVSource:
             capture.release()
             capture = cv2.VideoCapture(str(path))
             if not capture.isOpened():
+                capture.release()
                 raise DecodeError(f"{path}: OpenCV could not reopen this file")
         self._cv2 = cv2
         self._capture = capture
@@ -136,8 +137,15 @@ class _PyAVSource:
         if not count:
             count = sum(1 for _ in container.decode(stream))
             container.close()
-            container = av.open(str(path))
-            stream = container.streams.video[0]
+            try:
+                container = av.open(str(path))
+            except av.error.FFmpegError as exc:
+                raise DecodeError(f"{path}: PyAV could not reopen this file ({exc})") from exc
+            try:
+                stream = container.streams.video[0]
+            except IndexError:
+                container.close()
+                raise DecodeError(f"{path}: no video stream found after reopening") from None
         self._container = container
         self._stream = stream
         self.total_frames = count

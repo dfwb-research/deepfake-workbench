@@ -62,3 +62,20 @@ def test_all_takes_every_frame():
 
 def test_all_of_an_empty_source_is_empty():
     assert sample_indices("all", 0) == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "kwargs"),
+    [
+        ("all", {}),
+        ("uniform", {"frames": 5}),
+        ("first-consecutive", {"frames": 5}),
+        ("stride", {"stride": 3}),
+    ],
+)
+def test_an_empty_source_samples_nothing_for_every_mode(mode, kwargs):
+    # The old pipeline never received an empty source, so it never had a formula for this case;
+    # "uniform" in particular would otherwise divide up a source that has nothing in it and end up
+    # with a made-up negative index. This is the one place sample_indices departs from the old
+    # formulas: every mode simply has nothing to pick from.
+    assert sample_indices(mode, 0, **kwargs) == []
