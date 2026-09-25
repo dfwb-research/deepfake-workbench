@@ -8,12 +8,16 @@ Nothing is silently dropped.
 
 A detector source may set plain attributes on the ``Detector`` it returns, beyond contract C4
 (``meta``, ``to()``, ``predict()``): ``checkpoint_sha256`` (the sha256 of the exact weights file
-scored), ``training_seed`` (the seed it was trained with) and ``fingerprint_extra`` (a source-owned
+scored), ``training_seed`` (the seed it was trained with), ``fingerprint_extra`` (a source-owned
 string that stands in for ``meta.source`` in the cache key, for a source whose ``meta.source`` is
-not a reliable identity on its own). None is required -- read with
-``getattr(detector, "checkpoint_sha256", None)`` -- but when present they sharpen the C5 meta and
-the cache key beyond what ``meta.source`` alone can (:mod:`dfwb.models.source`'s ``run:`` sets the
-first two; :func:`dfwb.score.sources.load_py`'s ``py:`` sets the third).
+not a reliable identity on its own) and ``cacheable`` (``bool``, default ``True`` when unset --
+``False`` means an existing file at this detector's cache path is never trusted, no matter how
+recently it was written; :func:`score` always recomputes and overwrites it instead). None is
+required -- read with ``getattr(detector, "checkpoint_sha256", None)`` -- but when present they
+sharpen the C5 meta and the cache key beyond what ``meta.source`` alone can
+(:mod:`dfwb.models.source`'s ``run:`` sets the first two; :func:`dfwb.score.sources.load_py`'s
+``py:`` sets the third always, and the fourth when it cannot tell whether its own source has
+changed since the last load).
 """
 
 from __future__ import annotations
@@ -353,6 +357,7 @@ class _DetectorIdentity:
     checkpoint_sha256: str | None
     training_seed: int | None
     fingerprint_extra: str | None
+    cacheable: bool
 
     @classmethod
     def of(cls, detector: Any) -> _DetectorIdentity:
@@ -361,6 +366,7 @@ class _DetectorIdentity:
             checkpoint_sha256=getattr(detector, "checkpoint_sha256", None),
             training_seed=getattr(detector, "training_seed", None),
             fingerprint_extra=getattr(detector, "fingerprint_extra", None),
+            cacheable=getattr(detector, "cacheable", True),
         )
 
     def effective_seed(self, requested_seed: int) -> int:
@@ -477,11 +483,12 @@ def score(
 
     Resolves the detector (:func:`~dfwb.score.sources.resolve_detector`), chooses a processing
     profile and adapts stored clips to the detector's input, then -- unless an identical, still
-    valid score file already exists at the cache path and ``force`` is ``False`` -- scores every
-    clip under ``torch.inference_mode()``, aggregates clip scores to one score per video, and
-    writes a C5 score file. Every video of the split gets a row: ``ok``, ``missing`` (no usable
-    processed clip), or ``error`` (the detector raised while scoring it, or returned an output
-    that fails validation).
+    valid score file already exists at the cache path and ``force`` is ``False``, and the detector
+    itself is cacheable (``getattr(detector, "cacheable", True)``) -- scores every clip under
+    ``torch.inference_mode()``, aggregates clip scores to one score per video, and writes a C5
+    score file. Every video of the split gets a row: ``ok``, ``missing`` (no usable processed
+    clip), or ``error`` (the detector raised while scoring it, or returned an output that fails
+    validation).
 
     Raises:
         ConfigError: ``precision``/``aggregate`` is not one of the values below, or no local
@@ -539,7 +546,7 @@ def score(
         split=split,
         key=key,
     )
-    if not force and target.is_file():
+    if not force and identity.cacheable and target.is_file():
         cached = _cached_result(
             target,
             identity=identity,

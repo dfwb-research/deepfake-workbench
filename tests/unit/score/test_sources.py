@@ -105,9 +105,15 @@ def make_half():
     return _MetaOnly()
 """
 
-# A module with no callable factory at all.
+# A module with no callable factory at all -- "answer" exists but is not callable.
 _NO_FACTORY = """
 answer = 42
+"""
+
+# Raises instead of returning a detector.
+_RAISING_FACTORY = """
+def make_detector():
+    raise RuntimeError("kaboom")
 """
 
 # Overwrites its own __file__ at import time, the way a namespace package or a compiled
@@ -176,6 +182,28 @@ def test_py_source_rejects_a_missing_factory(tmp_path, monkeypatch):
     assert "make_detector" in info.value.message
 
 
+def test_py_source_rejects_a_factory_attribute_that_is_not_callable(tmp_path, monkeypatch):
+    # "answer" exists in _NO_FACTORY (unlike "make_detector" above, which doesn't exist at all).
+    module_name = _write_module(tmp_path, monkeypatch, _NO_FACTORY)
+
+    with pytest.raises(ConfigError) as info:
+        resolve_detector(f"py:{module_name}:answer")
+    assert "answer" in info.value.message
+
+
+def test_py_source_wraps_a_raising_factory_in_a_config_error(tmp_path, monkeypatch):
+    module_name = _write_module(tmp_path, monkeypatch, _RAISING_FACTORY)
+    ref = f"py:{module_name}:make_detector"
+
+    with pytest.raises(ConfigError) as info:
+        resolve_detector(ref)
+    assert ref in info.value.hint
+    assert "RuntimeError" in info.value.hint
+    assert "kaboom" in info.value.hint
+    assert info.value.__cause__ is not None
+    assert isinstance(info.value.__cause__, RuntimeError)
+
+
 def test_py_source_rejects_a_ref_with_no_factory_part(tmp_path, monkeypatch):
     module_name = _write_module(tmp_path, monkeypatch, _VALID_FACTORY)
 
@@ -194,16 +222,24 @@ def test_a_module_with_no_readable_file_at_all_is_treated_as_unreadable(
     score_roots, tmp_path, monkeypatch
 ):
     """A module that never had a source file to begin with (a namespace package, a compiled
-    extension) is exactly as uncacheable as one whose file has since gone missing."""
+    extension) is exactly as uncacheable as one whose file has since gone missing -- but its
+    output path stays the one stable ``<module>:<factory>`` path every time (not a fresh path per
+    call): unreadable source means "never trust what is already there", not "a pile of one-off
+    files that never get reused or cleaned up"."""
     write_toy_store(score_roots, toy_profile("toy-face"))
     module_name = _write_module(tmp_path, monkeypatch, _NO_FILE_FACTORY)
 
     first = _score_via_py(tmp_path, module_name, "make_detector")
+    first_mtime = first.csv_path.stat().st_mtime_ns
+
     second = _score_via_py(tmp_path, module_name, "make_detector")
+    second_mtime = second.csv_path.stat().st_mtime_ns
 
     assert first.cached is False
     assert second.cached is False
-    assert second.csv_path != first.csv_path
+    assert second.csv_path == first.csv_path  # the stable path, not a fresh one every call
+    assert second_mtime != first_mtime  # actually rewritten on disk, not left alone
+    assert {row.status for row in read_scores(second.csv_path).rows} == {"ok"}
 
 
 def test_an_edit_to_the_module_file_changes_the_cache_key(score_roots, tmp_path, monkeypatch):
@@ -235,17 +271,25 @@ def test_rerunning_an_unedited_py_module_is_still_cached(score_roots, tmp_path, 
 
 
 def test_an_unreadable_module_source_disables_caching(score_roots, tmp_path, monkeypatch):
+    """Once the file goes missing, every subsequent call shares one stable path (the "readable"
+    and "unreadable" fingerprints legitimately differ, since a real file existed for the first
+    call) -- but that shared path is still always recomputed and overwritten, never read back as
+    a cache hit, even though a file already sits there after the second call."""
     write_toy_store(score_roots, toy_profile("toy-face"))
     module_name = _write_module(tmp_path, monkeypatch, _VALID_FACTORY)
     module_path = tmp_path / f"{module_name}.py"
 
     first = _score_via_py(tmp_path, module_name, "make_detector")
+    assert first.cached is False
     module_path.unlink()  # still importable (Python's module cache); its source is now unreadable
 
     second = _score_via_py(tmp_path, module_name, "make_detector")
-    third = _score_via_py(tmp_path, module_name, "make_detector")
+    second_mtime = second.csv_path.stat().st_mtime_ns
 
-    assert first.cached is False
+    third = _score_via_py(tmp_path, module_name, "make_detector")
+    third_mtime = third.csv_path.stat().st_mtime_ns
+
     assert second.cached is False
     assert third.cached is False
-    assert second.csv_path != third.csv_path  # a fresh, uncacheable identity every single time
+    assert third.csv_path == second.csv_path  # the stable "no readable source" path, every time
+    assert third_mtime != second_mtime  # actually rewritten on disk, not silently left alone

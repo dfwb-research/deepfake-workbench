@@ -10,9 +10,10 @@ A loader may set plain attributes on the ``Detector`` it returns, beyond contrac
 ``checkpoint_sha256`` (``str``, the sha256 of the exact weights file scored) and a
 ``training_seed`` (``int``, the seed it was trained with) -- ``dfwb.models.source.load_run`` sets
 both, from the checkpoint it loads. :func:`load_py`, below, sets a third, ``fingerprint_extra``
-(``str``). None of the three is required; :mod:`dfwb.score.harness` reads them duck-typed
-(``getattr(detector, "checkpoint_sha256", None)``), so a source that has nothing to say about one
-simply leaves it unset.
+(``str``), and, only when it cannot vouch for its own identity, a fourth, ``cacheable`` (``bool``,
+default ``True`` when unset). None of the four is required; :mod:`dfwb.score.harness` reads them
+duck-typed (``getattr(detector, "checkpoint_sha256", None)``), so a source that has nothing to say
+about one simply leaves it unset.
 
 ``py:<module>:<factory>`` (:func:`load_py`) imports the user's own module -- explicit user code,
 run with whatever trust anything else importable on this interpreter's path already has -- and
@@ -21,16 +22,18 @@ calls the named factory, which must return a C4 ``Detector``. Because the factor
 edits to the user's code), ``load_py`` instead sets ``fingerprint_extra`` to
 ``<module>:<factory>:<sha256 of the module's source file>``, so an edit to that file changes a
 detector's cache key even when its declared ``meta.source`` does not. When the module has no
-readable source file (a compiled extension, a namespace package, ...), the sha256 is replaced by a
-fresh value on every load -- logged when it happens -- so a detector whose identity cannot be
-pinned down is never trusted from a cache either.
+readable source file (a compiled extension, a namespace package, one that has since gone
+missing, ...), ``load_py`` cannot tell whether the code has changed between two loads at all, so
+it does not pretend to: ``fingerprint_extra`` falls back to the stable ``<module>:<factory>`` (no
+sha), and ``cacheable`` is set to ``False`` -- logged when it happens -- so
+:mod:`dfwb.score.harness` always recomputes for that detector rather than ever trusting a file
+already sitting at its (still stable, still reused) output path.
 """
 
 from __future__ import annotations
 
 import importlib
 import logging
-import uuid
 from typing import TYPE_CHECKING, Any, Final
 
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
@@ -92,15 +95,23 @@ def _module_source_sha256(module: ModuleType) -> str | None:
         return None
 
 
-def _py_fingerprint(module_name: str, factory_name: str, module: ModuleType) -> str:
+def _py_fingerprint(module_name: str, factory_name: str, module: ModuleType) -> tuple[str, bool]:
+    """``(fingerprint_extra, cacheable)`` for a ``py:`` detector (see the module docstring).
+
+    When the module's source file cannot be read, the fingerprint falls back to the stable
+    ``<module>:<factory>`` (never a random value): a fingerprint that changed on every load would
+    give every run its own, never-reused output path, piling up one file per run forever.
+    ``cacheable=False`` is what actually keeps the harness from ever trusting a file already
+    sitting at that (stable, shared) path -- not an ever-changing path.
+    """
     file_sha256 = _module_source_sha256(module)
     if file_sha256 is not None:
-        return f"{module_name}:{factory_name}:{file_sha256}"
+        return f"{module_name}:{factory_name}:{file_sha256}", True
     _log.warning(
         "py: %s: module source file is not readable; caching is disabled for this detector run",
         module_name,
     )
-    return f"{module_name}:{factory_name}:{uuid.uuid4().hex}"
+    return f"{module_name}:{factory_name}", False
 
 
 def load_py(ref: str) -> Detector:
@@ -111,12 +122,14 @@ def load_py(ref: str) -> Detector:
     ``<factory>`` does when called, executes exactly as if the caller had imported and called it
     directly.
 
-    Sets ``fingerprint_extra`` on the returned detector (see the module docstring); never sets
-    ``checkpoint_sha256`` (a module's source sha is not a checkpoint sha) or ``training_seed``.
+    Sets ``fingerprint_extra`` (and, when the module's source cannot be read, ``cacheable``) on
+    the returned detector (see the module docstring); never sets ``checkpoint_sha256`` (a module's
+    source sha is not a checkpoint sha) or ``training_seed``.
 
     Raises:
-        ConfigError: ``ref`` is not ``<module>:<factory>``, ``<module>`` cannot be imported, or it
-            has no callable ``<factory>``.
+        ConfigError: ``ref`` is not ``<module>:<factory>``, ``<module>`` cannot be imported, it has
+            no callable ``<factory>``, or the factory raised instead of returning a detector (the
+            original exception is chained as the cause).
         ContractError: the factory's return value is missing ``meta``, ``predict`` or ``to``.
     """
     module_name, sep, factory_name = ref.partition(":")
@@ -138,10 +151,19 @@ def load_py(ref: str) -> Detector:
             f"py: {module_name!r} has no callable {factory_name!r}",
             hint="the factory is a module-level function (or class) that returns a detector",
         )
-    detector: Detector = factory()
+    ref_text = f"py:{module_name}:{factory_name}"
+    try:
+        detector: Detector = factory()
+    except Exception as exc:
+        raise ConfigError(
+            f"{ref_text}: the factory raised instead of returning a detector",
+            hint=f"{ref_text} raised {type(exc).__name__}: {exc}",
+        ) from exc
     _require_detector_contract(detector)
     # Duck-typed, like checkpoint_sha256 (see the module docstring): not part of contract C4, so
     # not on the Detector protocol itself -- set dynamically rather than fought past with mypy.
-    fingerprint_extra = _py_fingerprint(module_name, factory_name, module)
+    fingerprint_extra, cacheable = _py_fingerprint(module_name, factory_name, module)
     setattr(detector, "fingerprint_extra", fingerprint_extra)  # noqa: B010
+    if not cacheable:
+        setattr(detector, "cacheable", False)  # noqa: B010
     return detector
