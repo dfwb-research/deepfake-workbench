@@ -19,6 +19,7 @@ layer contract puts ``data`` beside ``preprocess``, not above it, so it may neve
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from collections import Counter
@@ -311,4 +312,4 @@ class VideoIndex:
 
     def summary(self) -> dict[str, Any]:
         """A JSON-safe summary, per source: what a training run's data record stores."""
-        return {"sources": [dict(s) for s in self._summaries]}
+        return {"sources": copy.deepcopy(self._summaries)}

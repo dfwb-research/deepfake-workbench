@@ -400,3 +400,33 @@ def test_source_spec_defaults_where_to_none_and_weight_to_one():
     spec = SourceSpec("toyone-pack:toyone/official", "train")
     assert spec.where is None
     assert spec.weight == 1.0
+
+
+def test_the_latest_index_row_for_a_video_wins(tmp_path, toyone_pack):
+    work_root = tmp_path / "work"
+    store_dir = _store_dir(work_root)
+    ok = processed_record("REAL/r2", compression="c23", status="ok", n_frames=2)
+    failed = processed_record("REAL/r2", compression="c23", status="decode_error", n_frames=0)
+    source = SourceSpec("toyone-pack:toyone/official", "val", where={"task": ["REAL"]})
+
+    write_store_index(store_dir, [ok, failed])
+    write_store_frames(store_dir, ok)
+    first = VideoIndex.build([source], profile=PROFILE_ID, labels="binary", work_root=work_root)
+    assert (0, "REAL/r2", "c23", "processing-failed:decode_error") in first.excluded
+
+    write_store_index(store_dir, [failed, ok])
+    second = VideoIndex.build([source], profile=PROFILE_ID, labels="binary", work_root=work_root)
+    assert [(item.key, item.compression) for item in second.items] == [("REAL/r2", "c23")]
+
+
+def test_summary_returns_a_copy_its_caller_can_change(tmp_path, toyone_pack):
+    work_root = tmp_path / "work"
+    _seed_store(work_root, [processed_record("REAL/r2", compression="c23", n_frames=2)])
+    index = VideoIndex.build(
+        [SourceSpec("toyone-pack:toyone/official", "val", where={"task": ["REAL"]})],
+        profile=PROFILE_ID,
+        labels="binary",
+        work_root=work_root,
+    )
+    index.summary()["sources"][0]["counts"]["included"] = -1
+    assert index.summary()["sources"][0]["counts"]["included"] != -1
