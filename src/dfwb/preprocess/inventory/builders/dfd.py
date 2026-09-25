@@ -23,7 +23,7 @@ from pathlib import Path
 
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, local_key
 
 __all__ = ["DeepFakeDetectionBuilder"]
 
@@ -76,7 +76,7 @@ class DeepFakeDetectionBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set at c23: 100 fakes drawn at random from the "
-            "dataset's c23 videos, balanced with as many reals",
+            f"dataset's c23 videos, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "ident-72-14-14"

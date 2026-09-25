@@ -50,7 +50,7 @@ from typing import Final, Literal
 from dfwb.core.errors import ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, local_key
 
 __all__ = ["FakeAVCelebBuilder"]
 
@@ -180,8 +180,8 @@ class FakeAVCelebBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 2 fakes per face donor and "
-            "category, drawn from the whole dataset and balanced with as many reals (real video "
-            "with fake audio counting as real)",
+            f"category, drawn from the whole dataset, {BENCHMARK_REALS} (real video with fake "
+            "audio counting as real)",
         ),
     }
     default_scheme = "ident-72-14-14"

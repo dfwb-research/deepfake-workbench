@@ -49,7 +49,7 @@ from typing import ClassVar, Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split
 
 __all__ = ["DeepSpeakV1Builder", "DeepSpeakV2Builder"]
 
@@ -159,7 +159,7 @@ class _DeepSpeakBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set drawn from the official test: up to 2 "
-            "fakes per target actor and engine, balanced with as many reals",
+            f"fakes per target actor and engine, {BENCHMARK_REALS}",
         ),
     }
 

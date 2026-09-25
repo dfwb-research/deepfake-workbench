@@ -192,7 +192,8 @@ def build(
     """Build DATASET's protocol-pack files from its local inventory.
 
     Writes the videos, one split file per scheme, the pairs, the labels, the dataset card, the
-    NOTICE and PROVENANCE.json into --out. Rebuilding from the same inventory gives the same bytes.
+    NOTICE and PROVENANCE.json into --out. Rebuilding from the same inventory gives the same bytes,
+    and a rebuild keeps the terms review (distribution and terms) already in --out's dataset.yaml.
     """
     from dfwb.core.errors import ConfigError
     from dfwb.core.paths import absolute

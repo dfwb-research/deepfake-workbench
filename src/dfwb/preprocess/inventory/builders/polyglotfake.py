@@ -39,7 +39,7 @@ from typing import Any, Final
 from dfwb.core.errors import ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, local_key
 
 __all__ = ["PolyGlotFakeBuilder"]
 
@@ -178,8 +178,7 @@ class PolyGlotFakeBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 15 fakes per target language, "
-            "source language and task, drawn from the whole dataset and balanced with as many "
-            "reals",
+            f"source language and task, drawn from the whole dataset, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "ident-72-14-14"

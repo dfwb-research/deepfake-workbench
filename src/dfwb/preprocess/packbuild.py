@@ -60,6 +60,7 @@ from dfwb.preprocess.inventory.runner import (
     metadata_copy,
     read_inventory,
 )
+from dfwb.protocols._yaml import read_card
 from dfwb.protocols.materialization import (
     OFFICIAL_RULES,
     assign_rule,
@@ -384,23 +385,48 @@ def _notice(card: DatasetCard) -> str:
 
 
 def _terms(card: DatasetCard) -> str:
-    """The NOTICE's terms paragraph, which always agrees with the card's ``distribution``."""
+    """The NOTICE's terms paragraph, which always agrees with the card's ``distribution``.
+
+    Any note already recorded on ``card.terms`` (e.g. a maintainer's proposal awaiting review)
+    is appended whether or not the distribution itself has been decided yet, so it is never
+    silently dropped from the published notice.
+    """
     if card.distribution == "undecided":
-        return (
+        text = (
             "Terms review pending: whether these lists may be redistributed has not been decided "
             "yet, so dataset.yaml records distribution: undecided. This notice is completed once "
             "the dataset's terms have been reviewed."
         )
-    text = (
-        f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
-        f"{_DISTRIBUTION_MEANING[card.distribution]}."
-    )
+    else:
+        text = (
+            f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
+            f"{_DISTRIBUTION_MEANING[card.distribution]}."
+        )
     return f"{text} {card.terms.notes}" if card.terms.notes else text
 
 
 # ---------------------------------------------------------------------------------------------
 # Building
 # ---------------------------------------------------------------------------------------------
+
+
+def _keep_terms_review(card: DatasetCard, out: Path) -> DatasetCard:
+    """``card`` with the ``distribution`` and ``terms`` already recorded in ``out/dataset.yaml``.
+
+    Those two fields are decided after a build, by reviewing the dataset's terms; rebuilding
+    (after a builder fix, say) keeps them instead of resetting the dataset to undecided. An
+    existing card that cannot be read is refused, never overwritten.
+    """
+    if not (out / "dataset.yaml").is_file():
+        return card
+    try:
+        existing = read_card(out)
+    except ContractError as exc:
+        raise ContractError(
+            exc.message,
+            hint="fix or remove that dataset.yaml: a rebuild keeps the terms review it records",
+        ) from None
+    return card.model_copy(update={"distribution": existing.distribution, "terms": existing.terms})
 
 
 def build_dataset(
@@ -424,17 +450,19 @@ def build_dataset(
     The videos are the inventory's rows; each scheme's rows come from its rule (see
     :func:`assign_scheme`) and its card records the rule, its parameters, the split counts and
     the rows' hash; the pairs come from the builder's pairing rule; the labels, the dataset card
-    and the notice come from the builder. ``PROVENANCE.json`` records the builder, the dfwb
-    version, each scheme's rule and parameters, and the hash of the inventory's
-    ``key``/``compression``/``relpath`` listing. The dataset folder is located (as
-    ``dfwb inventory build`` locates it) only when a scheme reads the publisher's split.
+    and the notice come from the builder, except that a rebuild keeps the ``distribution`` and
+    ``terms`` already recorded in ``out/dataset.yaml`` (the maintainer's terms review, not the
+    builder's). ``PROVENANCE.json`` records the builder, the dfwb version, each scheme's rule and
+    parameters, and the hash of the inventory's ``key``/``compression``/``relpath`` listing. The
+    dataset folder is located (as ``dfwb inventory build`` locates it) only when a scheme reads
+    the publisher's split.
 
     Raises:
         UnknownKeyError: the builder or a scheme is unknown.
         ConfigError: there is no inventory, the selection leaves out the default scheme, the
             dataset folder is needed and not found, or ``out`` is inside raw data.
-        ContractError: an inventory row comes from another builder, or a written file would
-            break the pack contract.
+        ContractError: an inventory row comes from another builder, ``out`` already holds a
+            ``dataset.yaml`` that cannot be read, or a written file would break the pack contract.
     """
     builder = get_builder(dataset_id)
     resolved = resolve_roots() if roots is None else roots
@@ -462,7 +490,7 @@ def build_dataset(
         rules[name] = {"rule": spec.rule, "params": params}
 
     pairs = _pairs(builder, records)
-    card = builder.dataset_card(cards)
+    card = _keep_terms_review(builder.dataset_card(cards), out)
     provenance = PackProvenance(
         builder={"id": builder.dataset_id, "version": builder.version},
         dfwb=__version__,
