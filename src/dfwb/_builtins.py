@@ -57,6 +57,14 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
         "TalkingHeadBench",
         "TalkingHeadBench",
     ),
+    ("toyfake", "toyfake:ToyfakeBuilder", "toyfake (synthetic)", "toyfake"),
+)
+
+# Protocol packs shipped inside the framework, one row each:
+#   (pack name, "<package>:<directory>" of the pack, one-line summary)
+# A pack is data: registering it locates a directory and imports nothing.
+PROTOCOL_PACKS: tuple[tuple[str, str, str], ...] = (
+    ("toyfake", "dfwb:_packs/toyfake", "Built-in synthetic toyfake protocol pack"),
 )
 
 # The package every built-in face backend lives in.
@@ -102,3 +110,5 @@ def register(api: PluginAPI) -> None:
         api.face_backends.add(
             key, target=f"{_FACE_BACKENDS_PACKAGE}.{target}", summary=summary, requires=requires
         )
+    for pack, target, summary in PROTOCOL_PACKS:
+        api.protocol_packs.add(pack, target=target, summary=summary)

@@ -8,19 +8,25 @@ holds an absolute path: an inventory can be shared or compared across machines.
 Builders are looked up in the ``inventory_builders`` registry. Each registration carries the
 dataset's expected folder as metadata (``folder``), so :func:`folder_status` can say where a
 dataset is without importing its builder.
+
+``build_inventory(probe=True)`` additionally probes each record's media (see
+:mod:`dfwb.preprocess.inventory.probe`), in parallel across ``jobs`` threads; the rows written
+never depend on ``jobs``, only on what is on disk.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 from dfwb._version import __version__
-from dfwb.core.errors import ConfigError, ContractError, InstallationError, PluginError
+from dfwb.core.errors import ConfigError, ContractError, PluginError
 from dfwb.core.paths import (
     DatasetLocation,
     ResolvedRoot,
@@ -32,8 +38,15 @@ from dfwb.core.paths import (
     resolve_roots,
 )
 from dfwb.core.plugins import get_registry
-from dfwb.core.records import InventoryRecord, assert_no_absolute_paths, read_jsonl, write_jsonl
+from dfwb.core.records import (
+    InventoryRecord,
+    Probe,
+    assert_no_absolute_paths,
+    read_jsonl,
+    write_jsonl,
+)
 from dfwb.preprocess.inventory.base import BaseBuilder, validate_compressions
+from dfwb.preprocess.inventory.probe import probe_file, require_pyav
 
 __all__ = [
     "INVENTORY_FILE",
@@ -467,6 +480,45 @@ def _write_text(path: Path, text: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _probe_one(
+    record: InventoryRecord,
+    copies: Sequence[Path],
+    datasets_roots: Mapping[RootName, ResolvedRoot],
+) -> InventoryRecord:
+    """``record`` with ``probe`` filled in; never raises for one missing or bad file."""
+    try:
+        path = resolve_video_path(record, copies, datasets_roots=datasets_roots)
+    except ConfigError:
+        _log.warning("%s: %s not found for probing", record.key, record.relpath)
+        return dataclasses.replace(record, probe=Probe())
+    return dataclasses.replace(record, probe=probe_file(path, display=record.relpath))
+
+
+def _probe_records(
+    records: Sequence[InventoryRecord],
+    copies: Sequence[Path],
+    datasets_roots: Mapping[RootName, ResolvedRoot],
+    *,
+    jobs: int,
+) -> list[InventoryRecord]:
+    """``records``, each with ``probe`` filled in, in the same order regardless of ``jobs``.
+
+    PyAV releases the GIL while decoding, so a thread pool parallelises real work; ``jobs=1``
+    and ``jobs=4`` write byte-identical inventories, since :meth:`ThreadPoolExecutor.map` returns
+    results in the order ``records`` was given, not completion order.
+
+    Raises:
+        InstallationError: PyAV is not installed (checked once, before any record is touched).
+    """
+    require_pyav()
+
+    def _run(record: InventoryRecord) -> InventoryRecord:
+        return _probe_one(record, copies, datasets_roots)
+
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        return list(executor.map(_run, records))
+
+
 def build_inventory(
     dataset_id: str,
     *,
@@ -483,25 +535,23 @@ def build_inventory(
         root: The dataset folder; by default it is located through the datasets roots and the
             dataset overrides.
         compressions: Only these compressions (default: every known one).
-        probe: Probe each video's media properties (not available in this version).
-        jobs: Parallel probes, when probing.
+        probe: Probe each video's frames, fps, size, duration, audio and codec, and set
+            ``InventoryRecord.probe`` accordingly. Needs the ``preprocess`` extra (PyAV); a probe
+            failure for one record never aborts the build (see :func:`~.probe.probe_file`).
+        jobs: Parallel probes, when probing (a :class:`~concurrent.futures.ThreadPoolExecutor`
+            of this many workers; ignored otherwise). The records written do not depend on this
+            value: only how many probes run at once.
         roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
 
     Raises:
         ConfigError: the work root is unset, ``root`` is not a directory, the dataset folder is
             not found, the output would land inside the dataset folder, or ``jobs < 1``.
         ContractError: the builder yields a bad or duplicate key.
-        InstallationError: ``probe`` is set.
+        InstallationError: ``probe`` is set and PyAV (the ``preprocess`` extra) is not installed.
     """
     if jobs < 1:
         raise ConfigError(f"jobs must be at least 1, got {jobs}", hint="use --jobs 1 or more")
     builder = get_builder(dataset_id)
-    if probe:
-        raise InstallationError(
-            "media probing (--probe) is not available in this version of dfwb",
-            hint='build without --probe; probing needs the "deepfake-workbench[preprocess]" '
-            "extra of a dfwb version that provides it",
-        )
     resolved = resolve_roots() if roots is None else roots
     work_root = require_root("work", resolved)
     copies: tuple[DatasetCopy, ...]
@@ -538,6 +588,8 @@ def build_inventory(
     datasets = resolved.get("datasets")
     _check_outside(path.parent, paths, datasets.paths if datasets is not None else ())
     records = collect_records(builder, meta_copy.path, compressions=compressions)
+    if probe:
+        records = _probe_records(records, paths, resolved, jobs=jobs)
 
     by_task = {task.abbr: 0 for task in builder.tasks}
     for record in records:

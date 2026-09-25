@@ -3,12 +3,17 @@
 from types import SimpleNamespace
 
 from dfwb import _builtins
-from dfwb.core.plugins import REGISTRY_NAMES
+from dfwb.core.plugins import DATA_REGISTRIES, REGISTRY_NAMES
 from dfwb.core.registry import Registry
 
 
 def _api():
-    return SimpleNamespace(**{name: Registry(name) for name in REGISTRY_NAMES})
+    return SimpleNamespace(
+        **{
+            name: Registry(name, kind="data" if name in DATA_REGISTRIES else "code")
+            for name in REGISTRY_NAMES
+        }
+    )
 
 
 def test_inventory_builders_register_by_import_path_with_their_folder(monkeypatch):
@@ -30,3 +35,12 @@ def test_every_built_in_builder_row_is_well_formed():
         assert ":" in target, dataset_id
         assert name.strip(), dataset_id
         assert folder.strip(), dataset_id
+
+
+def test_built_in_protocol_packs_register_as_data(monkeypatch):
+    monkeypatch.setattr(_builtins, "INVENTORY_BUILDERS", ())
+    api = _api()
+    _builtins.register(api)
+    (entry,) = api.protocol_packs.entries()
+    assert (entry.key, entry.target) == ("toyfake", "dfwb:_packs/toyfake")
+    assert entry.summary == "Built-in synthetic toyfake protocol pack"

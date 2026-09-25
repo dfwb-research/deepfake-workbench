@@ -257,3 +257,82 @@ def info(dataset: str, as_json: bool) -> None:
         click.echo(f"no installed protocol pack publishes {dataset_id}{suggestion}")
     for problem in problems:
         click.echo(f"warning: {problem}", err=True)
+
+
+@datasets.command("synth")
+@click.argument("dataset", type=click.Choice(["toyfake"]))
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Where to write the dataset folder, e.g. a datasets root.",
+)
+@click.option(
+    "--videos",
+    type=click.IntRange(min=1),
+    default=200,
+    show_default=True,
+    help="How many videos: about 40% reals and 30% of each fake method.",
+)
+@click.option(
+    "--seed",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Decides the ids, the pairs, the official split and every frame.",
+)
+@click.option(
+    "--no-media",
+    is_flag=True,
+    help="Write the file tree with empty placeholder videos (no PyAV needed).",
+)
+@json_option
+def synth(dataset: str, out: Path, videos: int, seed: int, no_media: bool, as_json: bool) -> None:
+    """Generate the synthetic DATASET (toyfake) into --out/DATASET, deterministically.
+
+    Real videos are smooth moving textures; fakes blend in a patch with a high-frequency
+    artefact. Encoding the videos needs the preprocess extra (PyAV).
+    """
+    import shlex
+
+    from dfwb.core.paths import absolute
+    from dfwb.preprocess.toyfake import DEFAULT_SEED, DEFAULT_VIDEOS
+    from dfwb.preprocess.toyfake import synth as run_synth
+
+    result = run_synth(absolute(out), videos=videos, seed=seed, write_media=not no_media)
+    commands = [
+        f"dfwb inventory build {dataset} --root {shlex.quote(str(result.root))}",
+        f"dfwb protocols verify {dataset}",
+    ]
+    note = (
+        None
+        if (videos, seed) == (DEFAULT_VIDEOS, DEFAULT_SEED)
+        else f"the built-in {dataset} pack describes the tree made with --videos "
+        f"{DEFAULT_VIDEOS} --seed {DEFAULT_SEED}, so verify reports this one as partial coverage"
+    )
+    if as_json:
+        emit_json(
+            {
+                "dataset_id": dataset,
+                "root": str(result.root),
+                "n_videos": result.n_videos,
+                "by_task": result.by_task,
+                "seed": seed,
+                "media": not no_media,
+                "next": commands,
+                "note": note,
+            }
+        )
+        return
+
+    counts = ", ".join(f"{task} {count}" for task, count in result.by_task.items())
+    media = "no media: empty placeholder files" if no_media else "FFV1 video"
+    click.echo(
+        f"wrote {result.n_videos} {dataset} videos to {result.root} ({counts}; seed {seed}; "
+        f"{media})"
+    )
+    click.echo("next:")
+    for command in commands:
+        click.echo(f"  {command}")
+    if note is not None:
+        click.echo(f"note: {note}")
