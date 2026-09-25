@@ -45,6 +45,7 @@ def test_build_json_and_filters(run, demo, tmp_path):
         "count": 4,
         "by_task": {"REAL": 2, "FS_SWAP": 2},
         "dataset_dir": str(raw / "Demo"),
+        "copies": [str(raw / "Demo")],
         "location_source": {"c40": "root 1", "metadata": "root 1"},
     }
     chosen = make_demo_tree(tmp_path / "chosen", fakes=(), compressions=("c23",))
@@ -53,6 +54,23 @@ def test_build_json_and_filters(run, demo, tmp_path):
     assert result.out.startswith("wrote 2 records")
     assert "c23: --root" in result.out
     assert "metadata: --root" in result.out
+
+
+def test_build_text_names_every_copy_when_the_dataset_is_split(run, monkeypatch, tmp_path):
+    install(monkeypatch)
+    raw = tmp_path / "raw"
+    make_demo_tree(raw / "Demo", compressions=("c23",))
+    second = tmp_path / "second"
+    make_demo_tree(second / "Demo", compressions=("c40",))
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+    monkeypatch.setenv("DFWB_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.delenv("DFWB_DATASET_DEMO", raising=False)
+
+    result = run("inventory", "build", "demo")
+
+    assert result.code == 0, result.err
+    assert f"dataset copies: {raw / 'Demo'}, {second / 'Demo'}" in result.out
+    assert "c23: root 1, c40: root 2, metadata: root 1" in result.out
 
 
 def test_show_by_every_column(run, demo):
