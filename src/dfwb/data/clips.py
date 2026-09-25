@@ -46,8 +46,9 @@ class ClipSpec:
     stride: int = 1
 
     @classmethod
-    def from_config(cls, section: ClipSection, *, stride: int = 1) -> ClipSpec:
-        """Build from a config's ``clip:`` section."""
+    def from_config(cls, section: ClipSection, *, stride: int | None = None) -> ClipSpec:
+        """Build from a config's ``clip:`` section. ``stride`` comes from ``section.stride`` by
+        default; pass it explicitly only to override the section's own value."""
         return cls(
             frames=section.frames,
             sampling=section.sampling,
@@ -55,7 +56,7 @@ class ClipSpec:
                 train=section.clips_per_video.train,
                 eval=section.clips_per_video.eval,
             ),
-            stride=stride,
+            stride=section.stride if stride is None else stride,
         )
 
     def clips_per_mode(self, *, train: bool) -> int:

@@ -84,6 +84,7 @@ class ClipSection(ConfigModel):
     frames: int = Field(ge=1)
     sampling: Literal["uniform", "consecutive", "random-window"]
     clips_per_video: ClipsPerVideo
+    stride: int = Field(default=1, ge=1)
 
 
 class TransformsSection(ConfigModel):

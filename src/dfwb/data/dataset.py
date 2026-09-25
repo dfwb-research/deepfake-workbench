@@ -73,8 +73,15 @@ class ClipDataset(Dataset[ClipSample]):
     Eval windows are a pure function of a video's stored frame count, so two eval passes always
     agree. Train windows for sample ``i`` are drawn by a fresh ``random.Random`` seeded from
     ``(seed, epoch, i)`` alone -- never the DataLoader worker id -- so a sample's window does not
-    depend on how many workers read it, and :meth:`set_epoch` is the only thing that ever changes
-    it between passes.
+    depend on how many workers read it.
+
+    The epoch itself lives in a shared-memory tensor, not a plain attribute: with
+    ``persistent_workers=True``, a ``DataLoader``'s worker processes are started once and reused
+    across epochs, so a plain ``self.epoch = epoch`` in :meth:`set_epoch` -- run in the main
+    process -- would never reach the copy of this dataset each worker already holds. Writing into
+    a shared tensor in place, and reading it back with ``.item()``, is visible from every process
+    that shares the same underlying storage, workers included, whether they were started by
+    ``fork`` or ``spawn``.
     """
 
     def __init__(
@@ -93,12 +100,18 @@ class ClipDataset(Dataset[ClipSample]):
         self.transform = transform
         self.adapt_chain = adapt_chain
         self.seed = seed
-        self.epoch = 0
+        self._epoch = torch.zeros((), dtype=torch.int64)
+        self._epoch.share_memory_()  # type: ignore[no-untyped-call]
         self._clips_per_video = spec.clips_per_mode(train=train)
 
+    @property
+    def epoch(self) -> int:
+        return int(self._epoch.item())
+
     def set_epoch(self, epoch: int) -> None:
-        """Every sample drawn after this call is seeded with ``epoch`` instead."""
-        self.epoch = epoch
+        """Every sample drawn after this call is seeded with ``epoch`` instead -- including by a
+        ``DataLoader``'s already-running, persistent workers (see the class docstring)."""
+        self._epoch.fill_(epoch)
 
     def __len__(self) -> int:
         return len(self.index.items) * self._clips_per_video

@@ -32,12 +32,33 @@ def test_from_config_copies_frames_sampling_and_clips_per_video():
     )
 
 
-def test_from_config_takes_an_explicit_stride():
+def test_from_config_reads_stride_from_the_section():
+    section = ClipSection(
+        frames=2,
+        sampling="uniform",
+        clips_per_video=ConfigClipsPerVideo(train=1, eval=1),
+        stride=5,
+    )
+    spec = ClipSpec.from_config(section)
+    assert spec.stride == 5
+
+
+def test_from_config_stride_override_wins_over_the_section():
+    section = ClipSection(
+        frames=2,
+        sampling="uniform",
+        clips_per_video=ConfigClipsPerVideo(train=1, eval=1),
+        stride=5,
+    )
+    spec = ClipSpec.from_config(section, stride=9)
+    assert spec.stride == 9
+
+
+def test_clip_section_stride_defaults_to_one():
     section = ClipSection(
         frames=2, sampling="uniform", clips_per_video=ConfigClipsPerVideo(train=1, eval=1)
     )
-    spec = ClipSpec.from_config(section, stride=3)
-    assert spec.stride == 3
+    assert section.stride == 1
 
 
 def test_clips_per_mode_picks_train_or_eval():

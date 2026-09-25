@@ -19,6 +19,12 @@
           ],
           "title": "Sampling",
           "type": "string"
+        },
+        "stride": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Stride",
+          "type": "integer"
         }
       },
       "required": [

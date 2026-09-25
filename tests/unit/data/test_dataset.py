@@ -32,9 +32,15 @@ def _write_frames(dir_path: Path, numbers: Sequence[int]) -> None:
 
 
 def _video_item(
-    video_dir: Path, *, source: int = 0, key: str = "video", n_frames: int = 5, label: int = 0
+    video_dir: Path,
+    *,
+    source: int = 0,
+    key: str = "video",
+    n_frames: int = 5,
+    label: int = 0,
+    frame_numbers: Sequence[int] | None = None,
 ) -> VideoItem:
-    frame_numbers = list(range(n_frames))
+    frame_numbers = list(frame_numbers) if frame_numbers is not None else list(range(n_frames))
     _write_frames(video_dir, frame_numbers)
     return VideoItem(
         source=source,
@@ -128,6 +134,23 @@ def test_png_decode_matches_cv2_imread_converted_to_rgb(tmp_path):
     expected_rgb = cv2.cvtColor(expected_bgr, cv2.COLOR_BGR2RGB)
     expected = torch.from_numpy(expected_rgb).permute(2, 0, 1).to(torch.float32) / 255.0
     torch.testing.assert_close(sample.clip[0], expected)
+
+
+def test_frame_indices_are_source_frame_numbers_not_positions(tmp_path):
+    # non-contiguous, so a position and its stored frame number never coincide by accident.
+    source_numbers = [10, 15, 20, 25, 30]
+    item = _video_item(tmp_path / "v", frame_numbers=source_numbers)
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=3, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1), stride=1
+    )
+    dataset = ClipDataset(index, spec, train=False, seed=0)
+
+    sample = dataset[0]
+
+    # n=5, T=3, stride=1: max_start = 2; eval c=1 -> linspace(0, 2, 1) = [0]; positions [0, 1, 2].
+    assert sample.frame_indices == [10, 15, 20]
+    assert sample.frame_indices != [0, 1, 2]
 
 
 # --------------------------------------------------------------------------------------- padding
@@ -257,6 +280,47 @@ def test_dataloader_num_workers_zero_and_two_agree_in_eval_mode_too(tmp_path):
         return [sample.frame_indices for sample in loader]
 
     assert _collect(0) == _collect(2)
+
+
+@pytest.mark.parametrize("context", ["fork", "spawn"])
+def test_set_epoch_reaches_persistent_workers(tmp_path, context):
+    # persistent_workers=True starts worker processes once and reuses them across epochs, so this
+    # is the scenario a plain `self.epoch = epoch` attribute cannot reach: the workers' own copy
+    # of the dataset was pickled/forked once, at loader start, and never updated again.
+    items = [
+        _video_item(tmp_path / "a", key="a", n_frames=20),
+        _video_item(tmp_path / "b", key="b", n_frames=15),
+    ]
+    index = _video_index(items)
+    spec = ClipSpec(
+        frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=3, eval=1)
+    )
+    seed = 11
+
+    dataset = ClipDataset(index, spec, train=True, seed=seed)
+    loader = DataLoader(
+        dataset,
+        batch_size=None,
+        shuffle=False,
+        num_workers=2,
+        persistent_workers=True,
+        multiprocessing_context=context,
+    )
+
+    per_epoch: dict[int, list[list[int]]] = {}
+    for epoch in range(3):
+        dataset.set_epoch(epoch)
+        per_epoch[epoch] = [sample.frame_indices for sample in loader]
+
+    # windows differ between epochs: each epoch reseeds every sample's rng.
+    assert per_epoch[0] != per_epoch[1]
+    assert per_epoch[1] != per_epoch[2]
+
+    # and, for a given epoch, match a fresh in-process dataset's windows exactly.
+    for epoch, expected_windows in per_epoch.items():
+        reference = ClipDataset(index, spec, train=True, seed=seed)
+        reference.set_epoch(epoch)
+        assert [reference[i].frame_indices for i in range(len(reference))] == expected_windows
 
 
 # -------------------------------------------------------------------------- transform / adapt
