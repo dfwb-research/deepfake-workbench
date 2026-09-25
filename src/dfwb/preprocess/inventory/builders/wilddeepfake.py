@@ -5,14 +5,21 @@ is a **frame directory**: one folder of PNG frames per sequence, and the record'
 names that folder, not a file. Relative to the ``WildDeepfake`` folder (a single version, no
 compression levels):
 
-* reals: ``original_content/real/frames/224w_224h_wild_precropped/<key>/<frame>.png``;
-* fakes: ``manipulated_content/fake/frames/224w_224h_wild_precropped/<key>/<frame>.png``.
+* reals: ``original_content/real/frames/224w_224h_wild_precropped/<key>/<nnnnnn>.png``;
+* fakes: ``manipulated_content/fake/frames/224w_224h_wild_precropped/<key>/<nnnnnn>.png``.
 
-The release packs the sequences as tar shards, one set per ``<label>_<split>`` category, each
-shard holding ``<shard>/<label>/<sequence>/<frame>.png``. They are expected unpacked into one
-folder per sequence, named ``<label>_<split>_<shard>_<sequence>`` (e.g. ``real_train_6_54``;
-shard ids repeat across categories, so the category prefix keeps the names apart), with frame
-names zero-padded to six digits so they sort in order.
+Each sequence folder is named ``<label>_<split>_<shard>_<sequence>`` (e.g. ``real_train_6_54``),
+where ``<label>`` is ``real`` or ``fake`` and ``<split>`` is ``train`` or ``test``, and its frames
+are named by their index zero-padded to six digits (``000311.png``), so a name sort is frame order.
+
+This is the release unpacked. The release has four category folders, ``real_train``,
+``real_test``, ``fake_train`` and ``fake_test``, of tar shards named ``<shard>.tar.gz``, each
+holding ``<shard>/<label>/<sequence>/<frame>.png``. Sequence ``<sequence>`` of shard ``<shard>``
+in category ``<label>_<split>`` becomes the folder ``<label>_<split>_<shard>_<sequence>`` (shard
+ids repeat across categories, so the category prefix keeps the names apart), under the reals'
+or the fakes' folder above; the shard id is the shard file's name up to its first ``.``. A frame
+``<n>.png`` becomes ``<n>`` zero-padded to six digits (``1919.png`` becomes ``001919.png``); a
+name that is not a number is kept.
 
 A record is keyed by its folder's name. Its attributes are the ``split`` named in the key
 (``train`` or ``test``, else None), the ``shard`` and ``sequence`` (the third and fourth parts,
@@ -153,11 +160,19 @@ class WildDeepfakeBuilder(BaseBuilder):
     }
     layout_notes = (
         "Records are frame directories, not videos: one folder of 224x224 PNG face crops per "
-        "sequence, and a record's relpath names the folder.\n"
-        "The release's tar shards (<shard>/<label>/<sequence>/<frame>.png) are expected unpacked "
-        "into one folder per sequence, named <label>_<split>_<shard>_<sequence>, with frame names "
-        "zero-padded to six digits.\n"
-        "The official split is the <split> in each name: train or test."
+        "sequence, and a record's relpath names that folder.\n"
+        "Each sequence folder sits directly in its task's folder above and is named "
+        "<label>_<split>_<shard>_<sequence> (e.g. real_train_6_54): <label> is real or fake and "
+        "<split> is train or test. Its frames are named by their index zero-padded to six digits "
+        "(000311.png), so a name sort is frame order.\n"
+        "This is the release unpacked: its four category folders, real_train, real_test, "
+        "fake_train and fake_test, hold tar shards named <shard>.tar.gz, each holding "
+        "<shard>/<label>/<sequence>/<frame>.png. Sequence <sequence> of shard <shard> in category "
+        "<label>_<split> becomes the folder <label>_<split>_<shard>_<sequence> under the real or "
+        "the fake task's folder, <shard> being the shard file's name up to its first '.'. A frame "
+        "<n>.png becomes <n> zero-padded to six digits (1919.png becomes 001919.png); a name that "
+        "is not a number is kept.\n"
+        "The official split is the <split> in each folder name: train or test."
     )
 
     # ----------------------------------------------------------------------------- layout
@@ -265,7 +280,8 @@ class WildDeepfakeBuilder(BaseBuilder):
         for task in self.tasks:
             lines.append(
                 f"  {task.abbr.ljust(width)}  {task.kind:<4}  "
-                f"{task.video_dir}/<sequence>/<frame>{_FRAME_SUFFIX}  ({task.name})"
+                f"{task.video_dir}/<label>_<split>_<shard>_<sequence>/<nnnnnn>{_FRAME_SUFFIX}  "
+                f"({task.name})"
             )
         lines.append(f"Keys: {self.card_info['key_rule']}")
         lines.append(self.layout_notes)

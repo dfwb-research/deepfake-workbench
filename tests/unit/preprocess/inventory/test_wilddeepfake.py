@@ -239,10 +239,17 @@ def test_the_layout_says_the_records_are_frame_directories():
     text = WildDeepfakeBuilder().describe_layout()
     assert "'WildDeepfake'" in text
     assert "frame directories" in text.lower()
-    assert f"{REAL_DIR}/<sequence>/" in text
-    assert f"{FAKE_DIR}/<sequence>/" in text
-    assert "<label>_<split>_<shard>_<sequence>" in text
+    assert f"{REAL_DIR}/<label>_<split>_<shard>_<sequence>/<nnnnnn>.png" in text
+    assert f"{FAKE_DIR}/<label>_<split>_<shard>_<sequence>/<nnnnnn>.png" in text
     assert "<video>" not in text
+    # How the release's tar shards map onto that layout.
+    assert "real_train, real_test, fake_train and fake_test" in text
+    assert "<shard>.tar.gz" in text
+    assert "<shard>/<label>/<sequence>/<frame>.png" in text
+    assert "the shard file's name up to its first '.'" in text
+    assert "zero-padded to six digits" in text
+    assert "1919.png becomes 001919.png" in text
+    assert "The official split is the <split> in each folder name: train or test." in text
     assert "{cX}" not in text
 
 
