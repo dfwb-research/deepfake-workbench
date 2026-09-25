@@ -18,6 +18,7 @@ _BUILDERS_PACKAGE: Final = "dfwb.preprocess.inventory.builders"
 INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
     ("ffpp", "ffpp:FaceForensicsBuilder", "FaceForensics++", "FaceForensics++"),
     ("dfd", "dfd:DeepFakeDetectionBuilder", "DeepFakeDetection", "FaceForensics++"),
+    ("uadfv", "uadfv:UADFVBuilder", "UADFV", "UADFV"),
 )
 
 
