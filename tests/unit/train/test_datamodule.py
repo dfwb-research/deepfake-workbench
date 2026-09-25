@@ -114,6 +114,15 @@ def test_adapt_refusal_propagates(tmp_path, toy_pack):
         datamodule.setup("fit")
 
 
+def test_an_adapt_refusal_lists_the_shipped_profiles_it_is_given(tmp_path, toy_pack):
+    work_root = tmp_path / "work"
+    write_toy_store(work_root, profile=toy_profile(backend="center", scale=1.0))
+    shipped = [toy_profile(backend="insightface", scale=1.3, size=64)]
+    datamodule = _datamodule(toy_config(), work_root, shipped_profiles=shipped)
+    with pytest.raises(ContractError, match=f"would serve it: {PROFILE}"):
+        datamodule.setup("fit")
+
+
 def test_allow_mismatch_proceeds_and_records_it(tmp_path, toy_pack):
     work_root = tmp_path / "work"
     write_toy_store(work_root, profile=toy_profile(backend="center", scale=1.0))
@@ -275,18 +284,44 @@ def test_val_loaders_group_each_video_without_shuffling(toy_work_root):
     assert [b.keys for b in loader] == [b.keys for b in batches]  # fixed order, no shuffle
 
 
-def test_workers_persist_when_there_are_workers(toy_work_root):
-    config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 2}})
+def test_train_workers_persist_and_validation_workers_do_not(toy_work_root):
+    # validation workers are started for each validation pass and stop after it, so several
+    # validation sources never hold num_workers idle processes each while training runs
+    config = toy_config(
+        data={
+            "loader": {"batch_size": 8, "num_workers": 2},
+            "val": [toy_source("val"), toy_source("val", **{"attrs.group": "a"})],
+        }
+    )
     datamodule = _datamodule(config, toy_work_root)
     datamodule.setup("fit")
     train = datamodule.train_dataloader()
-    (val,) = datamodule.val_dataloader()
     assert (train.num_workers, train.persistent_workers) == (2, True)
-    assert (val.num_workers, val.persistent_workers) == (2, True)
+    for val in datamodule.val_dataloader():
+        assert (val.num_workers, val.persistent_workers) == (2, False)
 
     single = _datamodule(toy_config(), toy_work_root)
     single.setup("fit")
     assert single.train_dataloader().persistent_workers is False
+
+
+@pytest.mark.parametrize(("device", "pinned"), [("cuda", True), ("cpu", False)])
+def test_loaders_pin_memory_only_for_a_cuda_device(toy_work_root, device, pinned):
+    from types import SimpleNamespace
+
+    datamodule = _datamodule(toy_config(), toy_work_root)
+    datamodule.setup("fit")
+    datamodule.trainer = SimpleNamespace(
+        current_epoch=0, strategy=SimpleNamespace(root_device=torch.device(device))
+    )
+    assert datamodule.train_dataloader().pin_memory is pinned
+    assert all(loader.pin_memory is pinned for loader in datamodule.val_dataloader())
+
+
+def test_loaders_do_not_pin_memory_without_a_trainer(toy_work_root):
+    datamodule = _datamodule(toy_config(), toy_work_root)
+    datamodule.setup("fit")
+    assert datamodule.train_dataloader().pin_memory is False
 
 
 @pytest.mark.parametrize("pairs", [False, True], ids=["plain", "pairs"])

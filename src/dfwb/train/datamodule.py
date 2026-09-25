@@ -161,6 +161,9 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
         allow_mismatch: Let :func:`~dfwb.data.adapt.adapt` proceed past an input it would
             otherwise refuse (a crop-kind mismatch, or a wider crop than the store kept); each
             source records it in ``adaptation.mismatch``.
+        shipped_profiles: The processing profiles the framework ships; a refusal lists those
+            that would serve the detector. (The face pipeline owns them and this layer never
+            imports it, so the caller passes them in.)
 
     Raises:
         ConfigError: ``data.loader.balance`` is unknown, or is combined with ``pairs``.
@@ -175,6 +178,7 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
         seed: int,
         pairs: bool = False,
         allow_mismatch: bool = False,
+        shipped_profiles: Sequence[ProcessingProfile] = (),
     ) -> None:
         super().__init__()
         self.data = data
@@ -183,6 +187,7 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
         self.seed = seed
         self.pairs = pairs
         self.allow_mismatch = allow_mismatch
+        self.shipped_profiles = tuple(shipped_profiles)
         self.balance = _balance_mode(data.loader.balance, pairs=pairs)
         self.train_sources: list[SourceData] = []
         self.val_sources: list[SourceData] = []
@@ -301,7 +306,11 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
                 hint="re-run preprocessing for this dataset and profile, which writes it",
             )
         adaptation = adapt(
-            self.input_spec, profile, allow_mismatch=self.allow_mismatch, candidates=candidates
+            self.input_spec,
+            profile,
+            allow_mismatch=self.allow_mismatch,
+            candidates=candidates,
+            shipped=self.shipped_profiles,
         )
         if adaptation.mismatch:
             _log.warning("%s: input mismatch allowed: %s", protocol.ref, adaptation.reason)
@@ -338,12 +347,23 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
 
     # ----------------------------------------------------------------------------- loaders
 
-    def _loader_options(self) -> dict[str, Any]:
+    def _on_cuda(self) -> bool:
+        """Whether the trainer this module is attached to trains on a CUDA device."""
+        strategy = getattr(self.trainer, "strategy", None)
+        return getattr(getattr(strategy, "root_device", None), "type", None) == "cuda"
+
+    def _loader_options(self, *, persistent: bool) -> dict[str, Any]:
+        """Options every loader shares. Batches are pinned for a faster copy to a CUDA device.
+        ``persistent`` keeps the workers alive between passes: the train loader's, which run
+        every epoch; validation workers instead start for each validation pass and stop after
+        it, so several validation sources never each hold ``num_workers`` idle processes while
+        training runs."""
         workers = self.data.loader.num_workers
         return {
             "collate_fn": collate_clips,
             "num_workers": workers,
-            "persistent_workers": workers > 0,
+            "persistent_workers": persistent and workers > 0,
+            "pin_memory": self._on_cuda(),
         }
 
     def _require_setup(self) -> MultiSource:
@@ -360,7 +380,9 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
         if self.pairs:
             batch_sampler = PairGrouped(multi, batch_size, seed=self.seed)
             self._train_samplers = [batch_sampler]
-            loader = DataLoader(multi, batch_sampler=batch_sampler, **self._loader_options())
+            loader = DataLoader(
+                multi, batch_sampler=batch_sampler, **self._loader_options(persistent=True)
+            )
         else:
             sampler: VideoLabelBalanced | SourceBalanced | _EpochShuffle
             if self.balance == "video-label":
@@ -378,7 +400,7 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
                 batch_size=batch_size,
                 sampler=sampler,
                 drop_last=True,
-                **self._loader_options(),
+                **self._loader_options(persistent=True),
             )
         trainer = self.trainer
         self.set_epoch(trainer.current_epoch if trainer is not None else self._epoch)
@@ -398,7 +420,7 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
                 DataLoader(
                     dataset,
                     batch_sampler=VideoGrouped(dataset, batch_size),
-                    **self._loader_options(),
+                    **self._loader_options(persistent=False),
                 )
             )
         return loaders

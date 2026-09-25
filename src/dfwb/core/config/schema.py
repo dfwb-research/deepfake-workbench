@@ -225,7 +225,7 @@ _LIGHTNING_REFUSED: dict[str, str] = {
     "strategy": _ONE_PROCESS,
     "num_nodes": _ONE_PROCESS,
     "callbacks": "the run directory's checkpoints, score dumps and guards come from the "
-    "framework's own callbacks",
+    "framework's own callbacks; add a plugin's callbacks with train.callbacks",
     "logger": "the run directory's logs come from train.loggers",
     "default_root_dir": "everything a run writes goes under its own run directory",
     "max_epochs": "set train.max_epochs instead",
@@ -254,9 +254,14 @@ class EarlyStopSection(ConfigModel):
     min_delta: float = Field(default=0.0, ge=0)
 
 
+#: ``train.precision``: ``auto`` picks per device (``bf16-mixed`` on a CUDA GPU that supports
+#: bfloat16, else ``16-mixed`` on CUDA, else ``32-true``); the others are Lightning's own.
+Precision = Literal["auto", "32-true", "bf16-mixed", "16-mixed"]
+
+
 class TrainSection(ConfigModel):
     max_epochs: int = Field(ge=1)
-    precision: str
+    precision: Precision = "auto"
     devices: int = Field(ge=1)
     monitor: str = "val/video_auc"
     mode: Literal["max", "min"] = "max"
@@ -270,6 +275,11 @@ class TrainSection(ConfigModel):
     #: Extra keyword arguments for Lightning's ``Trainer`` (``deterministic``, ``accelerator``,
     #: ``log_every_n_steps``, ...), except the ones the run itself must control.
     lightning: dict[str, Any] = Field(default_factory=dict)
+    #: Callbacks from the ``callbacks`` registry (a plugin's), run beside the framework's own;
+    #: their ``state_dict()`` is saved with the run's resume state.
+    callbacks: list[Annotated[ComponentSpec, ComponentOf("callbacks")]] = Field(
+        default_factory=list
+    )
 
     @field_validator("devices")
     @classmethod

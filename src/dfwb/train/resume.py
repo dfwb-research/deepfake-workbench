@@ -48,9 +48,11 @@ from dfwb.train.module import DetectorModule, Monitor
 from dfwb.train.rundir import RESUME_STATE_FILE
 
 __all__ = [
+    "TESTED_LIGHTNING",
     "ResumeCheckpoint",
     "SavedState",
     "capture_rng",
+    "check_loop_internals",
     "decode",
     "encode",
     "read_state",
@@ -61,6 +63,19 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 STATE_FORMAT = 1
+
+#: The Lightning release series whose private loop internals resume was written and tested
+#: against (see :func:`check_loop_internals`).
+TESTED_LIGHTNING = "2.6"
+
+# The private loop state resume reads and sets directly: (where it lives, attribute).
+_LOOP_INTERNALS: tuple[tuple[str, str], ...] = (
+    ("fit_loop", "epoch_progress"),
+    ("fit_loop.epoch_loop", "batch_progress"),
+    ("fit_loop.epoch_loop", "automatic_optimization"),
+    ("fit_loop.epoch_loop.automatic_optimization", "optim_progress"),
+    ("fit_loop.epoch_loop", "_batches_that_stepped"),
+)
 _MODEL_FILE = "model.safetensors"
 _TENSORS_FILE = "optimizer.safetensors"
 
@@ -258,6 +273,30 @@ def read_state(directory: Path) -> SavedState | None:
 # ---------------------------------------------------------------------------------- callback
 
 
+def check_loop_internals(trainer: L.Trainer) -> None:
+    """Check that ``trainer`` has the private loop state resume saves and sets directly (the
+    epoch and batch progress trackers, the optimiser progress, the count of batches that
+    stepped). Lightning may rename these in any release, so a run checks for them when fitting
+    starts, before any training, rather than failing on the first epoch's save.
+
+    Raises:
+        ContractError: One is missing: the installed Lightning is not one resume supports.
+    """
+    import lightning
+
+    for where, name in _LOOP_INTERNALS:
+        owner: Any = trainer
+        for part in where.split("."):
+            owner = getattr(owner, part, None)
+        if owner is None or not hasattr(owner, name):
+            raise ContractError(
+                f"resuming needs Lightning's trainer.{where}.{name}, which lightning "
+                f"{lightning.__version__} does not have; resume was written and tested against "
+                f"lightning {TESTED_LIGHTNING}",
+                hint=f'pip install "lightning=={TESTED_LIGHTNING}.*"',
+            )
+
+
 def _callbacks(trainer: L.Trainer) -> list[Callback]:
     return cast(list[Callback], getattr(trainer, "callbacks", []))
 
@@ -343,6 +382,7 @@ class ResumeCheckpoint(Callback):  # type: ignore[misc, unused-ignore]  # Any w/
     # ---------------------------------------------------------------------------- restoring
 
     def on_fit_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        check_loop_internals(trainer)
         saved = self._restore
         if saved is None or not isinstance(pl_module, DetectorModule):
             return

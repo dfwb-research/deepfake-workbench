@@ -29,12 +29,20 @@ def runs() -> None:
 
 
 @runs.command("list")
+@click.option(
+    "--root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="List the runs under this directory instead of the runs root (e.g. a config's "
+    "run.output_root).",
+)
 @json_option
-def list_(as_json: bool) -> None:
+def list_(root: Path | None, as_json: bool) -> None:
     """List every run under the runs root (the newest of each name is marked *)."""
+    from dfwb.core.paths import absolute
     from dfwb.train.rundir import list_runs
 
-    root = _runs_root()
+    root = absolute(root) if root is not None else _runs_root()
     found = list_runs(root)
     if as_json:
         emit_json([summary.to_json() for summary in found])

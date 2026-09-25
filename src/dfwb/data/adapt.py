@@ -61,18 +61,21 @@ def _requirement_text(spec: InputSpec) -> str:
     return f"a {spec.crop} crop{scale_part}, size {spec.size}"
 
 
+def _serves(spec: InputSpec, candidate: ProcessingProfile) -> bool:
+    """Whether a store made with ``candidate`` could serve ``spec``: the same crop kind, and (when
+    ``spec.crop_scale`` is set) at least that scale."""
+    return _crop_kind(candidate) == spec.crop and (
+        spec.crop_scale is None or candidate.crop.scale >= spec.crop_scale
+    )
+
+
 def _find_compatible(
     spec: InputSpec, candidates: Sequence[ProcessingProfile]
 ) -> ProcessingProfile | None:
-    """The best of ``candidates`` that could actually serve ``spec``: same crop kind, and (when
-    ``spec.crop_scale`` is set) at least that scale. Ties broken by the smallest sufficient scale,
-    then by profile id, so the choice is deterministic."""
-    matches = [
-        candidate
-        for candidate in candidates
-        if _crop_kind(candidate) == spec.crop
-        and (spec.crop_scale is None or candidate.crop.scale >= spec.crop_scale)
-    ]
+    """The best of ``candidates`` that could actually serve ``spec`` (:func:`_serves`). Ties
+    broken by the smallest sufficient scale, then by profile id, so the choice is
+    deterministic."""
+    matches = [candidate for candidate in candidates if _serves(spec, candidate)]
     if not matches:
         return None
     return min(matches, key=lambda candidate: (candidate.crop.scale, candidate.profile_id()))
@@ -83,13 +86,25 @@ def _refuse(
     profile: ProcessingProfile,
     problem: str,
     candidates: Sequence[ProcessingProfile],
+    shipped: Sequence[ProcessingProfile],
 ) -> ContractError:
     compatible = _find_compatible(spec, candidates)
+    serving = sorted({candidate.id for candidate in shipped if _serves(spec, candidate)})
+    shipped_text = (
+        f"; built-in profiles that would serve it: {', '.join(serving)}" if serving else ""
+    )
     if compatible is not None:
         message = (
-            f"{problem}; profile {compatible.profile_id()!r} (id {compatible.id!r}) is compatible"
+            f"{problem}; profile {compatible.profile_id()!r} (id {compatible.id!r}) is "
+            f"compatible{shipped_text}"
         )
         hint = f"process this data with profile {compatible.id!r}, or point at its store instead"
+    elif serving:
+        message = f"{problem}; no processed store provides {_requirement_text(spec)}{shipped_text}"
+        hint = (
+            f"process this data with one of them, e.g. `dfwb preprocess run <dataset> "
+            f"--profile {serving[0]}`, and set data.processing to it"
+        )
     else:
         message = f"{problem}; no available profile provides {_requirement_text(spec)}"
         hint = "run `dfwb preprocess profiles` to see what is available"
@@ -147,6 +162,7 @@ def adapt(
     *,
     allow_mismatch: bool = False,
     candidates: Iterable[ProcessingProfile] = (),
+    shipped: Iterable[ProcessingProfile] = (),
 ) -> AdaptResult:
     """Build the deterministic chain that turns a store's clips into ``spec``'s own shape.
 
@@ -168,7 +184,10 @@ def adapt(
     A refusal's ``ContractError`` names the best of ``candidates`` that could actually serve
     ``spec`` (its :meth:`~dfwb.core.records.local.ProcessingProfile.profile_id`, plus its shipped
     ``id`` slug), or, when none of ``candidates`` is compatible, states the requirement itself
-    (crop kind, minimum scale, size) and points at ``dfwb preprocess profiles``.
+    (crop kind, minimum scale, size) and points at ``dfwb preprocess profiles``. It also lists
+    every one of ``shipped`` -- the profiles the installed framework ships, which a caller that
+    may import the face pipeline passes in -- that would serve ``spec`` once data is processed
+    with it.
 
     With ``allow_mismatch=True``, both refusals instead proceed: ``AdaptResult.mismatch`` is
     ``True``, ``reason`` explains which one (the same wording the ``ContractError`` would have
@@ -179,6 +198,7 @@ def adapt(
             ``allow_mismatch`` is ``False``.
     """
     candidate_list = list(candidates)
+    shipped_list = list(shipped)
     store_kind = _crop_kind(profile)
 
     mismatch = False
@@ -193,7 +213,7 @@ def adapt(
             f"is a {store_kind} crop"
         )
         if not allow_mismatch:
-            raise _refuse(spec, profile, problem, candidate_list)
+            raise _refuse(spec, profile, problem, candidate_list, shipped_list)
         mismatch = True
         reason = problem
     elif spec.crop_scale is not None and spec.crop_scale != profile.crop.scale:
@@ -203,7 +223,7 @@ def adapt(
                 f"{profile.profile_id()!r} only has scale {profile.crop.scale}"
             )
             if not allow_mismatch:
-                raise _refuse(spec, profile, problem, candidate_list)
+                raise _refuse(spec, profile, problem, candidate_list, shipped_list)
             mismatch = True
             reason = problem
         else:

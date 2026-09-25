@@ -320,11 +320,29 @@ def test_early_stop_and_guards_come_from_the_config(tmp_path, toy_work_root):
             "train.monitor: 'loss' is not a validation value",
         ),
         (
-            {"train": {"precision": "64-bogus"}},
-            "train: Lightning refused these trainer options",
+            {"eval": {"metrics": ["auc", "eerr"], "aggregate": "mean-prob"}},
+            "eval.metrics[1]: ",
+        ),
+        (
+            {"eval": {"metrics": ["auc", "tpr@fpt=0.01"], "aggregate": "mean-prob"}},
+            "did you mean 'fpr'",
+        ),
+        (
+            {"eval": {"metrics": ["auc"], "aggregate": "mean-prb"}},
+            "eval.aggregate: ",
         ),
     ],
-    ids=["component", "transform", "optim-group", "schedule", "lightning", "monitor", "precision"],
+    ids=[
+        "component",
+        "transform",
+        "optim-group",
+        "schedule",
+        "lightning",
+        "monitor",
+        "metric",
+        "metric-param",
+        "aggregate",
+    ],
 )
 def test_config_errors_are_raised_before_any_data_loads(
     tmp_path, toy_work_root, monkeypatch, changes, expected
@@ -456,3 +474,159 @@ def test_an_unknown_device_is_a_config_error():
     assert "did you mean 'cuda'" in caught.value.message
     with pytest.raises(ConfigError):
         run_module.device_options("cuda:x")
+
+
+# --------------------------------------------------------------------------- precision
+
+
+@pytest.mark.parametrize(
+    ("accelerator", "cuda", "bf16", "expected"),
+    [
+        ("cpu", True, True, "32-true"),
+        ("gpu", True, True, "bf16-mixed"),
+        ("cuda", True, True, "bf16-mixed"),
+        ("gpu", True, False, "16-mixed"),
+        ("auto", True, True, "bf16-mixed"),
+        ("auto", True, False, "16-mixed"),
+        ("auto", False, False, "32-true"),
+        (None, False, False, "32-true"),
+    ],
+)
+def test_auto_precision_resolves_per_device(monkeypatch, accelerator, cuda, bf16, expected):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *args, **kwargs: bf16)
+    options = {} if accelerator is None else {"accelerator": accelerator}
+    assert run_module.resolve_precision("auto", options) == expected
+
+
+def test_an_explicit_precision_is_used_as_written(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    for precision in ("32-true", "bf16-mixed", "16-mixed"):
+        assert run_module.resolve_precision(precision, {"accelerator": "cpu"}) == precision
+
+
+def test_the_resolved_precision_is_recorded(tmp_path, toy_work_root):
+    config = toy_config(train={"precision": "auto"})
+    (result,) = train(tmp_path, toy_work_root, config)
+    env = json.loads((result.run_dir / "env.json").read_text("utf-8"))
+    assert env["precision"] == "32-true"
+    resolved = yaml.safe_load((result.run_dir / "config.resolved.yaml").read_text("utf-8"))
+    assert resolved["train"]["precision"] == "auto"  # the config as written, fingerprinted
+
+
+# ---------------------------------------------------------------- what the detector records
+
+
+def test_the_detector_records_the_clip_regime_it_was_trained_on(tmp_path, toy_work_root):
+    config = toy_config(
+        data={
+            "clip": {
+                "frames": 2,
+                "sampling": "consecutive",
+                "clips_per_video": {"train": 1, "eval": 1},
+            }
+        }
+    )
+    (result,) = train(tmp_path, toy_work_root, config)
+    for tag in ("best", "last"):
+        saved = json.loads((result.run_dir / "checkpoints" / tag / "detector.json").read_text())
+        assert (saved["meta"]["input"]["frames"], saved["meta"]["input"]["sampling"]) == (
+            2,
+            "consecutive",
+        )
+    restored = load_run(f"{result.run_dir}#best")
+    assert (restored.meta.input.frames, restored.meta.input.sampling) == (2, "consecutive")
+
+
+@pytest.mark.parametrize(
+    ("clip", "model_input", "expected"),
+    [
+        ({"frames": 2, "sampling": "random-window"}, None, (2, "consecutive")),
+        ({"frames": 1, "sampling": "uniform"}, None, (1, "uniform")),
+        ({"frames": 2, "sampling": "uniform"}, {"frames": 1, "sampling": "any"}, (1, "any")),
+    ],
+    ids=["random-window", "uniform", "model-input-wins"],
+)
+def test_the_clip_regime_defaults_the_detectors_input(
+    tmp_path, toy_work_root, monkeypatch, clip, model_input, expected
+):
+    built = []
+    real = run_module.build_detector
+
+    def _spy(*args, **kwargs):
+        detector = real(*args, **kwargs)
+        built.append(detector)
+        return detector
+
+    monkeypatch.setattr(run_module, "build_detector", _spy)
+    changes = {"data": {"clip": {**clip, "clips_per_video": {"train": 1, "eval": 1}}}}
+    if model_input is not None:
+        changes["model"] = {
+            "backbone": {"name": "tiny-cnn"},
+            "temporal_pool": {"name": "mean"},
+            "head": {"name": "linear"},
+            "input": model_input,
+        }
+    train(tmp_path, toy_work_root, toy_config(**changes))
+    (detector,) = built
+    assert (detector.meta.input.frames, detector.meta.input.sampling) == expected
+
+
+def test_the_detector_records_its_training_data(tmp_path, toy_work_root):
+    config = toy_config(
+        data={
+            "train": [
+                toy_source("train", **{"attrs.group": "a"}),
+                toy_source("train", **{"attrs.group": "b"}),
+            ]
+        }
+    )
+    (result,) = train(tmp_path, toy_work_root, config)
+    protocol = load_protocol(PROTOCOL, work_root=toy_work_root)
+    expected = [f"{protocol.pack.name}:{protocol.ref}@{protocol.pack_version}"]
+    assert expected == ["toytrain-pack:toytrain/official@" + protocol.pack_version]
+    for tag in ("best", "last"):
+        saved = json.loads((result.run_dir / "checkpoints" / tag / "detector.json").read_text())
+        assert saved["meta"]["training_data"] == expected  # one entry per protocol
+    assert load_run(str(result.run_dir)).meta.training_data == tuple(expected)
+
+
+# ----------------------------------------------------------------------- what is not run
+
+
+def test_data_test_is_warned_about_since_training_does_not_run_it(tmp_path, toy_work_root, caplog):
+    config = toy_config(data={"test": [toy_source("val")]})
+    with caplog.at_level(logging.WARNING):
+        train(tmp_path, toy_work_root, config)
+    (message,) = [r.getMessage() for r in caplog.records if "data.test" in r.getMessage()]
+    assert "not run by `dfwb train`" in message
+    assert "dfwb score" in message
+
+    caplog.clear()
+    (tmp_path / "again").mkdir()
+    with caplog.at_level(logging.WARNING):
+        train(tmp_path / "again", toy_work_root, toy_config())
+    assert not [r for r in caplog.records if "data.test" in r.getMessage()]
+
+
+# ------------------------------------------------------------------------------ report
+
+
+def test_the_report_says_when_the_monitor_fell_back_and_what_was_undefined(tmp_path, toy_work_root):
+    config = toy_config(data={"val": [toy_source("val", task="REAL")]})
+    (result,) = train(tmp_path, toy_work_root, config)
+    report = (result.run_dir / "report.md").read_text("utf-8")
+    assert result.metrics["monitor"]["fallback"] is True
+    assert "fell back" in report
+    assert "`val/video_auc`" in report  # the monitor the config asked for
+    (line,) = [line for line in report.splitlines() if line.startswith("- Undefined")]
+    assert f"`auc` on `{SOURCE}-REAL`" in line
+    assert f"`eer` on `{SOURCE}-REAL`" in line
+    assert "brier" not in line  # defined on one class, so reported
+
+
+def test_a_report_with_everything_defined_mentions_neither(tmp_path, toy_work_root):
+    (result,) = train(tmp_path, toy_work_root)
+    report = (result.run_dir / "report.md").read_text("utf-8")
+    assert "fell back" not in report
+    assert "Undefined" not in report

@@ -171,6 +171,39 @@ def test_refusal_names_the_best_of_several_compatible_candidates():
     assert just_right.profile_id() in str(excinfo.value)
 
 
+def test_refusal_lists_the_shipped_profiles_that_would_serve_the_spec():
+    profile = _profile(id="store-face", scale=1.3, size=100)
+    shipped = [
+        _profile(id="shipped-full", backend="center", scale=1.0, size=64),
+        _profile(id="shipped-face", scale=1.3, size=256),
+        _profile(id="shipped-full-2", backend="center", scale=1.0, size=128),
+    ]
+    spec = _spec(crop="full-frame", crop_scale=None)
+
+    with pytest.raises(ContractError) as excinfo:
+        adapt(spec, profile, shipped=shipped)
+
+    exc = excinfo.value
+    assert "built-in profiles that would serve it: shipped-full, shipped-full-2" in exc.message
+    assert "shipped-face" not in exc.message
+    assert "--profile shipped-full" in exc.hint
+
+
+def test_a_local_compatible_store_is_named_before_the_shipped_profiles():
+    profile = _profile(id="store-face", scale=1.3, size=100)
+    local = _profile(id="wide-face", scale=2.0, size=100)
+    shipped = [_profile(id="shipped-wide", scale=2.5, size=256)]
+    spec = _spec(crop_scale=2.0)
+
+    with pytest.raises(ContractError) as excinfo:
+        adapt(spec, profile, candidates=[local], shipped=shipped)
+
+    message = excinfo.value.message
+    assert local.profile_id() in message
+    assert "built-in profiles that would serve it: shipped-wide" in message
+    assert repr(local.id) in excinfo.value.hint
+
+
 # --------------------------------------------------------------------------------- allow_mismatch
 
 

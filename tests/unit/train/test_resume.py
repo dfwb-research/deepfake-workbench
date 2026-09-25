@@ -247,6 +247,38 @@ def test_a_resume_warns_when_the_joined_data_changed(tmp_path, toy_work_root, mo
     assert any("joined data differs" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "missing",
+    ["_batches_that_stepped", "batch_progress", "automatic_optimization"],
+)
+def test_a_lightning_without_the_loop_internals_resume_needs_fails_clearly(
+    tmp_path, monkeypatch, missing
+):
+    # resume sets Lightning's private loop counters directly; a Lightning release that renamed
+    # them must fail at fit start, naming the version resume was tested with, not mid-epoch
+    import lightning
+    import lightning.pytorch as L
+
+    trainer = L.Trainer(accelerator="cpu", logger=False, enable_checkpointing=False)
+    epoch_loop = trainer.fit_loop.epoch_loop
+    monkeypatch.delattr(epoch_loop, missing)
+    with pytest.raises(ContractError) as caught:
+        resume_module.ResumeCheckpoint(tmp_path / "resume", seed=0).on_fit_start(
+            trainer, L.LightningModule()
+        )
+    assert missing in caught.value.message
+    assert lightning.__version__ in caught.value.message
+    assert resume_module.TESTED_LIGHTNING in caught.value.message
+    assert f"lightning=={resume_module.TESTED_LIGHTNING}.*" in caught.value.hint
+
+
+def test_the_loop_internals_resume_needs_are_there():
+    import lightning.pytorch as L
+
+    trainer = L.Trainer(accelerator="cpu", logger=False, enable_checkpointing=False)
+    resume_module.check_loop_internals(trainer)
+
+
 def test_a_finished_run_has_nothing_to_resume(tmp_path, toy_work_root):
     result = _train(tmp_path, toy_work_root, toy_config())
     with pytest.raises(ConfigError, match="nothing to resume") as caught:

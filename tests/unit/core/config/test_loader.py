@@ -27,7 +27,7 @@ def test_three_level_extends_chain_with_template(write):
         str(exp),
     )
     assert loaded.data["train"]["max_epochs"] == 20
-    assert loaded.data["train"]["precision"] == "bf16-mixed"
+    assert loaded.data["train"]["precision"] == "auto"
     assert loaded.data["optim"] == {
         "name": "adamw",
         "lr": 3.0e-4,

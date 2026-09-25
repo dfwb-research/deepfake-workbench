@@ -31,6 +31,7 @@ __all__ = [
     "auc",
     "aurc",
     "brier",
+    "check_metric_spec",
     "compute",
     "ece",
     "eer",
@@ -119,6 +120,18 @@ def _coerce(value: str) -> bool | int | float | str:
     except ValueError:
         pass
     return value
+
+
+def check_metric_spec(spec: str) -> None:
+    """Check ``spec`` without computing anything: its syntax, its metric's name and its
+    parameters, exactly as :func:`compute` would take them.
+
+    Raises:
+        ConfigError: The spec is malformed, or a parameter is unknown, missing or ill-typed.
+        UnknownKeyError: No metric has that name.
+    """
+    name, params = parse_metric_spec(spec)
+    get_registry("metrics").validate(name, **params)
 
 
 def compute(spec: str, y: IntArray, p: FloatArray) -> float:

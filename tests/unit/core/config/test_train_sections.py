@@ -65,6 +65,23 @@ def test_new_keys_have_defaults():
     assert (train.nan_tolerance, train.heartbeat_steps) == (3, 50)
     assert train.loggers == ["csv", "tensorboard"]
     assert train.lightning == {}
+    assert train.callbacks == []
+
+
+def test_precision_defaults_to_auto():
+    data = copy.deepcopy(BASE)
+    del data["train"]["precision"]
+    config = validate_config(data, source="exp.yaml")
+    assert isinstance(config, TrainConfig)
+    assert config.train.precision == "auto"
+
+
+def test_precision_is_one_of_the_supported_settings():
+    (line,) = _problems(_config(train={"precision": "bf16-mixd"}))
+    assert line == (
+        "  train.precision: 'bf16-mixd' is not one of "
+        "['auto', '32-true', 'bf16-mixed', '16-mixed'] (did you mean 'bf16-mixed' or '16-mixed'?)"
+    )
 
 
 # ------------------------------------------------------------------------------ model.input

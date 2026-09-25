@@ -23,6 +23,7 @@ as a copy of ``checkpoints/last``, so ``run:<dir>`` (which means ``#best``) stil
 from __future__ import annotations
 
 import csv
+import dataclasses
 import inspect
 import json
 import logging
@@ -40,13 +41,15 @@ from lightning.fabric.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.callbacks import Callback
 
 from dfwb.core.config.loader import LoadedConfig, dump_yaml, load_config
-from dfwb.core.config.schema import TrainConfig, check_components
+from dfwb.core.config.schema import ClipSection, TrainConfig, check_components
 from dfwb.core.errors import ConfigError, ContractError, did_you_mean
 from dfwb.core.paths import absolute, require_root, resolve_roots
-from dfwb.core.plugins import REGISTRY_NAMES, get_registry
+from dfwb.core.plugins import REGISTRY_NAMES, api, get_registry
+from dfwb.core.records.local import ProcessingProfile
 from dfwb.core.runmeta import collect_run_info
 from dfwb.core.seed import seed_everything
 from dfwb.data.transforms import build_transforms
+from dfwb.eval.aggregate import check_eval_config
 from dfwb.models.detector import AssembledDetector, build_detector
 from dfwb.train import rundir
 from dfwb.train.callbacks import SafetensorsCheckpoint, build_callbacks
@@ -57,7 +60,7 @@ from dfwb.train.optim import build_optimizer
 from dfwb.train.resume import ResumeCheckpoint, SavedState, read_state
 from dfwb.train.schedules import build_schedule
 
-__all__ = ["RunResult", "device_options", "resume_run", "run_experiment"]
+__all__ = ["RunResult", "device_options", "resolve_precision", "resume_run", "run_experiment"]
 
 _log = logging.getLogger(__name__)
 
@@ -88,6 +91,7 @@ class _Plan:
     device: str | None
     progress: bool
     argv: Sequence[str] | None
+    shipped_profiles: Sequence[ProcessingProfile] = ()
 
 
 # ------------------------------------------------------------------------------ checks
@@ -163,6 +167,7 @@ def _check_lightning(options: Mapping[str, Any]) -> None:
 def _check_config(config: TrainConfig) -> None:
     """Every check the config allows on its own, before a detector is built or any data read."""
     check_components(config, {name: get_registry(name) for name in REGISTRY_NAMES})
+    check_eval_config(config.eval.metrics, config.eval.aggregate)
     _check_transforms(config)
     _check_seeds(config.run.seeds)
     _check_lightning(config.train.lightning)
@@ -184,7 +189,42 @@ def _check_optimization(config: TrainConfig, detector: AssembledDetector) -> Non
     build_schedule(config.schedule, optimizer, steps_per_epoch=1, epochs=config.train.max_epochs)
 
 
+def _plugin_callbacks(config: TrainConfig) -> list[Callback]:
+    """``train.callbacks``, built through the ``callbacks`` registry (their params were already
+    checked with the rest of the config).
+
+    Raises:
+        ContractError: An entry builds something other than a Lightning callback.
+    """
+    built: list[Callback] = []
+    for index, spec in enumerate(config.train.callbacks):
+        callback = api.callbacks.build(spec.name, **spec.params)
+        if not isinstance(callback, Callback):
+            raise ContractError(
+                f"train.callbacks[{index}]: callbacks/{spec.name} built a "
+                f"{type(callback).__name__}, not a Lightning callback",
+                hint="a callbacks registry target must build a lightning.pytorch Callback",
+            )
+        built.append(callback)
+    return built
+
+
 # ----------------------------------------------------------------------------- the trainer
+
+
+def resolve_precision(precision: str, options: Mapping[str, Any]) -> str:
+    """The Lightning precision a run trains in: ``precision`` itself, unless it is ``auto``,
+    which picks per device -- ``bf16-mixed`` on a CUDA GPU that supports bfloat16, ``16-mixed`` on
+    any other CUDA GPU, ``32-true`` everywhere else (the CPU included). ``options`` are the
+    trainer options the device comes from (``accelerator``: ``auto`` means a GPU when there is
+    one)."""
+    if precision != "auto":
+        return precision
+    accelerator = str(options.get("accelerator", "auto")).lower()
+    cuda = accelerator in ("gpu", "cuda") or (accelerator == "auto" and torch.cuda.is_available())
+    if not cuda:
+        return "32-true"
+    return "bf16-mixed" if torch.cuda.is_bf16_supported() else "16-mixed"
 
 
 def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any) -> L.Trainer:
@@ -193,7 +233,6 @@ def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any
         "accelerator": "auto",
         "devices": 1,
         "max_epochs": train.max_epochs,
-        "precision": train.precision,
         "enable_checkpointing": False,
         "enable_progress_bar": plan.progress,
         "enable_model_summary": plan.progress,
@@ -208,6 +247,7 @@ def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any
         options.update(enable_progress_bar=False, enable_model_summary=False)
     if plan.device is not None:
         options.update(device_options(plan.device))
+    options["precision"] = resolve_precision(train.precision, options)
     try:
         return L.Trainer(**options)
     except (MisconfigurationException, ValueError, TypeError) as exc:
@@ -273,6 +313,8 @@ def _env_record(plan: _Plan, seed: int, trainer: L.Trainer) -> dict[str, Any]:
         "created": info.created,
         "command": info.command,
         "env": env,
+        # what train.precision resolved to on this device (``auto`` picks per device)
+        "precision": str(trainer.precision),
         "git": git,
         "plugins": info.plugins,
     }
@@ -365,6 +407,22 @@ def _report(plan: _Plan, run_dir: Path, metrics: Mapping[str, Any], data: Mappin
             f"- Best checkpoint (`checkpoints/best`): `{monitor['key']}` ({monitor['mode']}) = "
             f"{_number(monitor['best'])} after epoch {monitor['best_epoch']} of "
             f"{metrics['epochs']}"
+        )
+        if monitor["fallback"]:
+            lines.append(
+                f"- The monitor fell back to `{monitor['key']}` ({monitor['mode']}): "
+                f"`{config.train.monitor}` was undefined on every validation source"
+            )
+    undefined = [
+        f"`{metric}` on `{source['name']}`"
+        for source in data["val"]
+        for metric in config.eval.metrics
+        if f"val/{source['name']}/{metric}" not in metrics["val"]
+    ]
+    if metrics["val"] and undefined:
+        lines.append(
+            "- Undefined in the last validation, so left out of the `val/video_<metric>` means: "
+            + ", ".join(undefined)
         )
     lines += [
         "",
@@ -463,6 +521,8 @@ def _prepare(
             heartbeat_every=config.train.heartbeat_steps,
             best_is_last=not monitored,
         ),
+        *_plugin_callbacks(config),
+        # last, so the state it saves is every other callback's once the epoch is over
         ResumeCheckpoint(run_dir / rundir.RESUME_DIR, seed=seed, restore=restore),
     ]
     loggers = build_loggers(
@@ -479,8 +539,12 @@ def _prepare(
         seed=seed,
         pairs=config.data.pairs,
         allow_mismatch=config.data.allow_input_mismatch,
+        shipped_profiles=plan.shipped_profiles,
     )
     datamodule.setup("fit")
+    detector.meta = dataclasses.replace(
+        detector.meta, training_data=_training_data(datamodule.train_sources)
+    )
     if not monitored:
         _log.warning(
             "%s: no validation sources, so monitoring is off: checkpoints/best is kept as a "
@@ -496,12 +560,43 @@ def _prepare(
     return trainer, datamodule, data
 
 
+# How a clip sampling mode is recorded in a detector's input spec: a random window is still a run
+# of consecutive frames, just placed at random.
+_SAMPLING_INPUT = {
+    "uniform": "uniform",
+    "consecutive": "consecutive",
+    "random-window": "consecutive",
+}
+
+
+def _input_overrides(config: TrainConfig) -> dict[str, Any]:
+    """The detector's input spec overrides: the clip regime it trains and validates on
+    (``data.clip``'s frames and sampling), so scoring it later builds the same clips, then
+    whatever ``model.input`` sets, which wins."""
+    clip: ClipSection = config.data.clip
+    overrides: dict[str, Any] = {"frames": clip.frames, "sampling": _SAMPLING_INPUT[clip.sampling]}
+    if config.model.input is not None:
+        overrides.update(config.model.input.overrides())
+    return overrides
+
+
+def _training_data(sources: Sequence[SourceData]) -> tuple[str, ...]:
+    """One pinned protocol reference per training protocol, ``<pack>:<dataset>/<scheme>@<pack
+    version>``, in config order, each once (the split and ``where`` filters are in
+    ``data.json``)."""
+    refs = [
+        f"{source.protocol.pack.name}:{source.protocol.ref}@{source.protocol.pack_version}"
+        for source in sources
+    ]
+    return tuple(dict.fromkeys(refs))
+
+
 def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | None) -> RunResult:
     config = plan.config
     seed_everything(seed)
     detector = build_detector(
         config.model,
-        input_spec_overrides=config.model.input.overrides() if config.model.input else None,
+        input_spec_overrides=_input_overrides(config),
         source=f"run:{plan.loaded.fingerprint}",
     )
     _check_optimization(config, detector)
@@ -558,6 +653,7 @@ def run_experiment(
     device: str | None = None,
     progress: bool = True,
     argv: Sequence[str] | None = None,
+    shipped_profiles: Sequence[ProcessingProfile] = (),
 ) -> list[RunResult]:
     """Train ``config`` once per seed of ``run.seeds``, in order; one run directory each.
 
@@ -570,6 +666,8 @@ def run_experiment(
             ``train.lightning.accelerator``, else any GPU, else the CPU.
         progress: Show Lightning's progress bar and model summary (both print to stdout).
         argv: The command line to record in ``env.json`` (default: this process's).
+        shipped_profiles: The processing profiles the framework ships: when a store cannot
+            serve the detector's input, the refusal lists those that would.
 
     Raises:
         ConfigError: A problem with the config, found before any data is read; or with the data,
@@ -581,11 +679,16 @@ def run_experiment(
         device_options(device)
     work = _work_root(work_root)
     _check_monitor_sources(train_config, work)
+    if train_config.data.test:
+        _log.warning(
+            "data.test is not run by `dfwb train` in this version; score the trained run on "
+            "it with `dfwb score` and evaluate that with `dfwb eval`"
+        )
     if train_config.run.output_root:
         root = absolute(train_config.run.output_root)
     else:
         root = Path(runs_root) if runs_root is not None else require_root("runs", resolve_roots())
-    plan = _Plan(config, train_config, work, root, device, progress, argv)
+    plan = _Plan(config, train_config, work, root, device, progress, argv, shipped_profiles)
     return [_fit(plan, seed, run_dir=None, restore=None) for seed in train_config.run.seeds]
 
 
@@ -597,6 +700,7 @@ def resume_run(
     device: str | None = None,
     progress: bool = True,
     argv: Sequence[str] | None = None,
+    shipped_profiles: Sequence[ProcessingProfile] = (),
 ) -> RunResult:
     """Carry the interrupted run in ``run_dir`` on from the end of its last finished epoch.
 
@@ -647,5 +751,7 @@ def resume_run(
         device_options(device)
     work = _work_root(work_root)
     _check_monitor_sources(train_config, work)
-    plan = _Plan(loaded, train_config, work, run_dir.parent.parent, device, progress, argv)
+    plan = _Plan(
+        loaded, train_config, work, run_dir.parent.parent, device, progress, argv, shipped_profiles
+    )
     return _fit(plan, int(saved.payload["seed"]), run_dir=run_dir, restore=saved)

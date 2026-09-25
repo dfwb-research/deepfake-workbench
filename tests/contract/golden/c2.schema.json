@@ -630,6 +630,13 @@
     "TrainSection": {
       "additionalProperties": false,
       "properties": {
+        "callbacks": {
+          "items": {
+            "$ref": "#/$defs/ComponentSpec"
+          },
+          "title": "Callbacks",
+          "type": "array"
+        },
         "devices": {
           "minimum": 1,
           "title": "Devices",
@@ -695,13 +702,19 @@
           "type": "integer"
         },
         "precision": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "32-true",
+            "bf16-mixed",
+            "16-mixed"
+          ],
           "title": "Precision",
           "type": "string"
         }
       },
       "required": [
         "max_epochs",
-        "precision",
         "devices"
       ],
       "title": "TrainSection",

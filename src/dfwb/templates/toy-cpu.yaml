@@ -28,7 +28,7 @@ optim: {name: adamw, lr: 1.0e-3, weight_decay: 0.01}
 schedule: {name: cosine, warmup_epochs: 0}
 train:
   max_epochs: 2
-  precision: 32-true
+  precision: auto                   # 32-true on the CPU
   devices: 1
   monitor: val/video_auc
   mode: max
