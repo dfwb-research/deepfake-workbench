@@ -51,11 +51,16 @@ class SuiteAggregate(BaseModel):
 
 
 class Suite(BaseModel):
-    """``{name, entries: [...], aggregates: [...]}``, as loaded from one suite YAML file."""
+    """``{name, description?, entries: [...], aggregates: [...]}``, from one suite YAML file.
+
+    ``description`` is free text for people: what the suite measures, the training data its
+    numbers assume, how an entry's subset is chosen.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
+    description: str | None = None
     entries: list[SuiteEntry]
     aggregates: list[SuiteAggregate] = Field(default_factory=list)
 
@@ -82,7 +87,7 @@ def read_suite(path: str | Path) -> Suite:
     except ValidationError as exc:
         raise ContractError(
             f"{source}: " + "; ".join(validation_messages(exc)),
-            hint="see the suite schema: {name, entries: [...], aggregates: [...]}",
+            hint="see the suite schema: {name, description?, entries: [...], aggregates: [...]}",
         ) from None
 
 

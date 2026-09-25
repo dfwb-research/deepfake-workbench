@@ -28,6 +28,24 @@ def test_read_suite(tmp_path):
     assert suite.aggregates[0].how == "mean"
 
 
+def test_a_suite_may_describe_itself(tmp_path):
+    # a pack documents what a suite is for (its panel, its training reference) in the suite itself
+    path = tmp_path / "described.yaml"
+    path.write_text(
+        "name: described\n"
+        "description: Train on ffpp/official at c23, then test on every other dataset.\n"
+        "entries:\n  - {protocol: dfdc/official, split: test, group: cross-dataset}\n"
+    )
+    suite = read_suite(path)
+    assert suite.description == "Train on ffpp/official at c23, then test on every other dataset."
+    assert read_suite(_write(tmp_path / "plain.yaml", SUITE_YAML)).description is None
+
+
+def _write(path, text):
+    path.write_text(text)
+    return path
+
+
 def test_read_suite_rejects_invalid_yaml(tmp_path):
     path = tmp_path / "bad.yaml"
     path.write_text("name: demo\nentries: not-a-list\n")
