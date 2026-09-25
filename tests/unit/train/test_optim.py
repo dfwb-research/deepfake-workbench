@@ -204,4 +204,4 @@ def test_unknown_group_name_is_a_config_error_naming_the_dotted_path():
         build_optimizer(
             ComponentSpec(name="adamw", lr=1e-3, groups={"blockz": {"lr_scale": 1.0}}), detector
         )
-    assert "blocks.2" in info.value.message or "blocks" in info.value.hint
+    assert "blocks.2" in info.value.message
