@@ -1,5 +1,5 @@
-# A tiny, dependency-free profile for smoke tests and pre-cropped datasets: no detector, just a
-# centred square crop.
+# A tiny profile for smoke tests and pre-cropped datasets: no detector and no model to download,
+# just a centred square crop. Like every profile, it needs the preprocess extra (PyAV and OpenCV).
 id: toy-64-center-8f
 backend: {name: center}
 track: {iou: 0.5, strategy: largest-then-iou}

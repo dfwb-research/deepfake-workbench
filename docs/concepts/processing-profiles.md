@@ -19,8 +19,8 @@ gets a new store rather than silently mixing with the old one's rows.
 | `face-256-1.3x-64f` | insightface | 256 | 1.3x / 256 / square | uniform 64 | — | reproduces the author's earlier FaceForensics++ stores; the parity setting to reach for when comparing against past results. |
 | `face-256-1.3x-32f` | insightface | 256 | 1.3x / 256 / square | uniform 32 | — | the same backend and crop as the parity profile, at half the frames, for quicker runs and smaller stores. |
 | `face-256-1.3x-64fc` | insightface | 256 | 1.3x / 256 / square | first-consecutive 64 | 0.7 | 64 adjacent frames instead of spread-out ones, with the tracked box smoothed across them — for models that use frame-to-frame motion. |
-| `face-256-1.3x-32f-mp` | mediapipe | — | 1.3x / 256 / square | uniform 32 | — | the permissive twin of `face-256-1.3x-32f`: same crop and sampling, MediaPipe's Apache-2.0 detector instead of insightface's non-commercial weights, so it needs no licence acknowledgement. |
-| `toy-64-center-8f` | center | — | 1.0x / 64 / square | uniform 8 | — | a tiny, dependency-free profile with no detector at all, for smoke tests and for data whose frames are already face crops (e.g. WildDeepfake). |
+| `face-256-1.3x-32f-mp` | mediapipe | — | 1.3x / 256 / square | uniform 32 | — | the permissive twin of `face-256-1.3x-32f`: same tracking, crop and sampling, MediaPipe's Apache-2.0 detector instead of insightface's non-commercial weights, so it needs no licence acknowledgement. |
+| `toy-64-center-8f` | center | — | 1.0x / 64 / square | uniform 8 | — | a tiny profile with no detector and no model to download, for smoke tests and for data whose frames are already face crops (e.g. WildDeepfake). Like every profile, it needs the `preprocess` extra. |
 
 `dfwb preprocess profiles` (add `--json` for a machine-readable form) lists the same profiles with
 their id, full profile id (with its hash), backend, sampling and crop, read from the shipped YAML
@@ -31,6 +31,12 @@ previous_smoothed`, reset whenever the frame gap is more than two); it only help
 frames are close together, so only `face-256-1.3x-64fc` sets it.
 
 Every insightface profile's weights need a one-time licence acknowledgement; see below.
+
+In a profile of your own, a few settings are reserved for later releases and accept only one value
+today: `crop.square` (`true`), `crop.align` (`none`), `decode.color` (`rgb`), and `extras.mesh`
+and `extras.masks` (`false`); `track.strategy` is `largest-then-iou` or `identity-cluster`
+(`all-faces` is reserved). A `uniform` or `first-consecutive` sampling mode needs `frames`, and a
+`stride` one needs `stride`. Anything else is refused before any video is touched.
 
 ## The store layout
 
@@ -43,7 +49,9 @@ profile:
 - `index.jsonl`, one line per video, appended as each one finishes: its key, compression, outcome
   (`ok`, `no_face`, `decode_error`, `too_short` or `skipped`), how many frames were written, their
   indices, its output directory (relative to the store), the tracking summary (mean detection
-  confidence and whether the tracker switched faces), and, when it is not `ok`, a reason.
+  confidence and whether the tracker switched faces), and, when it is not `ok`, a reason. A
+  reason names a file by its name alone, never by where it sits on the machine, so the same video
+  gets the same line wherever it was processed.
 - one output directory per video, `<key>/<compression or "_">/` (a video's key already carries a
   `/`, so this nests one directory per task inside one per dataset), holding one
   `frame_<index:06d>.png` per kept frame — lossless, `cv2.imwrite` with PNG compression level 6,
@@ -57,7 +65,7 @@ profile:
   "compression": null,
   "source": {"total_frames": 24, "fps": 8.0, "width": 64, "height": 64, "decoder": "pyav"},
   "frames": [
-    {"index": 0, "bbox": [0.0, 0.0, 64.0, 64.0], "score": 1.0, "landmarks5": null}
+    {"index": 0, "bbox": [0, 0, 64, 64], "face_bbox": [0.0, 0.0, 64.0, 64.0], "score": 1.0, "landmarks5": null}
   ],
   "failed_frames": [
     {"index": 12, "reason": "no-face"}
@@ -66,13 +74,22 @@ profile:
 }
 ```
 
-`frames` lists every kept frame, in the order it was written, with its source index, its crop box
-in the *source* frame's pixels, the detector's score, and its five landmarks when the profile asks
-for them and the backend provides them. `failed_frames` lists every sampled frame that was decoded
-but produced no usable, croppable face — dropped, not interpolated, with why. `track.strategy` is
-the profile's tracking strategy, and `track.identity_switch` says whether the tracker ever had to
-fall back from following the previous frame's face (by IoU) to picking the largest face in the
-frame instead, which can mean it followed more than one person across the clip.
+`frames` lists every kept frame, in the order it was written, with:
+
+- `index`, the frame's index in the source;
+- `bbox`, the square the crop was cut from, `[x1, y1, x2, y2]` in whole pixels of the *source*
+  frame (it can reach past the frame's edges, where the crop was padded);
+- `face_bbox`, the detector's box the crop was taken around, `[x1, y1, x2, y2]` in pixels of the
+  *source* frame, as found (the smoothed box when the profile sets `track.ema`);
+- `score`, the detector's confidence;
+- `landmarks5`, five `[x, y]` landmarks in pixels of the *crop* (the written PNG), when the
+  profile asks for them and the backend provides them, `null` otherwise.
+
+`failed_frames` lists every sampled frame that was decoded but produced no usable, croppable face
+— dropped, not interpolated, with why. `track.strategy` is the profile's tracking strategy, and
+`track.identity_switch` says whether the tracker ever had to fall back from following the previous
+frame's face (by IoU) to picking the largest face in the frame instead, which can mean it followed
+more than one person across the clip.
 
 A store is never written inside a datasets root: raw data is read-only, always.
 
@@ -83,13 +100,21 @@ status is one you asked to redo with `--redo`: a video with **any** row in `inde
 not — counts as done and is left alone, except when `--redo` names its exact status. Running
 `--redo no_face` retries only the videos that found no usable face; `--redo decode_error,too_short`
 retries both of those; leaving `--redo` off retries nothing that already has a row, so re-running
-the same command after it finishes (or after it was interrupted) only processes what is left.
+the same command after it finishes (or after it was interrupted) only processes what is left. The
+run's summary counts the videos it left alone this way as `already done`.
+
+A video that fails on its own — a file that cannot be decoded, a frame that cannot be written —
+is recorded with its reason, and the run goes on. A problem with the setup is not the video's:
+a profile the backend cannot run, or a decode library or OpenCV that is not installed, stops the
+run before any video is tried (exit code 2 or 5), and one that only shows while a video is being
+processed stops the run there, rather than being recorded against every video in turn.
 
 A video whose processing is killed mid-way — the process interrupted, or a worker crashing on a
 video that breaks native decoding or inference — never leaves a half-written output directory
 behind: every video is written into a private temporary directory first, and only swapped into
 place once it is fully written and its outcome is `ok`. The next run for that video starts clean,
-whatever was left behind by the one that was killed.
+whatever was left behind by the one that was killed. A run only ever tidies up after its own
+videos, never the whole store, so machines sharing one store never disturb each other's work.
 
 ## Sharding across machines
 

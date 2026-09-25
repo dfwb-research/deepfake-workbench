@@ -14,7 +14,8 @@ pip install "deepfake-workbench[preprocess]"
 
 Installs PyAV and `opencv-python-headless`. Needed for `dfwb inventory build --probe`, for
 `dfwb datasets synth toyfake` with real media (rather than `--no-media`), and for `dfwb preprocess
-run` with any profile (every backend writes its cropped frames with OpenCV).
+run` with any profile (every backend writes its cropped frames with OpenCV). Without it,
+`dfwb preprocess run` stops before touching any video, with exit code 5 and the install command.
 
 ## Face-detection backends
 
@@ -45,6 +46,13 @@ onnxruntime, `--device cuda:...` runs on the CPU instead, with a warning.
 insightface's `buffalo_l` weights are for non-commercial research use only; see [processing
 profiles](concepts/processing-profiles.md#the-licence-gate) for the one-time acknowledgement
 `dfwb preprocess run --accept-license` records before it downloads or uses them.
+
+The backend uses two of the `buffalo_l` models, `det_10g.onnx` and `w600k_r50.onnx`, and looks for
+them in `<cache root>/models/buffalo_l/`, then in `~/.insightface/models/buffalo_l/` (where
+insightface itself keeps them). If neither has them, it downloads the `buffalo_l` release archive
+(289 MB) once and unpacks just those two, each checked against its known sha256. A machine without
+network access (or with `DFWB_OFFLINE=1`) needs the two files placed in one of those directories
+by hand; a download that fails says so, naming both.
 
 ### `face-mediapipe`: two OpenCV distributions, one `cv2`
 
