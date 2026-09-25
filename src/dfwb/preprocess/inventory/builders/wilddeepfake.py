@@ -17,9 +17,11 @@ This is the release unpacked. The release has four category folders, ``real_trai
 holding ``<shard>/<label>/<sequence>/<frame>.png``. Sequence ``<sequence>`` of shard ``<shard>``
 in category ``<label>_<split>`` becomes the folder ``<label>_<split>_<shard>_<sequence>`` (shard
 ids repeat across categories, so the category prefix keeps the names apart), under the reals'
-or the fakes' folder above; the shard id is the shard file's name up to its first ``.``. A frame
-``<n>.png`` becomes ``<n>`` zero-padded to six digits (``1919.png`` becomes ``001919.png``); a
-name that is not a number is kept.
+or the fakes' folder above; the shard id is the shard file's name up to its first ``.``. The
+shards are plain tar archives despite their ``.tar.gz`` names (``tar xf``, not ``tar xzf``). A
+frame ``<n>.png`` becomes ``<n>`` zero-padded to six digits (``1919.png`` becomes
+``001919.png``); a name that is not a number keeps its stem, and every extension is written as
+lower-case ``.png``.
 
 A record is keyed by its folder's name. Its attributes are the ``split`` named in the key
 (``train`` or ``test``, else None), the ``shard`` and ``sequence`` (the third and fourth parts,
@@ -33,6 +35,7 @@ of each sequence's key, since no sequence carries an identity.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Final
@@ -75,10 +78,25 @@ def _sequence_dirs(folder: Path) -> list[Path]:
 
 
 def _holds_sequences(folder: Path) -> bool:
-    """Whether ``folder`` has a sequence folder holding at least one frame; stops at the first."""
-    return any(
-        any(_is_frame(frame) for frame in sequence.iterdir()) for sequence in _sequence_dirs(folder)
-    )
+    """Whether ``folder`` has a sequence folder holding at least one frame.
+
+    Only presence matters here, so the listing is read in directory order, unsorted, and the
+    search stops at the first frame found: a copy with thousands of sequences costs a few reads.
+    """
+    if not folder.is_dir():
+        return False
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            # DirEntry.is_dir follows symlinks, as Path.is_dir does.
+            if not entry.name.startswith(".") and entry.is_dir() and _holds_frame(Path(entry.path)):
+                return True
+    return False
+
+
+def _holds_frame(sequence: Path) -> bool:
+    """Whether ``sequence`` holds at least one frame; stops at the first."""
+    with os.scandir(sequence) as entries:
+        return any(_is_frame(Path(entry.path)) for entry in entries)
 
 
 def _split_of(key: str) -> Split | None:
@@ -147,8 +165,8 @@ class WildDeepfakeBuilder(BaseBuilder):
         "homepage": "https://huggingface.co/datasets/xingjunm/WildDeepfake",
         "license": {
             "spdx": None,
-            "summary": "the WildDeepfake terms: research use only, after the authors approve an "
-            "access request",
+            "summary": "access is gated by the authors; the release's README front matter declares "
+            "apache-2.0; the access terms need review",
             "url": None,
         },
         "access": "request access from the authors (the download is gated); dfwb never "
@@ -169,9 +187,11 @@ class WildDeepfakeBuilder(BaseBuilder):
         "fake_train and fake_test, hold tar shards named <shard>.tar.gz, each holding "
         "<shard>/<label>/<sequence>/<frame>.png. Sequence <sequence> of shard <shard> in category "
         "<label>_<split> becomes the folder <label>_<split>_<shard>_<sequence> under the real or "
-        "the fake task's folder, <shard> being the shard file's name up to its first '.'. A frame "
-        "<n>.png becomes <n> zero-padded to six digits (1919.png becomes 001919.png); a name that "
-        "is not a number is kept.\n"
+        "the fake task's folder, <shard> being the shard file's name up to its first '.'. The "
+        "shards are plain tar archives despite their .tar.gz names: extract them with tar xf, not "
+        "tar xzf. A frame <n>.png becomes <n> zero-padded to six digits (1919.png becomes "
+        "001919.png); a name that is not a number keeps its stem, and its extension is written as "
+        "lower-case .png.\n"
         "The official split is the <split> in each folder name: train or test."
     )
 

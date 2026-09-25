@@ -202,7 +202,7 @@ def test_every_task_is_discovered_with_its_method(defo_root):
     assert [t.abbr for t in DeeperForensicsBuilder.tasks] == ["SR"] + [a for a, _, _ in FAKE_TASKS]
 
 
-def test_unusual_names_keep_the_old_parsing(defo_root):
+def test_unusual_names_keep_the_stem_parsing(defo_root):
     _touch(defo_root.joinpath(*E2E_DIR), "nounderscore.mp4", "7_M101_extra.mp4")
     _touch(defo_root.joinpath(*REAL_DIR, "W006"), "W006.mp4")
     records = {rec.key: rec for rec in _discover(defo_root)}

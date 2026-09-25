@@ -249,6 +249,9 @@ def test_the_layout_says_the_records_are_frame_directories():
     assert "the shard file's name up to its first '.'" in text
     assert "zero-padded to six digits" in text
     assert "1919.png becomes 001919.png" in text
+    assert "plain tar archives despite their .tar.gz names" in text
+    assert "tar xf, not tar xzf" in text
+    assert "keeps its stem, and its extension is written as lower-case .png" in text
     assert "The official split is the <split> in each folder name: train or test." in text
     assert "{cX}" not in text
 
@@ -363,6 +366,10 @@ def test_dataset_card():
     assert card.default_scheme == "official+ident-80-20"
     assert card.paper is None
     assert card.license.spdx is None
+    assert card.license.summary == (
+        "access is gated by the authors; the release's README front matter declares "
+        "apache-2.0; the access terms need review"
+    )
 
 
 def test_it_is_registered():
