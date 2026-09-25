@@ -316,9 +316,11 @@ def resolve_video_path(
     *,
     datasets_roots: Mapping[RootName, ResolvedRoot] | None = None,
 ) -> Path:
-    """The absolute file backing ``record``: the first copy holding its ``relpath``.
+    """The absolute video or frame directory backing ``record``: the first copy holding it.
 
-    When ``record.folder`` is unset, the first of ``copies`` -- the same copies
+    A record's ``relpath`` names a video file, or, for a dataset that ships pre-cropped frames
+    instead of videos, a directory of frames; either is found. When ``record.folder`` is unset,
+    the first of ``copies`` -- the same copies
     :func:`build_inventory` bound the record's own builder to. When it is set (the record lives
     in a sibling dataset's folder, e.g. a TalkingHeadBench real that sits in FaceForensics++),
     ``copies`` is ignored and :func:`folder_copies` resolves that sibling folder across every
@@ -327,7 +329,7 @@ def resolve_video_path(
 
     Raises:
         ConfigError: ``record.folder`` is set but ``datasets_roots`` is not given, or none of the
-            resolved copies holds the file.
+            resolved copies holds the video or frame directory.
     """
     if record.folder is not None:
         if datasets_roots is None:
@@ -340,7 +342,7 @@ def resolve_video_path(
         search_copies = list(copies)
     for copy in search_copies:
         candidate = copy / record.relpath
-        if candidate.is_file():
+        if candidate.is_file() or candidate.is_dir():
             return candidate
     searched = ", ".join(str(copy) for copy in search_copies) or "no copies given"
     raise ConfigError(

@@ -685,6 +685,46 @@ def test_resolve_video_path_raises_when_no_copy_has_the_file(tmp_path):
         resolve_video_path(record, (tmp_path / "a", tmp_path / "b"))
 
 
+def _frame_dir_record(folder: str | None = None) -> InventoryRecord:
+    """A record whose relpath is a directory of frames, not a video file."""
+    return InventoryRecord(
+        key="REAL/real_test_1_2",
+        compression=None,
+        label_key="DEMO-REAL",
+        method="original",
+        relpath="frames/real_test_1_2",
+        builder=BuilderRef("demo", "1"),
+        folder=folder,
+    )
+
+
+def test_resolve_video_path_resolves_a_frame_directory(tmp_path):
+    copy_a, copy_b = tmp_path / "a", tmp_path / "b"
+    (copy_a / "frames").mkdir(parents=True)  # the parent only: not this record's directory
+    (copy_b / "frames" / "real_test_1_2").mkdir(parents=True)
+    (copy_b / "frames" / "real_test_1_2" / "000000.png").touch()
+    assert resolve_video_path(_frame_dir_record(), (copy_a, copy_b)) == (
+        copy_b / "frames" / "real_test_1_2"
+    )
+    with pytest.raises(ConfigError, match=r"real_test_1_2.*was not found in any copy"):
+        resolve_video_path(_frame_dir_record(), (copy_a,))
+
+
+def test_resolve_video_path_resolves_a_frame_directory_in_a_sibling_folder(
+    env, monkeypatch, tmp_path
+):
+    raw, _ = env
+    (raw / "Sibling" / "frames").mkdir(parents=True)  # the folder, without the directory
+    second = tmp_path / "second"
+    (second / "Sibling" / "frames" / "real_test_1_2").mkdir(parents=True)
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+    roots = resolve_roots()
+
+    resolved = resolve_video_path(_frame_dir_record("Sibling"), (), datasets_roots=roots)
+
+    assert resolved == second / "Sibling" / "frames" / "real_test_1_2"
+
+
 # ------------------------------------------------------------------------------ collect_records
 
 
