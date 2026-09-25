@@ -10,32 +10,10 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from dfwb.cli._output import emit_json, json_option, table
-from dfwb.core.errors import ConfigError
+from dfwb.cli._where import parse_where, where_option
 
 if TYPE_CHECKING:
     from dfwb.score.harness import ScoreResult
-
-
-def _parse_where(pairs: tuple[str, ...]) -> dict[str, Any]:
-    """``("compression=c23", "identity=000", "identity=002")`` -> ``{"compression": "c23",
-    "identity": ["000", "002"]}``: repeating a key collects its values as a list, meaning any of
-    them (the same ``where`` semantics :func:`dfwb.preprocess.face.runner.run` uses)."""
-    where: dict[str, Any] = {}
-    for pair in pairs:
-        key, sep, value = pair.partition("=")
-        key = key.strip()
-        if not sep or not key:
-            raise ConfigError(
-                f"--where {pair!r} is not key=value",
-                hint="use --where key=value, e.g. "
-                "--where compression=c23 (repeat --where to give a key more than one value)",
-            )
-        if key in where:
-            existing = where[key]
-            where[key] = [*existing, value] if isinstance(existing, list) else [existing, value]
-        else:
-            where[key] = value
-    return where
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +72,7 @@ def _row(entry: _Entry, result: ScoreResult) -> dict[str, Any]:
     help="Protocol reference, e.g. celebdf-v2/official.",
 )
 @click.option("--split", default=None, help="The protocol split (needs --protocol).")
-@click.option(
-    "--where",
-    "where_pairs",
-    multiple=True,
-    metavar="KEY=VALUE",
-    help="Restrict to videos matching KEY=VALUE (repeatable; repeat a key for any-of).",
-)
+@where_option
 @click.option(
     "--suite", "suite_name", default=None, help="Score every entry of a registered eval suite."
 )
@@ -109,15 +81,17 @@ def _row(entry: _Entry, result: ScoreResult) -> dict[str, Any]:
     default=None,
     help="A locally processed profile id (default: chosen automatically).",
 )
-@click.option("--clips-per-video", type=int, default=4, show_default=True)
+@click.option("--clips-per-video", type=click.IntRange(min=1), default=4, show_default=True)
 @click.option(
     "--aggregate",
     default="mean-prob",
     show_default=True,
     help="mean-prob, mean-logit, max or median.",
 )
-@click.option("--batch-size", type=int, default=32, show_default=True)
-@click.option("--device", default="cpu", show_default=True)
+@click.option("--batch-size", type=click.IntRange(min=1), default=32, show_default=True)
+@click.option(
+    "--device", default="cpu", show_default=True, help="cpu, cuda (or gpu), or cuda:<index>."
+)
 @click.option("--precision", default=None, help="fp16, bf16 or fp32 (default: no autocast).")
 @click.option(
     "--allow-input-mismatch",
@@ -167,7 +141,7 @@ def score(
     Writes one C5 score file per entry (contract C5), reusing a cached file that already matches
     this request's configuration unless --force is given.
     """
-    where = _parse_where(where_pairs)
+    where = parse_where(where_pairs)
     entries = _entries(protocol_ref, split, where, suite_name)
 
     from dfwb.score.harness import score as run_score

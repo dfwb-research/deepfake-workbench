@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import pytest
@@ -529,3 +530,115 @@ def test_a_valid_but_mismatched_meta_at_the_cache_path_is_recomputed(score_roots
     assert second.cached is False
     payload_after = json.loads(second.meta_path.read_text("utf-8"))
     assert payload_after["processing_profile"]["sha256"] != "0" * 64
+
+
+def test_a_cached_file_with_error_rows_is_retried_not_reused(score_roots, tmp_path, caplog):
+    """Re-running score with an identical configuration reuses the cached file only for an
+    identical *successful* result: a detector failure is usually transient (an OOM, a flaky
+    device fault), so a cache entry with any ``error`` row is retried instead of served."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+    detector_uri = f"fake:raise=FAKE/f00&spy={spy_id}"
+
+    first = _score(tmp_path, detector_uri, batch_size=4)
+    assert first.cached is False
+    assert first.coverage["error"] == 1
+    calls_after_first = _toy.SPY_CALLS[spy_id]
+
+    with caplog.at_level(logging.INFO, logger="dfwb"):
+        second = _score(tmp_path, detector_uri, batch_size=4)
+
+    assert second.cached is False
+    assert second.csv_path == first.csv_path
+    assert _toy.SPY_CALLS[spy_id] > calls_after_first  # predict() ran again, not served stale
+    assert any("errored" in message for message in caplog.messages)
+
+
+def test_a_where_matching_no_videos_logs_a_warning(score_roots, tmp_path, caplog):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        result = _score(tmp_path, where={"identity": "does-not-exist"})
+
+    assert result.coverage == {"expected": 0, "ok": 0, "missing": 0, "error": 0}
+    assert any("matches no videos" in message for message in caplog.messages)
+
+
+# ---------------------------------------------------------------------------- cache keys end to end
+
+
+_CACHE_KEY_VARIATIONS = {
+    "clips_per_video": {"clips_per_video": 2},
+    "aggregate": {"aggregate": "max"},
+    "labels": {"labels": "binary-exclude-fake"},
+    "where": {"where": {"identity": "r00"}},
+    "split": {"split": "train"},  # the scoretoy scheme assigns every video to "test" alone
+}
+
+
+@pytest.mark.parametrize(
+    "changed", sorted(_CACHE_KEY_VARIATIONS), ids=sorted(_CACHE_KEY_VARIATIONS)
+)
+def test_cache_keys(score_roots, tmp_path, changed):
+    """Every component the cache key hashes gives a fresh cache entry through :func:`score`
+    itself, one at a time, matching the baseline in everything else."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    baseline = _score(tmp_path)
+    assert baseline.cached is False
+
+    changed_result = _score(tmp_path, **_CACHE_KEY_VARIATIONS[changed])
+
+    assert changed_result.cached is False
+    assert changed_result.csv_path != baseline.csv_path
+
+
+def test_cache_keys_detector_differs(score_roots, tmp_path):
+    from tests.unit.score._toy import toy_run_profile, write_toy_run
+
+    write_toy_store(score_roots, toy_run_profile())
+    run_a = write_toy_run(tmp_path / "runs", name="toy-a", seed=0, fingerprint="fp-a")
+    run_b = write_toy_run(tmp_path / "runs", name="toy-b", seed=0, fingerprint="fp-b")
+
+    result_a = score(
+        f"run:{run_a}#best", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=4
+    )
+    result_b = score(
+        f"run:{run_b}#best", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=4
+    )
+
+    assert result_a.cached is False
+    assert result_b.cached is False
+    assert result_a.csv_path != result_b.csv_path
+
+
+def test_cache_keys_profile_differs(score_roots, tmp_path):
+    profile_a = toy_profile("toy-a", scale=1.3)
+    profile_b = toy_profile("toy-b", scale=1.6)
+    write_toy_store(score_roots, profile_a)
+    write_toy_store(score_roots, profile_b)
+
+    result_a = _score(tmp_path, "fake:scale=1.3", profile=profile_a.profile_id())
+    result_b = _score(tmp_path, "fake:scale=1.3", profile=profile_b.profile_id())
+
+    assert result_a.cached is False
+    assert result_b.cached is False
+    assert result_a.csv_path != result_b.csv_path
+
+
+def test_cache_keys_identical_config_is_cached_force_recomputes(score_roots, tmp_path):
+    """An identical configuration reuses the cached file, and --force always recomputes even
+    then (both already covered individually above by
+    ``test_rerunning_with_an_identical_config_is_cached`` and
+    ``test_force_recomputes_even_when_a_cached_file_exists``; kept here too as part of the
+    ``test_cache_keys`` group, alongside every component that changes the key)."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    first = _score(tmp_path)
+    identical = _score(tmp_path)
+    forced = _score(tmp_path, force=True)
+
+    assert first.cached is False
+    assert identical.cached is True
+    assert identical.csv_path == first.csv_path
+    assert forced.cached is False
+    assert forced.csv_path == first.csv_path

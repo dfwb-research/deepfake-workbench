@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from dfwb.data.adapt import AdaptResult
     from dfwb.protocols.protocol import Protocol
 
-__all__ = ["FrameRecord", "assemble_meta", "frames_path_for", "write_frames"]
+__all__ = ["FrameRecord", "assemble_meta", "frames_path_for", "require_pyarrow", "write_frames"]
 
 
 def _git_payload(cwd: Path) -> dict[str, Any] | None:
@@ -144,6 +144,17 @@ def _pyarrow() -> tuple[Any, Any]:
             hint=install_hint("pyarrow"),
         ) from exc
     return pyarrow, pyarrow.parquet
+
+
+def require_pyarrow() -> None:
+    """Raise now if pyarrow (the ``[eval]`` extra) is not installed -- a fail-fast pre-flight
+    check for ``--frames``, called before any clip is scored, rather than discovering the same
+    thing only after a whole run's worth of work.
+
+    Raises:
+        InstallationError: pyarrow is not installed.
+    """
+    _pyarrow()
 
 
 def write_frames(path: Path, records: Sequence[FrameRecord]) -> Path:

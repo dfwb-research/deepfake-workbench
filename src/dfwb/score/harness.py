@@ -9,11 +9,19 @@ Nothing is silently dropped.
 A detector source may set plain attributes on the ``Detector`` it returns, beyond contract C4
 (``meta``, ``to()``, ``predict()``) -- see :mod:`dfwb.score.cache` for what they are and how the
 cache uses them; :func:`score` reuses a cached file already sitting at its own output path unless
-``force`` is given or the detector itself says it is not cacheable.
+``force`` is given, the detector itself says it is not cacheable, or the cached file's own coverage
+recorded any ``error`` row (a detector failure is usually transient, so the reuse rule is about an
+identical *successful* result -- an errored cache entry is retried, not served).
 
-``frames=True`` also writes ``<name>.frames.parquet`` (the ``[eval]`` extra: pyarrow; skipped,
-with a log message, when it is not installed): one row per clip per frame actually scored, so a
-cache hit -- which scores nothing -- never produces one.
+``frames=True`` also writes ``<name>.frames.parquet`` (the ``[eval]`` extra: pyarrow, checked for
+before any clip is scored, not after) with one row per clip per frame actually scored. A cache hit
+returns its own ``<name>.frames.parquet`` when one already sits next to the cached CSV; when it
+does not (the file was cached before ``--frames`` was first asked for, say), the hit is treated as
+a miss and the run is recomputed, so ``frames=True`` always means "one exists" on return, never
+"one might, depending on history". Whenever a fresh CSV is written without a matching frames dump
+(``frames=False``, or every clip errored/was missing), any stale frames file already at that path
+is removed, so a frames file's mere presence is always trustworthy on its own -- a caller never has
+to also check the CSV's own coverage before believing it.
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from dfwb.core.detector import InputSpec
-from dfwb.core.errors import ConfigError, InstallationError, did_you_mean
+from dfwb.core.errors import ConfigError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.core.records import ScoreRow, write_scores
 from dfwb.data.index import SourceSpec, VideoIndex
@@ -34,7 +42,13 @@ from dfwb.protocols.protocol import Protocol
 from dfwb.protocols.protocol import load as load_protocol
 from dfwb.score.cache import DetectorIdentity, cache_key, look_up, score_path
 from dfwb.score.sources import resolve_detector
-from dfwb.score.writer import FrameRecord, assemble_meta, frames_path_for, write_frames
+from dfwb.score.writer import (
+    FrameRecord,
+    assemble_meta,
+    frames_path_for,
+    require_pyarrow,
+    write_frames,
+)
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -57,8 +71,11 @@ _AGGREGATE_MODES = ("mean-prob", "mean-logit", "max", "median")
 class ScoreResult:
     """What one call to :func:`score` produced.
 
-    ``frames_path`` is set only when ``frames=True`` was given, the run actually scored some
-    clips (not a cache hit) and pyarrow is installed; otherwise it is ``None``.
+    ``frames_path`` is set whenever ``frames=True`` was given and there was anything to write it
+    from: a fresh run with at least one ``ok`` clip, or a cache hit whose own frames file already
+    exists. It is ``None`` only when ``frames=False``, or when ``frames=True`` but nothing was
+    ever actually scored for this call (every video ``missing``/``error``, so there is no
+    frame-level data at all).
     """
 
     csv_path: Path
@@ -74,6 +91,43 @@ def _check_choice(value: str, allowed: Sequence[str], *, name: str) -> None:
             f"{name}: {value!r} is not one of {list(allowed)}{did_you_mean(value, allowed)}",
             hint=f"{name} accepts: " + ", ".join(allowed),
         )
+
+
+# ------------------------------------------------------------------------------------- device
+
+
+_DEVICE_NAMES = ("cpu", "cuda", "gpu")
+
+
+def _normalize_device(device: str) -> str:
+    """Validate ``--device`` before any work (resolving the detector, reading the store, ...),
+    and return a string :func:`torch.device` itself accepts.
+
+    Accepts the same grammar :func:`dfwb.train.run.device_options` does: ``cpu``, ``cuda`` (or
+    the common alias ``gpu``), or ``cuda:<index>``/``gpu:<index>`` for one particular GPU --
+    normalised to ``cuda``/``cuda:<index>``, since raw :func:`torch.device` does not know ``gpu``
+    as a device type the way Lightning's accelerator names do.
+
+    Raises:
+        ConfigError: ``device`` names no known scheme, or asks for CUDA when
+            ``torch.cuda.is_available()`` is ``False``.
+    """
+    import torch
+
+    name, sep, index = device.partition(":")
+    if name == "cpu" and not sep:
+        return device
+    if name in ("cuda", "gpu") and (not sep or index.isdigit()):
+        if not torch.cuda.is_available():
+            raise ConfigError(
+                f"--device: {device!r} needs a CUDA device, but none is available on this machine",
+                hint="use --device cpu",
+            )
+        return f"cuda:{index}" if sep else "cuda"
+    raise ConfigError(
+        f"--device: {device!r} is not a device{did_you_mean(name, _DEVICE_NAMES)}",
+        hint="use cpu, cuda, or cuda:<index> for one particular GPU",
+    )
 
 
 # --------------------------------------------------------------------------------- profile choice
@@ -414,18 +468,24 @@ def score(
     (no usable processed clip), or ``error`` (the detector raised while scoring it, or returned an
     output that fails validation).
 
-    ``frames=True`` additionally writes ``<name>.frames.parquet`` when clips were actually scored
-    (never on a cache hit, which scores nothing); see :attr:`ScoreResult.frames_path`.
+    ``frames=True`` additionally writes ``<name>.frames.parquet``; see the module docstring for
+    exactly when, and :attr:`ScoreResult.frames_path`.
 
     Raises:
-        ConfigError: ``precision``/``aggregate`` is not one of the values below, or no local
-            processing profile can serve the detector's input (see :func:`_choose_profile`).
+        ConfigError: ``precision``/``aggregate`` is not one of the values below, ``device`` names
+            no known scheme or asks for CUDA when none is available, or no local processing
+            profile can serve the detector's input (see :func:`_choose_profile`).
         ContractError: the detector's input cannot be adapted from the chosen profile and
             ``allow_input_mismatch`` is ``False`` (see :func:`~dfwb.data.adapt.adapt`).
+        InstallationError: ``frames=True`` and pyarrow (the ``[eval]`` extra) is not installed --
+            checked before any clip is scored, not discovered afterwards.
     """
     if precision is not None:
         _check_choice(precision, _PRECISIONS, name="precision")
     _check_choice(aggregate, _AGGREGATE_MODES, name="aggregate")
+    device = _normalize_device(device)
+    if frames:
+        require_pyarrow()
 
     from dfwb.data.adapt import adapt as adapt_input
     from dfwb.data.adapt import available_profiles
@@ -479,11 +539,25 @@ def score(
             identity=identity,
             scheme_sha256=loaded_protocol.sha256,
             split=split,
+            where=where,
             profile_sha256=profile_sha256,
             aggregate_mode=aggregate,
+            clips_per_video=clips_per_video,
+            labels=labels,
         )
         if hit is not None:
-            return ScoreResult(hit.csv_path, hit.meta_path, hit.coverage, True)
+            cached_frames_path = frames_path_for(hit.csv_path)
+            if not frames:
+                return ScoreResult(hit.csv_path, hit.meta_path, hit.coverage, True)
+            if cached_frames_path.is_file():
+                return ScoreResult(
+                    hit.csv_path, hit.meta_path, hit.coverage, True, cached_frames_path
+                )
+            _log.info(
+                "%s: cached, but --frames was asked for and %s does not exist; recomputing",
+                target,
+                cached_frames_path,
+            )
 
     index = VideoIndex.build(
         [SourceSpec(protocol, split, where)],
@@ -514,6 +588,13 @@ def score(
         )
     )
     rows.sort(key=lambda row: (row.dataset, row.key, row.compression or ""))
+    if not rows:
+        _log.warning(
+            "%s: split %r matches no videos (where=%r); writing an empty score file",
+            loaded_protocol.ref,
+            split,
+            dict(where or {}),
+        )
 
     meta = assemble_meta(
         detector_meta=detector.meta,
@@ -534,12 +615,15 @@ def score(
     target.parent.mkdir(parents=True, exist_ok=True)
     csv_path, meta_path = write_scores(target, rows, meta)
 
+    # A frames file's mere presence must always be trustworthy on its own (no need to also check
+    # the CSV it sits next to): write a fresh one when there is anything to write, otherwise clear
+    # out whatever (now stale) one a previous, --frames run left at this same path.
+    frames_target = frames_path_for(csv_path)
     frames_result_path: Path | None = None
     if frames and frame_records:
-        try:
-            frames_result_path = write_frames(frames_path_for(csv_path), frame_records)
-        except InstallationError as exc:
-            _log.warning("--frames: %s (%s); skipping the frame-level dump", exc.message, exc.hint)
+        frames_result_path = write_frames(frames_target, frame_records)
+    else:
+        frames_target.unlink(missing_ok=True)
 
     return ScoreResult(
         csv_path, meta_path, dict(meta.coverage.model_dump()), False, frames_result_path

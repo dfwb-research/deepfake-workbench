@@ -206,7 +206,7 @@ def write_toy_store(
             continue
         record = processed_record(key, n_frames=n_frames)
         records.append(record)
-        write_store_frames(store_dir, record)
+        write_store_frames(store_dir, record, size=profile.crop.size)
     write_store_index(store_dir, records)
     return store_dir
 

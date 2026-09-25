@@ -214,6 +214,100 @@ def test_no_processed_store_exits_2_with_a_hint(cli, score_roots):
     assert "hint: " in result.err
 
 
+def test_unknown_device_exits_2_with_a_hint(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--device",
+        "bogus",
+    )
+    assert result.code == 2
+    assert "hint: " in result.err
+
+
+def test_device_gpu_alias_without_cuda_exits_2_with_a_hint(cli, score_roots):
+    """``gpu`` is the same alias ``dfwb train --device`` accepts; without CUDA available it must
+    fail cleanly (exit 2, a hint to use --device cpu), not with a raw torch error."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    result = cli(
+        "score", "--detector", "fake:", "--protocol", PROTOCOL, "--split", "test", "--device", "gpu"
+    )
+    assert result.code == 2
+    assert "hint: " in result.err
+    assert "--device cpu" in result.err
+
+
+def test_device_cuda_index_without_cuda_exits_2_with_a_hint(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--device",
+        "cuda:0",
+    )
+    assert result.code == 2
+    assert "hint: " in result.err
+    assert "--device cpu" in result.err
+
+
+def test_clips_per_video_zero_is_a_usage_error(cli, score_roots):
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--clips-per-video",
+        "0",
+    )
+    assert result.code == 2
+    assert "hint: " in result.err
+
+
+def test_clips_per_video_negative_is_a_usage_error(cli, score_roots):
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--clips-per-video=-1",
+    )
+    assert result.code == 2
+    assert "hint: " in result.err
+
+
+def test_batch_size_zero_is_a_usage_error(cli, score_roots):
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--batch-size",
+        "0",
+    )
+    assert result.code == 2
+    assert "hint: " in result.err
+
+
 # --------------------------------------------------------------------------------------- --frames
 
 
@@ -242,7 +336,7 @@ def test_frames_writes_a_parquet_file(cli, score_roots):
     assert table.num_rows > 0
 
 
-def test_frames_is_skipped_without_pyarrow(cli, score_roots, monkeypatch):
+def test_frames_without_pyarrow_exits_5_before_scoring_anything(cli, score_roots, monkeypatch):
     import builtins
 
     write_toy_store(score_roots, toy_profile("toy-face"))
@@ -267,7 +361,7 @@ def test_frames_is_skipped_without_pyarrow(cli, score_roots, monkeypatch):
         "--json",
     )
 
-    assert result.code == 0
-    row = json.loads(result.out)["results"][0]
-    assert row["frames"] is None
-    assert "pyarrow" in result.err
+    assert result.code == 5
+    assert "hint: " in result.err
+    assert "deepfake-workbench[eval]" in result.err
+    assert result.out == ""  # nothing was ever scored or printed

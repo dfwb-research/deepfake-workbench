@@ -27,6 +27,7 @@ changed since the last load).
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,7 +38,17 @@ from dfwb.core.errors import ContractError
 from dfwb.core.hashing import fingerprint
 from dfwb.core.records.scores import ScoreMeta, meta_path_for, read_scores
 
-__all__ = ["CacheHit", "DetectorIdentity", "cache_key", "cache_matches", "look_up", "score_path"]
+__all__ = [
+    "CacheHit",
+    "DetectorIdentity",
+    "cache_key",
+    "cache_matches",
+    "look_up",
+    "score_path",
+    "slug",
+]
+
+_log = logging.getLogger(__name__)
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -92,6 +103,17 @@ def _fingerprint_payload(detector: Any, identity: DetectorIdentity) -> dict[str,
 # ------------------------------------------------------------------------------------ cache key
 
 
+def _canonical_where(where: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``where``, ready for the cache key: a membership list (repeated ``--where key=v``) is
+    sorted, so asking for the same set of values in a different order gives the same key; a
+    top-level key's own order never matters here, since :func:`~dfwb.core.hashing.canonical_json`
+    already sorts object keys."""
+    canonical: dict[str, Any] = {}
+    for key, value in (where or {}).items():
+        canonical[key] = sorted(value, key=str) if isinstance(value, list) else value
+    return canonical
+
+
 def cache_key(
     *,
     detector: Any,
@@ -114,7 +136,7 @@ def cache_key(
         "seed": effective_seed,
         "scheme_sha256": scheme_sha256,
         "split": split,
-        "where": dict(where or {}),
+        "where": _canonical_where(where),
         "profile_sha256": profile_sha256,
         "aggregation": aggregate_mode,
         "clips_per_video": clips_per_video,
@@ -148,28 +170,39 @@ def cache_matches(
     identity: DetectorIdentity,
     scheme_sha256: str,
     split: str,
+    where: Mapping[str, Any] | None,
     profile_sha256: str,
     aggregate_mode: str,
+    clips_per_video: int,
+    labels: str,
 ) -> bool:
     """Whether a cached file's meta actually matches this request -- the cache path is already
     the request's own hash, so a mismatch would mean a hash collision or a stale/foreign file left
-    at that path by hand; either way, the honest thing is to recompute rather than trust it."""
+    at that path by hand; either way, the honest thing is to recompute rather than trust it. Checks
+    every field :func:`cache_key` itself hashed, not just the ones most likely to collide."""
     return (
         meta.detector.source == (identity.source or "unknown")
         and meta.detector.checkpoint_sha256 == identity.checkpoint_sha256
         and meta.protocol.scheme_sha256 == scheme_sha256
         and meta.protocol.split == split
+        and meta.protocol.where == _canonical_where(where)
         and meta.processing_profile is not None
         and meta.processing_profile.sha256 == profile_sha256
         and meta.aggregation is not None
         and meta.aggregation.clip_to_video == aggregate_mode
+        and meta.aggregation.clips_per_video == clips_per_video
+        and meta.labels == labels
     )
 
 
 def look_up(target: Path, **expected: Any) -> CacheHit | None:
-    """A :class:`CacheHit` for ``target`` when it exists, is a readable C5 file, and
-    :func:`cache_matches` (given ``expected``) confirms it; ``None`` otherwise -- an unreadable
-    file, one with no meta, or one whose meta does not match is never trusted."""
+    """A :class:`CacheHit` for ``target`` when it exists, is a readable C5 file,
+    :func:`cache_matches` (given ``expected``) confirms it, and its coverage has no ``error``
+    rows; ``None`` otherwise -- an unreadable file, one with no meta, one whose meta does not
+    match, or one where the detector failed on some of its videos last time is never trusted.
+    A detector error is typically transient (an OOM, a flaky device fault); the reuse rule is
+    about an identical *successful* result, so an errored cache entry is retried instead
+    (logged at info level: how many videos), not served as if it were complete."""
     try:
         existing = read_scores(target)
     except (ContractError, OSError):
@@ -177,4 +210,11 @@ def look_up(target: Path, **expected: Any) -> CacheHit | None:
     if existing.meta is None or not cache_matches(existing.meta, **expected):
         return None
     coverage = dict(existing.meta.coverage.model_dump())
+    if coverage["error"] > 0:
+        _log.info(
+            "%s: %d video(s) errored in the cached file; retrying them rather than reusing it",
+            target,
+            coverage["error"],
+        )
+        return None
     return CacheHit(target, meta_path_for(target), coverage)

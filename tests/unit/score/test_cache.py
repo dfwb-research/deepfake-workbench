@@ -202,6 +202,14 @@ def test_cache_key_ignores_where_key_order():
     assert a == b
 
 
+def test_cache_key_ignores_where_membership_list_order():
+    """Repeated ``--where key=v`` values are a set of alternatives, not a sequence: asking for
+    ``identity in {000, 002}`` in either order must give the same cache entry."""
+    a = _key(where={"identity": ["000", "002"]})
+    b = _key(where={"identity": ["002", "000"]})
+    assert a == b
+
+
 def test_cache_key_none_and_empty_where_are_the_same():
     assert _key(where=None) == _key(where={})
 
@@ -278,8 +286,11 @@ _EXPECTED = {
     "identity": DetectorIdentity("run:fp", None, None, None, True),
     "scheme_sha256": "a" * 64,
     "split": "test",
+    "where": None,
     "profile_sha256": "b" * 64,
     "aggregate_mode": "mean-prob",
+    "clips_per_video": 4,
+    "labels": "binary",
 }
 
 
@@ -354,6 +365,58 @@ def test_look_up_returns_none_on_aggregation_mismatch(tmp_path):
     csv_path, _ = _write_meta_only(tmp_path)
     mismatched = {**_EXPECTED, "aggregate_mode": "max"}
     assert look_up(csv_path, **mismatched) is None
+
+
+def test_look_up_returns_none_on_clips_per_video_mismatch(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path)
+    mismatched = {**_EXPECTED, "clips_per_video": 8}
+    assert look_up(csv_path, **mismatched) is None
+
+
+def test_look_up_returns_none_on_labels_mismatch(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path)
+    mismatched = {**_EXPECTED, "labels": "family"}
+    assert look_up(csv_path, **mismatched) is None
+
+
+def test_look_up_returns_none_on_where_mismatch(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path)
+    mismatched = {**_EXPECTED, "where": {"compression": "c23"}}
+    assert look_up(csv_path, **mismatched) is None
+
+
+def test_look_up_matches_where_up_to_membership_list_order(tmp_path):
+    csv_path, _ = _write_meta_only(
+        tmp_path, protocol={**_meta_payload()["protocol"], "where": {"identity": ["000", "002"]}}
+    )
+    expected = {**_EXPECTED, "where": {"identity": ["002", "000"]}}
+
+    hit = look_up(csv_path, **expected)
+
+    assert hit is not None
+
+
+def test_look_up_returns_none_and_logs_when_the_cached_file_has_error_rows(tmp_path, caplog):
+    import logging
+
+    from dfwb.core.records import ScoreRow
+
+    target = tmp_path / "d" / "p" / "test-abcd1234.scores.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        ScoreRow("toyfake", "REAL/r00", None, 0, 0.1, "ok"),
+        ScoreRow("toyfake", "FAKE/f00", None, 1, None, "error"),
+    ]
+    meta = ScoreMeta.model_validate(
+        _meta_payload(coverage={"expected": 2, "ok": 1, "missing": 0, "error": 1})
+    )
+    write_scores(target, rows, meta)
+
+    with caplog.at_level(logging.INFO, logger="dfwb"):
+        hit = look_up(target, **_EXPECTED)
+
+    assert hit is None
+    assert any("1 video(s) errored" in message for message in caplog.messages)
 
 
 def test_look_up_treats_a_none_source_identity_as_the_recorded_unknown(tmp_path):
