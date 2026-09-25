@@ -81,6 +81,11 @@ class Backbone(nn.Module):
         """Named groups of this backbone's own parameters, e.g. ``{"blocks.0": [...], ...}``."""
         raise NotImplementedError
 
+    def lora_module(self) -> nn.Module | None:
+        """The submodule LoRA adapters are injected into, or ``None`` when this backbone has no
+        LoRA support."""
+        return None
+
     def apply_freeze(self, freeze: FreezeSpec) -> None:
         """Set ``requires_grad`` on this backbone's own parameters; never touches other modules."""
         if freeze.mode == "none":
@@ -94,13 +99,18 @@ class Backbone(nn.Module):
         elif freeze.mode == "partial":
             self._freeze_all_but_last_blocks(freeze.trainable_blocks)
         elif freeze.mode == "lora":
-            raise ConfigError(
-                "freeze.mode: 'lora' needs a backbone with LoRA support",
-                hint=(
-                    "LoRA freezing needs a peft-enabled backbone "
-                    "(the timm/HF backbones with the peft extra installed)"
-                ),
-            )
+            module = self.lora_module()
+            if module is None:
+                raise ConfigError(
+                    "freeze.mode: 'lora' needs a backbone with LoRA support",
+                    hint=(
+                        "LoRA freezing needs a peft-enabled backbone "
+                        "(the timm/HF backbones with the peft extra installed)"
+                    ),
+                )
+            from dfwb.models.lora import apply_lora
+
+            apply_lora(module, freeze)
 
     def _freeze_all_but_norms(self) -> None:
         for p in self.parameters():

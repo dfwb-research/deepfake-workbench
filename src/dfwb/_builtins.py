@@ -70,3 +70,15 @@ def register(api: PluginAPI) -> None:
         summary="A tiny 3-block CNN backbone for CPU tests and toy training runs",
         requires=("torch",),
     )
+    api.backbones.add(
+        "timm",
+        target="dfwb.models.backbones.timm_backbone:TimmBackbone",
+        summary="Any timm image classification backbone, pooled the model's own way",
+        requires=("torch", "timm"),
+    )
+    api.backbones.add(
+        "hf-vision",
+        target="dfwb.models.backbones.hf_vision:HFVisionBackbone",
+        summary="Any Hugging Face vision transformer (CLIP, DINOv2, SigLIP 2, ...) via AutoModel",
+        requires=("torch", "transformers"),
+    )
