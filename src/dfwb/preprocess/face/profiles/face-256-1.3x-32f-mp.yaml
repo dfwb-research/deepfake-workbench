@@ -1,0 +1,9 @@
+# The permissive twin of face-256-1.3x-32f: same crop and sampling, the Apache-2.0 mediapipe
+# backend instead of insightface's non-commercial weights.
+id: face-256-1.3x-32f-mp
+backend: {name: mediapipe}
+track: {iou: 0.5, strategy: largest-then-iou}
+crop: {scale: 1.3, size: 256, square: true, align: none}
+sampling: {mode: uniform, frames: 32}
+decode: {library: pyav, color: rgb}
+extras: {landmarks: true, mesh: false, masks: false}

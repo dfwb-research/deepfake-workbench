@@ -69,7 +69,7 @@ def test_platt_reference_against_sklearn_logistic_regression_on_logits():
     assert calibration.method == "platt"
 
     x = _logit(p).reshape(-1, 1)
-    clf = LogisticRegression(penalty=None, solver="lbfgs", max_iter=5000, tol=1e-12)
+    clf = LogisticRegression(C=np.inf, solver="lbfgs", max_iter=5000, tol=1e-12)
     clf.fit(x, y)
     ref_a = clf.coef_[0, 0]
     ref_b = clf.intercept_[0]

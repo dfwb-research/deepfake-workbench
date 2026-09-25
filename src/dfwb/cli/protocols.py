@@ -1,4 +1,4 @@
-"""``dfwb protocols``: list and inspect protocol packs, schemes and their per-split counts."""
+"""``dfwb protocols``: list, inspect, verify, lint and diff protocol packs."""
 
 from __future__ import annotations
 
@@ -146,3 +146,135 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
         click.echo(f"warning: {warning}")
     click.echo(f"report written to {report_path}")
     return report.exit_code
+
+
+def _lint_issue_row(issue: Any) -> dict[str, Any]:
+    return {"severity": issue.severity, "where": issue.where, "message": issue.message}
+
+
+@protocols.command("lint")
+@click.argument("pack", type=click.Path(path_type=Path, file_okay=False, exists=True))
+@click.option(
+    "--release", is_flag=True, help="Treat an undecided dataset distribution as an error."
+)
+@json_option
+def lint(pack: Path, release: bool, as_json: bool) -> int:
+    """Check a protocol pack directory for problems a pack author needs to fix.
+
+    Re-derives every fact a pack's cards claim about themselves (scheme hashes and counts, cross
+    references between videos, splits, pairs and labels) instead of trusting them. Exits 4 if any
+    check reports an error; warnings are printed but never fail the run.
+    """
+    from dfwb.protocols.lint import lint_pack
+
+    issues = lint_pack(pack, release=release)
+
+    if as_json:
+        emit_json([_lint_issue_row(issue) for issue in issues])
+    elif not issues:
+        click.echo("no issues found")
+    else:
+        for issue in issues:
+            click.echo(f"{issue.severity}: {issue.where}: {issue.message}")
+
+    return 4 if any(issue.severity == "error" for issue in issues) else 0
+
+
+@protocols.command("new-pack")
+@click.argument("directory", type=click.Path(path_type=Path, file_okay=False))
+@click.option("--name", required=True, help="Pack distribution and registry name (lower-kebab).")
+@click.option(
+    "--author", default="Your Name", show_default=True, help="Author name for the generated files."
+)
+@json_option
+def new_pack(directory: Path, name: str, author: str, as_json: bool) -> None:
+    """Scaffold a new, dependency-free protocol pack distribution.
+
+    ``DIRECTORY`` is created if it does not exist, and must be empty if it does. The result
+    registers itself with the framework through the ``dfwb.plugins`` entry point once installed.
+    """
+    from dfwb.protocols import newpack
+
+    written = newpack.new_pack(directory, name=name, author=author)
+
+    if as_json:
+        emit_json({"directory": str(directory), "written": [str(p) for p in written]})
+    else:
+        for path in written:
+            click.echo(f"wrote {path}")
+
+
+def _scheme_diff_row(scheme_diff: Any) -> dict[str, Any]:
+    return {
+        "dataset": scheme_diff.dataset,
+        "scheme": scheme_diff.scheme,
+        "status": scheme_diff.status,
+        "added": scheme_diff.added,
+        "removed": scheme_diff.removed,
+        "moved": scheme_diff.moved,
+    }
+
+
+@protocols.command("diff")
+@click.argument("old", type=click.Path(path_type=Path, file_okay=False, exists=True))
+@click.argument("new", type=click.Path(path_type=Path, file_okay=False, exists=True))
+@click.option(
+    "--expect-bump",
+    "expect_bump",
+    type=click.Choice(["major", "minor", "patch"]),
+    default=None,
+    help="Fail unless the version change between the two pack.yaml files is at least the bump "
+    "these changes require.",
+)
+@json_option
+def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
+    """Compare two protocol pack directories and report the SemVer bump the changes require.
+
+    With ``--expect-bump``, also compares that requirement against the actual version change
+    between ``OLD/pack.yaml`` and ``NEW/pack.yaml`` (a plain SemVer component comparison, nothing
+    to do with the value passed to the option itself) and exits 4 when the actual change is
+    smaller than what the changes require -- the check a release pipeline runs before publishing.
+    """
+    from dfwb.core.records import PackCard
+    from dfwb.protocols._yaml import read_model
+    from dfwb.protocols.diff import bump_rank, diff_packs, version_bump
+
+    result = diff_packs(old, new)
+
+    exit_code = 0
+    actual_bump: str | None = None
+    if expect_bump is not None:
+        old_card = read_model(old / "pack.yaml", PackCard)
+        new_card = read_model(new / "pack.yaml", PackCard)
+        actual_bump = version_bump(old_card.version, new_card.version)
+        if bump_rank(actual_bump) < bump_rank(result.required_bump):
+            exit_code = 4
+
+    if as_json:
+        payload: dict[str, Any] = {
+            "schemes": [_scheme_diff_row(s) for s in result.schemes],
+            "labels_changed": result.labels_changed,
+            "labels_added": result.labels_added,
+            "required_bump": result.required_bump,
+        }
+        if actual_bump is not None:
+            payload["actual_bump"] = actual_bump
+        emit_json(payload)
+        return exit_code
+
+    rows = [[s.dataset, s.scheme, s.status, s.added, s.removed, s.moved] for s in result.schemes]
+    click.echo(table(["DATASET", "SCHEME", "STATUS", "ADDED", "REMOVED", "MOVED"], rows))
+    if result.labels_changed:
+        click.echo("labels changed: " + ", ".join(result.labels_changed))
+    if result.labels_added:
+        click.echo("labels added: " + ", ".join(result.labels_added))
+    click.echo(f"required bump: {result.required_bump}")
+    if actual_bump is not None:
+        click.echo(f"actual bump (pack.yaml version change): {actual_bump}")
+        if exit_code:
+            click.echo(
+                f"error: the version change is only a {actual_bump!r} bump, but these changes "
+                f"require {result.required_bump!r}",
+                err=True,
+            )
+    return exit_code

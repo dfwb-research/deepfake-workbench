@@ -3,6 +3,7 @@ from tests.unit.protocols.conftest import make_pack, register_provider_packs
 
 from dfwb.core.errors import AmbiguousKeyError, ContractError, UnknownKeyError
 from dfwb.core.records import PackCard
+from dfwb.core.registry import catalogue_requirement
 from dfwb.protocols._yaml import read_card, read_labels, read_model
 from dfwb.protocols.packs import Pack, find_dataset, installed_packs
 
@@ -122,3 +123,42 @@ def test_two_providers_registering_the_same_pack_name_is_ambiguous(tmp_path, mon
     assert info.value.hint == "uninstall one of the distributions that provide pack 'gamma'"
     with pytest.raises(AmbiguousKeyError):
         find_dataset("toyone")
+
+
+# The dataset ids the public protocol pack publishes; each should point a user at that pack.
+PUBLIC_DATASETS = (
+    "ffpp",
+    "dfd",
+    "celebdf-v1",
+    "celebdf-v2",
+    "celebdf-v3",
+    "dfdc",
+    "dfdc-p",
+    "deeperforensics",
+    "wilddeepfake",
+    "ffiw10k",
+    "kodf",
+    "dfdm",
+    "fakeavceleb",
+    "polyglotfake",
+    "deepspeak-v1",
+    "deepspeak-v2",
+    "idforge-v1",
+    "lav-df",
+    "av-deepfake1m-pp",
+    "talkingheadbench",
+    "uadfv",
+)
+
+
+def test_a_public_dataset_that_is_not_installed_suggests_the_protocols_pack(fixture_packs):
+    assert len(set(PUBLIC_DATASETS)) == 21
+    for dataset_id in PUBLIC_DATASETS:
+        assert catalogue_requirement("protocol_packs", dataset_id) == "dfwb-protocols", dataset_id
+    fixture_packs({"alpha": {"toyone": {}}})
+    with pytest.raises(UnknownKeyError) as info:
+        find_dataset("celebdf-v2")
+    assert info.value.hint == "pip install dfwb-protocols"
+    with pytest.raises(UnknownKeyError) as info:
+        find_dataset("my-own-dataset")
+    assert "pip install" not in info.value.hint

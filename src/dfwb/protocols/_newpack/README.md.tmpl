@@ -1,0 +1,28 @@
+# $name
+
+A protocol pack for the Deepfake Workbench (`dfwb`): published dataset protocols, meaning
+which videos exist, their labels, and exactly how they are split, with no runtime
+dependencies of its own. It never contains media, frames, crops, face boxes or anything
+derived from pixels.
+
+## Installing
+
+```
+pip install $name
+```
+
+Installing it registers `$name` with `dfwb` through the `dfwb.plugins` entry point; run
+`dfwb protocols list` afterwards to see what it publishes.
+
+## Adding a dataset
+
+Add a directory under `src/$import/packs/<dataset_id>/` holding `dataset.yaml`,
+`labels.yaml`, `videos.jsonl.gz`, `splits/*.tsv.gz` and `NOTICE.md`, then list
+`<dataset_id>` under `datasets:` in `src/$import/packs/pack.yaml`. Run
+`dfwb protocols lint` against the `packs` directory before committing.
+
+## Licence
+
+The loader code is MIT (see `LICENSE`); the data files are CC BY 4.0 (see `LICENSE-DATA`).
+
+Maintained by $author.
