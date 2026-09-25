@@ -41,18 +41,18 @@ from dfwb.core.hashing import canonical_json
 from dfwb.core.records.local import InventoryRecord, ProcessedRecord, ProcessingProfile, TrackStats
 from dfwb.preprocess.face.backends import FaceBackend
 from dfwb.preprocess.face.crop import crop_face, map_landmarks
-from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source
+from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source, require_library
 from dfwb.preprocess.face.identity import cluster_subject
 from dfwb.preprocess.face.sampling import sample_indices
 from dfwb.preprocess.face.store import portable_reason, recover_video_dir, video_relpath
-from dfwb.preprocess.face.track import Tracker
+from dfwb.preprocess.face.track import Tracker, check_strategy
 from dfwb.preprocess.face.types import Face
 
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-__all__ = ["check_backend", "process_video"]
+__all__ = ["check_backend", "check_profile", "process_video"]
 
 _log = logging.getLogger(__name__)
 
@@ -181,6 +181,22 @@ def check_backend(profile: ProcessingProfile, backend: FaceBackend) -> None:
             hint="use a backend that implements embed(), or choose track strategy "
             "'largest-then-iou'",
         )
+
+
+def check_profile(profile: ProcessingProfile) -> None:
+    """Refuse a ``profile`` this release or this installation cannot run, whatever the backend.
+
+    Every video would fail the same way, so a caller about to process many videos checks this
+    once, first (with :func:`check_backend`), rather than recording the same failure for each.
+
+    Raises:
+        ConfigError: the profile's track strategy is not one this release implements.
+        InstallationError: the profile's decode library is not installed, or OpenCV (which
+            writes every frame, whichever library decodes it) is not.
+    """
+    check_strategy(profile.track.strategy)
+    require_library(profile.decode.library)
+    _require_cv2()
 
 
 def process_video(

@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from dfwb.core.records.local import TrackSpec
     from dfwb.preprocess.face.types import Face
 
-__all__ = ["TrackResult", "Tracker", "select_track"]
+__all__ = ["TrackResult", "Tracker", "check_strategy", "select_track"]
 
 Box = tuple[float, float, float, float]
 
@@ -109,7 +109,7 @@ class Tracker:
         min_score: float,
         subject: npt.NDArray[Any] | None = None,
     ) -> None:
-        _check_strategy(spec.strategy)
+        check_strategy(spec.strategy)
         if subject is not None and spec.strategy != "identity-cluster":
             raise ValueError(
                 f"a subject embedding is only used by the 'identity-cluster' strategy, "
@@ -234,7 +234,15 @@ def select_track(
     return TrackResult(frames=results, identity_switch=tracker.identity_switch)
 
 
-def _check_strategy(strategy: str) -> None:
+def check_strategy(strategy: str) -> None:
+    """Refuse a track strategy this release does not implement.
+
+    :class:`Tracker` checks this when it is built; a caller about to process many videos checks
+    it once, first, so that a profile naming such a strategy stops everything before any work.
+
+    Raises:
+        ConfigError: ``strategy`` is reserved for a later release, or is not a strategy at all.
+    """
     if strategy in _STRATEGIES:
         return
     if strategy in _RESERVED_STRATEGIES:

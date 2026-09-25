@@ -139,9 +139,11 @@ class SamplingSpec(RecordModel):
     stride: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def _stride_is_set_for_stride_mode(self) -> SamplingSpec:
+    def _the_mode_has_what_it_counts_with(self) -> SamplingSpec:
         if self.mode == "stride" and self.stride is None:
             raise ValueError("sampling.stride is required when sampling.mode is 'stride'")
+        if self.mode in ("uniform", "first-consecutive") and self.frames is None:
+            raise ValueError(f"sampling.frames is required when sampling.mode is {self.mode!r}")
         return self
 
 

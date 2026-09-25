@@ -19,6 +19,7 @@ import multiprocessing
 import multiprocessing.context
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
@@ -34,7 +35,13 @@ from tests.unit.preprocess.inventory._demo import install
 from tests.unit.protocols.conftest import _dump, make_pack
 
 from dfwb.core import licenses, plugins
-from dfwb.core.errors import ConfigError, DFWBError, InstallationError, UnknownKeyError
+from dfwb.core.errors import (
+    ConfigError,
+    ContractError,
+    DFWBError,
+    InstallationError,
+    UnknownKeyError,
+)
 from dfwb.core.plugins import get_registry
 from dfwb.core.records import (
     DatasetCard,
@@ -759,6 +766,104 @@ def test_a_profile_the_backend_cannot_run_is_refused_before_any_work(env, worker
     with pytest.raises(ConfigError, match="identity-cluster"):
         _run(profile=profile, workers=workers)
     assert not (env.work / "demo" / "processed").exists()
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_a_track_strategy_this_release_lacks_is_refused_before_any_work(env, workers):
+    profile = _write_profile(
+        env.tmp, "center", track={"iou": 0.5, "strategy": "all-faces", "ema": None}
+    )
+    with pytest.raises(ConfigError, match="all-faces"):
+        _run(profile=profile, workers=workers)
+    assert not (env.work / "demo" / "processed").exists()
+
+
+def test_a_sampling_mode_without_its_frame_count_is_refused_before_any_work(env):
+    profile = _write_profile(env.tmp, "center", sampling={"mode": "uniform"})
+    with pytest.raises(ContractError, match=r"sampling\.frames"):
+        _run(profile=profile)
+    assert not (env.work / "demo" / "processed").exists()
+
+
+@pytest.fixture
+def uninstalled(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
+    """Make importing the named top-level modules fail, as on an install without them, for the
+    rest of the test."""
+
+    class _Blocker:
+        def __init__(self, names: tuple[str, ...]) -> None:
+            self.names = names
+
+        def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> None:
+            if fullname.partition(".")[0] in self.names:
+                raise ModuleNotFoundError(f"No module named {fullname!r}")
+
+    def uninstall(*names: str) -> None:
+        for name in list(sys.modules):
+            if name.partition(".")[0] in names:
+                monkeypatch.delitem(sys.modules, name)
+        monkeypatch.setattr(sys, "meta_path", [_Blocker(names), *sys.meta_path])
+
+    return uninstall
+
+
+@pytest.mark.parametrize(
+    ("library", "module", "named"), [("pyav", "av", "PyAV"), ("opencv", "cv2", "OpenCV")]
+)
+def test_a_decode_library_that_is_not_installed_is_refused_before_any_work(
+    env, uninstalled, library, module, named
+):
+    profile = _write_profile(env.tmp, "center", decode={"library": library, "color": "rgb"})
+    uninstalled(module)
+    with pytest.raises(InstallationError, match=named) as caught:
+        _run(profile=profile)
+    assert "deepfake-workbench[preprocess]" in caught.value.hint
+    assert not (env.work / "demo" / "processed").exists()
+
+
+def test_opencv_is_needed_to_write_frames_whatever_decodes_them(env, uninstalled):
+    assert load_profile(PROFILE).decode.library == "pyav"
+    uninstalled("cv2")
+    with pytest.raises(InstallationError, match="OpenCV"):
+        _run()
+    assert not (env.work / "demo" / "processed").exists()
+
+
+def _setup_errors() -> list[DFWBError]:
+    return [
+        ConfigError("the profile asks for something impossible", hint="fix the profile"),
+        InstallationError("a library the backend needs is missing", hint="install it"),
+        ContractError("a model file does not hash as expected", hint="fetch it again"),
+    ]
+
+
+@pytest.mark.parametrize("error", _setup_errors(), ids=lambda error: type(error).__name__)
+def test_a_setup_error_raised_while_processing_a_video_stops_the_run(env, monkeypatch, error):
+    # Such an error says the setup is wrong, not the video: every other video would fail the same
+    # way, so it is raised rather than recorded as the video's decode_error.
+    _failing_on(monkeypatch, lambda n, record: error if n == 2 else None)
+    with pytest.raises(type(error), match=error.message):
+        _run()
+    assert _keys(_rows(_store_path(env.work))) == [
+        ("FS_SWAP/000_001", "c23"),
+        ("FS_SWAP/001_000", "c23"),
+    ]
+
+
+@pytest.mark.parametrize("error", _setup_errors(), ids=lambda error: type(error).__name__)
+def test_a_setup_error_raised_in_a_worker_stops_a_pooled_run(env, fake_pool, monkeypatch, error):
+    # Four videos are handed out at once; the third raises. The other three finished and are
+    # recorded; the failing one is not, and the pool is shut down with the rest cancelled.
+    _failing_on(monkeypatch, lambda n, record: error if n == 2 else None)
+    with pytest.raises(type(error), match=error.message):
+        _run(workers=2)
+    assert _keys(_rows(_store_path(env.work))) == [
+        ("FS_SWAP/000_001", "c23"),
+        ("FS_SWAP/001_000", "c23"),
+        ("REAL/000", "c40"),
+    ]
+    (pool,) = fake_pool.made
+    assert pool.shutdowns == [(True, True)]
 
 
 def test_a_worker_builds_its_backend_on_its_first_video_only_and_closes_it_at_exit(

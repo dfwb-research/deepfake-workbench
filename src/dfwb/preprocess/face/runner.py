@@ -19,8 +19,11 @@ worker outright, as a crash in native decoding or inference code does, is pinned
 each video that was in flight on its own; the one that kills its worker again is recorded as
 ``decode_error`` too. Only a failure that repeats for video after video -- ten in a row -- stops
 the run, since that points at something systemic rather than at the videos. Problems of
-configuration, such as a profile needing something its backend cannot do, are checked before any
-video is tried.
+configuration and installation -- a profile needing something its backend cannot do, a track
+strategy this release does not implement, a decode library that is not installed -- are checked
+before any video is tried, and one that only shows while a video is being processed (a
+``ConfigError``, ``ContractError`` or ``InstallationError``) stops the run at once rather than
+being recorded against that video.
 
 The backend is built once in the calling process too, before any video is touched: building it
 enforces the licence acknowledgement its weights may need, its description goes into
@@ -56,7 +59,13 @@ from pathlib import Path
 from typing import Any, Final, get_args, get_type_hints
 
 from dfwb.core import licenses
-from dfwb.core.errors import ConfigError, DFWBError, did_you_mean
+from dfwb.core.errors import (
+    ConfigError,
+    ContractError,
+    DFWBError,
+    InstallationError,
+    did_you_mean,
+)
 from dfwb.core.hashing import canonical_json
 from dfwb.core.paths import (
     ResolvedRoot,
@@ -74,7 +83,7 @@ from dfwb.core.records import (
     to_video_record,
 )
 from dfwb.preprocess.face.backends import FaceBackend
-from dfwb.preprocess.face.process import check_backend, process_video
+from dfwb.preprocess.face.process import check_backend, check_profile, process_video
 from dfwb.preprocess.face.profiles import load_profile
 from dfwb.preprocess.face.store import Store, portable_reason, recover_video_dir, video_relpath
 from dfwb.preprocess.inventory.runner import get_builder, read_inventory, resolve_video_path
@@ -103,6 +112,11 @@ _CRASHED = "error: worker crashed"
 # run: a fault that repeats for every video is systemic, and trying the rest would only record
 # the same failure for each of them.
 _MAX_CONSECUTIVE_ERRORS = 10
+
+# Errors that say the setup is wrong -- the profile, the installation, a model file -- rather than
+# one video: raised while processing any video, they stop the run at once instead of being
+# recorded as that video's decode_error.
+_SETUP_ERRORS: Final = (ConfigError, ContractError, InstallationError)
 
 Key = tuple[str, str | None]
 
@@ -483,10 +497,13 @@ def _attempt(job: _Job, profile: ProcessingProfile, backend: Callable[[], FaceBa
     """Process one video, turning any exception into a ``decode_error`` outcome for it.
 
     ``backend`` returns the backend to use; building one can fail too, and that failure is the
-    video's like any other. ``KeyboardInterrupt`` and other non-``Exception`` errors propagate.
+    video's like any other. A setup error (:data:`_SETUP_ERRORS`), ``KeyboardInterrupt`` and
+    other non-``Exception`` errors propagate.
     """
     try:
         return _Outcome(process_video(job.source, job.record, profile, backend(), job.out_dir))
+    except _SETUP_ERRORS:
+        raise
     except Exception as exc:
         return _raised(job.record, exc, traceback.format_exc())
 
@@ -556,12 +573,24 @@ def _interrupted(future: Future[_Outcome]) -> bool:
     return failure is not None and not isinstance(failure, Exception)
 
 
+def _stops_the_run(future: Future[_Outcome]) -> bool:
+    """Whether a finished future's worker raised a setup error (see :data:`_SETUP_ERRORS`)."""
+    return isinstance(future.exception(), _SETUP_ERRORS)
+
+
 def _outcome_of(future: Future[_Outcome], job: _Job) -> _Outcome | None:
     """A finished, uninterrupted future's outcome, or ``None`` when its worker died and broke
-    the pool."""
+    the pool.
+
+    Raises:
+        ConfigError, ContractError, InstallationError: the worker raised it (see
+            :data:`_SETUP_ERRORS`).
+    """
     failure = future.exception()
     if isinstance(failure, BrokenProcessPool):
         return None
+    if isinstance(failure, _SETUP_ERRORS):
+        raise failure
     if failure is not None:  # the worker could not even report back
         return _raised(job.record, failure, None)
     return future.result()
@@ -574,10 +603,10 @@ def _pool_round(
     queue is empty or a worker dies; return the videos that were in flight when one died.
 
     Only a few videos per worker are handed out at a time. If anything is raised here -- an
-    interrupt, here or in a worker, or the stop after too many errors in a row -- the videos
-    already finished are recorded, every queued one is cancelled, and the pool is shut down
-    before it propagates. A video whose worker was interrupted is not recorded at all, so the
-    next run does it again.
+    interrupt, here or in a worker, a setup error from a worker, or the stop after too many errors
+    in a row -- the videos already finished are recorded, every queued one is cancelled, and the
+    pool is shut down before it propagates. A video whose worker was interrupted, or raised a
+    setup error, is not recorded at all, so the next run does it again.
     """
     pool = ProcessPoolExecutor(
         max_workers=workers,
@@ -613,7 +642,12 @@ def _pool_round(
             recorder.check()
     except BaseException:
         for future, job in pending.items():
-            if future.done() and not future.cancelled() and not _interrupted(future):
+            if (
+                future.done()
+                and not future.cancelled()
+                and not _interrupted(future)
+                and not _stops_the_run(future)
+            ):
                 outcome = _outcome_of(future, job)
                 if outcome is not None:
                     recorder.add(outcome)
@@ -753,14 +787,19 @@ def run(
         ConfigError: An argument is out of range, a ``where`` field, split or redo status is
             unknown, the protocol is another dataset's, the work root is unset, the inventory is
             missing, the dataset folder is not found, the store would land in a datasets root, or
-            the profile needs something the backend cannot do. Raised before any video is tried.
+            the profile needs something the backend cannot do or names a track strategy this
+            release does not implement. Raised before any video is tried.
         DFWBError: Ten videos in a row failed with an error; the message names the last one.
             Every row recorded before that stays in the index.
         InstallationError: The backend's weights need a licence acknowledgement that has not been
-            given (exit code 5), or the backend's extra is not installed. Raised before any video
-            is touched.
+            given (exit code 5), or the backend's extra, the profile's decode library or OpenCV
+            is not installed. Raised before any video is touched.
         UnknownKeyError: The profile or backend is unknown.
         ContractError: The profile, protocol or inventory is invalid.
+
+        A ``ConfigError``, ``ContractError`` or ``InstallationError`` raised while a video is
+        being processed stops the run too, rather than being recorded as that video's
+        ``decode_error``; every row recorded before it stays in the index.
     """
     redo_statuses = _check_redo(redo)
     shard = _check_shard(shard)
@@ -768,6 +807,7 @@ def run(
     resolved = resolve_roots() if roots is None else roots
     work_root = require_root("work", resolved)
     processing = load_profile(profile)
+    check_profile(processing)
     inventory = read_inventory(dataset_id, work_root)
     in_scope = _scope(
         dataset_id,
