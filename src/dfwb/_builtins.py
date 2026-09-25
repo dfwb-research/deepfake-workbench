@@ -41,6 +41,8 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
         "FakeAVCeleb-v1_2",
     ),
     ("polyglotfake", "polyglotfake:PolyGlotFakeBuilder", "PolyGlotFake", "PolyGlotFake"),
+    ("deepspeak-v1", "deepspeak:DeepSpeakV1Builder", "DeepSpeak v1", "DeepSpeak-v1"),
+    ("deepspeak-v2", "deepspeak:DeepSpeakV2Builder", "DeepSpeak v2", "DeepSpeak-v2"),
 )
 
 
