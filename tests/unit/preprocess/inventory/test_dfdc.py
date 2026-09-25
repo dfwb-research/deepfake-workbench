@@ -253,6 +253,7 @@ def test_dataset_card():
     assert builder.known_compressions == ()
     assert card.default_scheme == "official"
     assert card.paper is None
+    assert card.homepage == "https://ai.meta.com/datasets/dfdc/"
 
 
 def test_the_layout_names_the_metadata():
