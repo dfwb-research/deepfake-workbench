@@ -82,3 +82,39 @@ def register(api: PluginAPI) -> None:
         summary="Any Hugging Face vision transformer (CLIP, DINOv2, SigLIP 2, ...) via AutoModel",
         requires=("torch", "transformers"),
     )
+    api.temporal_pools.add(
+        "mean",
+        target="dfwb.models.pools:MeanPool",
+        summary="The mean feature over time",
+        requires=("torch",),
+    )
+    api.temporal_pools.add(
+        "max",
+        target="dfwb.models.pools:MaxPool",
+        summary="The per-channel maximum feature over time",
+        requires=("torch",),
+    )
+    api.temporal_pools.add(
+        "attention",
+        target="dfwb.models.pools:AttentionPool",
+        summary="A small learned pool: a linear score per frame, softmax-weighted over time",
+        requires=("torch",),
+    )
+    api.heads.add(
+        "linear",
+        target="dfwb.models.heads:LinearHead",
+        summary="Dropout, then a single Linear layer",
+        requires=("torch",),
+    )
+    api.heads.add(
+        "mlp",
+        target="dfwb.models.heads:MLPHead",
+        summary="Linear, an optional BatchNorm, GELU, Dropout, then a Linear output layer",
+        requires=("torch",),
+    )
+    api.detector_sources.add(
+        "run",
+        target="dfwb.models.source:load_run",
+        summary="Rebuild a detector saved by training, from its run directory",
+        requires=("torch",),
+    )

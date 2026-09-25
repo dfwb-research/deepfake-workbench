@@ -260,6 +260,17 @@
         "head": {
           "$ref": "#/$defs/ComponentSpec"
         },
+        "stem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComponentSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "temporal_pool": {
           "$ref": "#/$defs/ComponentSpec"
         }

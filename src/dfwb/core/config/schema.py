@@ -119,6 +119,7 @@ class ModelSection(ConfigModel):
     backbone: Annotated[ComponentSpec, ComponentOf("backbones")]
     temporal_pool: Annotated[ComponentSpec, ComponentOf("temporal_pools")]
     head: Annotated[ComponentSpec, ComponentOf("heads")]
+    stem: Annotated[ComponentSpec | None, ComponentOf("layers")] = None
 
 
 class RunSection(ConfigModel):
