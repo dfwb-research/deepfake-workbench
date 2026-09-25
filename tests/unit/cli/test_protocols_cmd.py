@@ -70,6 +70,28 @@ def test_list_empty(run):
     assert result.code == 0
 
 
+def test_list_and_info_work_while_other_packs_are_broken(run, monkeypatch, tmp_path):
+    toyone = make_pack(
+        tmp_path, "toyone-pack", {"toyone": {}}, builders={"toyone": write_toyone_dataset}
+    )
+    mixed = make_pack(tmp_path, "mixed", {"good": {}, "bad": {}})
+    (mixed / "bad" / "dataset.yaml").write_text("id: [\n")
+    ghost = tmp_path / "dfwb_no_such_pack_package" / "pack"
+    register_packs(monkeypatch, {"toyone-pack": toyone, "mixed": mixed, "ghost": ghost})
+
+    listed = run("protocols", "list")
+    info = run("protocols", "info", "toyone/official")
+    good = run("protocols", "info", "good")
+
+    assert listed.code == 0
+    assert "toyone/official*" in listed.out
+    assert "good/official*" in listed.out
+    assert "warning: dataset 'bad' of pack 'mixed' is broken:" in listed.err
+    assert "warning: pack 'ghost' is broken:" in listed.err
+    assert (info.code, good.code) == (0, 0)
+    assert "toyone/official" in info.out
+
+
 def test_list_human_marks_default(run, monkeypatch, tmp_path):
     _install_toyone(monkeypatch, tmp_path)
     result = run("protocols", "list")
@@ -163,6 +185,22 @@ def test_verify_cli_exit_codes_and_json(run, monkeypatch, tmp_path):
     assert data["counts"]["label_mismatch"] == 1
     assert data["exit_code"] == 4
     assert data["report_path"] == str(report_path)
+
+
+def test_verify_cli_refuses_a_work_root_inside_a_datasets_root(run, monkeypatch, tmp_path):
+    root = _install_toyone(monkeypatch, tmp_path)
+    datasets = tmp_path / "datasets"
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", str(datasets))
+    monkeypatch.setenv("DFWB_WORK_ROOT", str(datasets / "dfwb-work"))
+    inventory = tmp_path / "inventory.jsonl"
+    videos = read_jsonl(root / "toyone" / "videos.jsonl.gz", VideoRecord)
+    write_jsonl(inventory, [_inventory_record(v) for v in videos])
+
+    result = run("protocols", "verify", "toyone", "--inventory", str(inventory))
+
+    assert result.code == 2
+    assert "DFWB_WORK_ROOT" in result.err
+    assert not (datasets / "dfwb-work").exists()
 
 
 def test_verify_cli_prints_release_mismatch_warning(run, monkeypatch, tmp_path):
@@ -382,7 +420,7 @@ def test_diff_cli_prints_the_table_and_required_bump(run, tmp_path):
     assert result.code == 0
     assert "diffcli" in result.out
     assert "official" in result.out
-    assert "required bump: patch" in result.out
+    assert "required bump: none" in result.out
 
 
 def test_diff_cli_json_reports_a_moved_video_as_a_major_bump(run, tmp_path):
@@ -404,22 +442,80 @@ def test_diff_cli_json_reports_a_moved_video_as_a_major_bump(run, tmp_path):
     ]
 
 
-def test_diff_cli_expect_bump_exits_4_when_the_actual_bump_is_smaller_than_required(run, tmp_path):
+def test_diff_cli_expect_bump_exits_4_when_the_claimed_bump_is_smaller_than_required(run, tmp_path):
+    # The claim is what is checked: a moved video needs a major bump, and "minor" is not enough,
+    # whatever the pack.yaml versions say.
     old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
-    new = _write_diff_pack(tmp_path / "new", "1.1.0", _moved_rows())  # an actual 1.0.0 -> 1.1.0
+    new = _write_diff_pack(tmp_path / "new", "2.0.0", _moved_rows())
 
     result = run("protocols", "diff", str(old), str(new), "--expect-bump", "minor")
 
     assert result.code == 4
+    assert "'minor'" in result.err
+    assert "'major'" in result.err
 
 
-def test_diff_cli_expect_bump_passes_when_the_version_was_bumped_enough(run, tmp_path):
+def test_diff_cli_expect_bump_passes_when_the_claim_covers_the_changes(run, tmp_path):
     old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
-    new = _write_diff_pack(tmp_path / "new", "2.0.0", _moved_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _moved_rows())
 
     result = run("protocols", "diff", str(old), str(new), "--expect-bump", "major")
 
     assert result.code == 0
+
+
+def test_diff_cli_expect_bump_accepts_none_or_more_for_an_unchanged_pack(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.0.0", _diff_rows())
+
+    for claim in ("none", "patch", "major"):
+        result = run("protocols", "diff", str(old), str(new), "--expect-bump", claim, "--json")
+        assert result.code == 0, claim
+        data = json.loads(result.out)
+        assert (data["required_bump"], data["expected_bump"]) == ("none", claim)
+
+
+def test_diff_cli_expect_bump_accepts_pre_release_versions(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "0.1.0a1", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "0.1.0a2", _diff_rows())
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "none", "--json")
+
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert (data["required_bump"], data["actual_bump"]) == ("none", "none")
+
+
+def test_diff_cli_expect_bump_none_fails_on_a_text_change(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.0.0", _diff_rows())
+    (new / "diffcli" / "NOTICE.md").write_text("# diffcli\n\nReworded.\n")
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "none")
+
+    assert result.code == 4
+    assert "'none'" in result.err
+    assert "'patch'" in result.err
+
+
+def test_diff_cli_lists_relabelled_videos(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.0.1", _diff_rows())
+    videos = [
+        VideoRecord(v.key, v.compression, "DIFFCLI-REAL", v.method) if v.key == "FAKE/f1" else v
+        for v in read_jsonl(new / "diffcli" / "videos.jsonl.gz", VideoRecord)
+    ]
+    write_jsonl(new / "diffcli" / "videos.jsonl.gz", videos)
+
+    text = run("protocols", "diff", str(old), str(new))
+    data = json.loads(run("protocols", "diff", str(old), str(new), "--json").out)
+
+    assert "videos relabelled: 1" in text.out
+    assert "diffcli/FAKE/f1|" in text.out
+    assert "required bump: major" in text.out
+    assert data["relabelled"] == ["diffcli/FAKE/f1|"]
+    assert data["relabelled_count"] == 1
+    assert data["required_bump"] == "major"
 
 
 def test_diff_cli_expect_bump_exits_4_on_a_version_downgrade(run, tmp_path):

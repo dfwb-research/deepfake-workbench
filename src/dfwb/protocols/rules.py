@@ -218,9 +218,12 @@ class BenchmarkSpec:
         k_real_cap: Optional ceiling on the number of reals, applied after balancing.
         exclude_tasks: Tasks dropped before anything is drawn.
         seed: Seed of the single random generator every draw shares.
+        compressions: The compressions the benchmark is defined at: records of any other
+            compression (or of none) are dropped before anything is drawn, so the subset does not
+            depend on which other compressions a local copy holds. ``None``: every record.
 
     Raises:
-        ContractError: a stratum is not one of those four fields.
+        ContractError: a stratum is not one of those four fields, or ``compressions`` is empty.
     """
 
     k_fake: int
@@ -228,6 +231,7 @@ class BenchmarkSpec:
     k_real_cap: int | None = None
     exclude_tasks: tuple[str, ...] = ()
     seed: int = 0
+    compressions: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         unknown = [name for name in self.strata if name not in _STRATA_FIELDS]
@@ -235,6 +239,11 @@ class BenchmarkSpec:
             raise ContractError(
                 f"unknown benchmark stratum {unknown[0]!r}",
                 hint=f"strata are drawn from {', '.join(_STRATA_FIELDS)}",
+            )
+        if self.compressions is not None and not self.compressions:
+            raise ContractError(
+                "a benchmark's compressions must name at least one compression",
+                hint="use None to draw from every record",
             )
 
 
@@ -296,7 +305,8 @@ def assign_benchmark[R: RuleRecord](
     1. The pool is the records whose key is in ``pool_keys`` (every compression of it) -- the
        dataset's official test. ``None``, or an empty collection (an official scheme that
        publishes no test), means every record.
-    2. Records of ``spec.exclude_tasks`` are dropped.
+    2. Records of ``spec.exclude_tasks`` are dropped, and so, when ``spec.compressions`` is set,
+       are records of any other compression.
     3. ``is_real`` splits the pool into fakes and reals; each is sorted by
        ``(local key, task_rank[task], compression or "")``.
     4. Fakes: with strata, they are grouped by the tuple of their strata values (a missing value is
@@ -319,6 +329,9 @@ def assign_benchmark[R: RuleRecord](
     if spec.exclude_tasks:
         excluded = frozenset(spec.exclude_tasks)
         pool = [r for r in pool if task_of(r.key) not in excluded]
+    if spec.compressions is not None:
+        kept = frozenset(spec.compressions)
+        pool = [r for r in pool if r.compression in kept]
 
     def order(record: R) -> tuple[str, int, str]:
         return (local_key(record.key), _rank(task_rank, record.key), record.compression or "")

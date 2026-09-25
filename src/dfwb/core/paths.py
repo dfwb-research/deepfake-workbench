@@ -96,8 +96,8 @@ def current_host(env: Mapping[str, str] | None = None) -> str:
 
 
 def _split_list(value: str) -> list[str]:
-    """Split a ``os.pathsep``-separated value, dropping empty entries."""
-    return [part for part in value.split(os.pathsep) if part]
+    """Split a ``os.pathsep``-separated value, dropping empty and blank entries."""
+    return [part for part in value.split(os.pathsep) if part.strip()]
 
 
 def _dataset_env_var(dataset_id: str) -> str:
@@ -244,6 +244,13 @@ def resolve_roots(
     return resolved
 
 
+def _given(name: RootName, raw: str) -> list[str]:
+    """A flag or environment value: a list of roots for ``datasets``, else one (if not blank)."""
+    if name == "datasets":
+        return _split_list(raw)
+    return [raw] if raw.strip() else []
+
+
 def _values_of(name: RootName, raw: str | list[str]) -> list[str]:
     return raw if isinstance(raw, list) else [raw]
 
@@ -259,14 +266,15 @@ def _resolve_one(
     resolved: Mapping[RootName, ResolvedRoot],
 ) -> ResolvedRoot:
     variable = ROOT_ENV[name]
+    # A value of only empty or blank entries (``":"``) is no value: the next source decides.
     flag = flags.get(name)
-    if flag:
-        values = _split_list(str(flag)) if name == "datasets" else [str(flag)]
+    values = _given(name, str(flag)) if flag else []
+    if values:
         paths = tuple(absolute(v, cwd) for v in values)
         return ResolvedRoot(name, paths[0], "flag", f"--{name}-root", paths=paths)
     env_value = env.get(variable)
-    if env_value:
-        values = _split_list(env_value) if name == "datasets" else [env_value]
+    values = _given(name, env_value) if env_value else []
+    if values:
         paths = tuple(absolute(v, cwd) for v in values)
         return ResolvedRoot(name, paths[0], "env", variable, paths=paths)
     if name in project.host_roots:

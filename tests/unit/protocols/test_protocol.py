@@ -126,6 +126,33 @@ def test_where_rejects_unknown_fields_with_suggestion(toyone_pack):
         protocol.records(where={"attrs.nope": 1})
 
 
+@pytest.mark.parametrize("split", ["tset", ["train", "tset"], ("tset",), {"tset"}])
+def test_a_misspelt_split_is_a_config_error_with_a_suggestion(toyone_pack, split):
+    protocol = load("toyone/official")
+    with pytest.raises(ConfigError, match="did you mean 'test'") as info:
+        protocol.records(split=split)
+    assert "train, val, test, exclude" in info.value.hint
+    with pytest.raises(ConfigError, match="did you mean 'test'"):
+        protocol.pairs(split="tset")
+
+
+def test_a_split_the_scheme_does_not_assign_is_empty_not_an_error(toyone_pack):
+    assert load("toyone/all-test").records(split="val") == []
+    assert load("toyone/official").records(split="exclude") == []
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    [("REAL", "FAKE_A"), {"REAL", "FAKE_A"}, frozenset({"REAL", "FAKE_A"})],
+    ids=["tuple", "set", "frozenset"],
+)
+def test_a_where_sequence_or_set_means_membership(toyone_pack, tasks):
+    protocol = load("toyone/official")
+    as_list = protocol.records(where={"compression": "c23", "task": ["REAL", "FAKE_A"]})
+    assert as_list
+    assert protocol.records(where={"compression": "c23", "task": tasks}) == as_list
+
+
 def test_labels_mapping_and_unknown_mapping(toyone_pack):
     protocol = load("toyone/official")
 
@@ -294,3 +321,36 @@ def test_list_protocols_marks_default_and_broken(fixture_packs):
     assert len(broken_rows) == 1
     assert broken_rows[0].pack == "broken"
     assert "schema_version" in (broken_rows[0].broken or "")
+
+
+def test_a_broken_dataset_card_is_one_broken_row_not_a_failure(fixture_packs):
+    # One bad dataset.yaml never hides the other datasets of its pack, nor other packs.
+    roots = fixture_packs(
+        {"toyone-pack": {"toyone": {}}, "mixed": {"good": {}, "bad": {}}},
+        builders={"toyone-pack": {"toyone": write_toyone_dataset}},
+    )
+    (roots["mixed"] / "bad" / "dataset.yaml").write_text("id: [\n")
+
+    rows = list_protocols()
+
+    healthy = {(r.pack, r.dataset_id, r.scheme) for r in rows if r.broken is None}
+    assert ("toyone-pack", "toyone", "official") in healthy
+    assert ("mixed", "good", "official") in healthy
+    (broken,) = [r for r in rows if r.broken is not None]
+    assert (broken.pack, broken.dataset_id, broken.scheme) == ("mixed", "bad", "")
+    assert broken.version == "1.0.0"
+    assert "invalid YAML" in (broken.broken or "")
+    assert load("toyone").dataset == "toyone"
+    assert load("good").dataset == "good"
+
+
+def test_a_pre_release_pack_version_pins(tmp_path):
+    # The built-in toyfake pack is versioned with dfwb, a pre-release; a pin compares versions,
+    # so an equivalent spelling of the same version pins too.
+    protocol = load("toyfake/official", work_root=tmp_path)
+    version = protocol.pack_version
+    assert load(f"toyfake/official@{version}", work_root=tmp_path).ref == "toyfake/official"
+    assert load("toyfake/official@0.1.0a2", work_root=tmp_path).pack_version == "0.1.0a2"
+    assert load("toyfake/official@0.1.0-alpha.2", work_root=tmp_path).pack_version == "0.1.0a2"
+    with pytest.raises(ContractError, match=r"pinned @0\.1\.0a1"):
+        load("toyfake/official@0.1.0a1", work_root=tmp_path)

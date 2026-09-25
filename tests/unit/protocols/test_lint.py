@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import gzip
 import json
 from pathlib import Path
@@ -259,6 +260,81 @@ def test_undecided_distribution_warns_unless_release(tmp_path):
     assert len(release_issues) == 1
     assert release_issues[0].severity == "error"
     assert "distribution" in release_issues[0].message
+
+
+def test_an_undecided_withheld_dataset_passes_a_release_lint(tmp_path):
+    # Withholding is exactly what an undecided dataset needs: it is not published.
+    root = _write_pack(tmp_path, ["toylint"], listed=[])
+    card = PackCard.model_validate(yaml.safe_load((root / "pack.yaml").read_text()))
+    withheld = card.model_copy(update={"withheld": ["toylint"]})
+    (root / "pack.yaml").write_text(_dump(withheld.model_dump(mode="json", by_alias=True)))
+    dataset_dir = root / "toylint"
+    _dump_card(dataset_dir, read_card(dataset_dir).model_copy(update={"distribution": "undecided"}))
+
+    assert lint_pack(root, release=True) == []
+    assert lint_pack(root) == []
+
+
+def test_absolute_paths_in_videos_are_one_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    dataset_dir = root / "toylint"
+    videos = read_jsonl(dataset_dir / "videos.jsonl.gz", VideoRecord)
+    # Written by hand: the record writer itself refuses an absolute path.
+    lines = [
+        json.dumps(
+            {
+                **dataclasses.asdict(v),
+                "attrs": {"source": f"{_SLASH_HOME}luke/{v.key}.mp4"}
+                if v.key in ("REAL/r2", "FAKE_A/f1")
+                else v.attrs,
+            }
+        )
+        for v in videos
+    ]
+    with gzip.open(dataset_dir / "videos.jsonl.gz", "wt", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/videos.jsonl.gz"
+    assert "2 video row(s)" in issues[0].message
+    assert "FAKE_A/f1" in issues[0].message
+
+
+def test_a_leak_in_pairs_is_the_only_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    dataset_dir = root / "toylint"
+    pairs = [
+        PairRecord("FAKE_A/f1", "REAL/r1", f"matched on data{_SLASH_HOME}shared/list"),
+        PairRecord("FAKE_B/f2", "REAL/r2", "toy"),
+    ]
+    write_jsonl(dataset_dir / "pairs.jsonl.gz", pairs)
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/pairs.jsonl.gz"
+    assert "1 pair row(s)" in issues[0].message
+
+
+def test_a_duplicate_split_row_is_the_only_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    dataset_dir = root / "toylint"
+    card = read_card(dataset_dir)
+    rows = read_split_tsv(dataset_dir / "splits" / "official.tsv.gz")
+    # The card is rewritten from the rows, so its hash and counts still agree with the file.
+    _replace_scheme_rows(dataset_dir, card, "official", [*rows, SplitRow("REAL/r1", None, "test")])
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/splits/official.tsv.gz"
+    assert "REAL/r1" in issues[0].message
+    assert "more than once" in issues[0].message
 
 
 def test_dataset_not_listed_in_pack_yaml_is_the_only_reported_error(tmp_path):

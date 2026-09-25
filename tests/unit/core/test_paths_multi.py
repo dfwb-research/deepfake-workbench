@@ -23,6 +23,20 @@ def test_env_datasets_root_is_an_ordered_list(places, tmp_path):
     assert roots["datasets"].path == tmp_path / "a"
 
 
+@pytest.mark.parametrize("value", [":", "", "::", "  "])
+def test_a_datasets_root_of_only_empty_segments_is_unset(places, tmp_path, value):
+    cwd, user = places
+    (cwd / "dfwb.toml").write_text(f'[roots]\ndatasets = "{tmp_path}/from-project"\n')
+    for source in ({"DFWB_DATASETS_ROOT": value}, {}):
+        roots = resolve_roots(env=source, cwd=cwd, user_config=user)
+        assert roots["datasets"].paths == (tmp_path / "from-project",)
+        assert roots["datasets"].source == "project"
+    flagged = resolve_roots(flags={"datasets": value}, env={}, cwd=cwd, user_config=user)
+    assert flagged["datasets"].source == "project"
+    bare = resolve_roots(env={"DFWB_DATASETS_ROOT": value}, cwd=tmp_path, user_config=user)
+    assert (bare["datasets"].path, bare["datasets"].source) == (None, "unset")
+
+
 def test_toml_datasets_root_may_be_a_list(places):
     cwd, user = places
     (cwd / "dfwb.toml").write_text('[roots]\ndatasets = ["one", "/abs/two"]\n')
@@ -41,52 +55,54 @@ def test_host_table_overrides_the_same_file_for_this_host_only(places):
     cwd, user = places
     (cwd / "dfwb.toml").write_text(
         '[roots]\ndatasets = "/shared/ds"\nwork = "/shared/work"\n'
-        '[hosts.hades.roots]\ndatasets = ["/fast/ds", "/nfs/ds"]\n'
+        '[hosts.gpu-node-1.roots]\ndatasets = ["/fast/ds", "/nfs/ds"]\n'
         '[hosts.other.roots]\nwork = "/never"\n'
     )
-    roots = resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
+    roots = resolve_roots(env={"DFWB_HOST": "gpu-node-1"}, cwd=cwd, user_config=user)
     assert roots["datasets"].paths == (Path("/fast/ds"), Path("/nfs/ds"))
-    assert "[hosts.hades.roots]" in roots["datasets"].detail
+    assert "[hosts.gpu-node-1.roots]" in roots["datasets"].detail
     assert roots["work"].path == Path("/shared/work")
     assert roots["work"].source == "project"
 
 
 def test_user_host_table_ranks_below_project(places):
     cwd, user = places
-    user.write_text('[hosts.hades.roots]\nruns = "/u/runs"\ncache = "/u/cache"\n')
+    user.write_text('[hosts.gpu-node-1.roots]\nruns = "/u/runs"\ncache = "/u/cache"\n')
     (cwd / "dfwb.toml").write_text('[roots]\nruns = "/p/runs"\n')
-    roots = resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
+    roots = resolve_roots(env={"DFWB_HOST": "gpu-node-1"}, cwd=cwd, user_config=user)
     assert roots["runs"].path == Path("/p/runs")
     assert roots["cache"].path == Path("/u/cache")
 
 
 def test_unknown_key_in_host_table_is_an_error(places):
     cwd, user = places
-    (cwd / "dfwb.toml").write_text('[hosts.hades]\nroot = {datasets = "/x"}\n')
+    (cwd / "dfwb.toml").write_text('[hosts.gpu-node-1]\nroot = {datasets = "/x"}\n')
     with pytest.raises(ConfigError, match="did you mean 'roots'"):
-        resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
+        resolve_roots(env={"DFWB_HOST": "gpu-node-1"}, cwd=cwd, user_config=user)
 
 
 def test_host_table_that_is_not_a_table_is_an_error(places):
     cwd, user = places
-    (cwd / "dfwb.toml").write_text('[hosts]\nhades = "/x"\n')
+    (cwd / "dfwb.toml").write_text('[hosts]\ngpu-node-1 = "/x"\n')
     with pytest.raises(ConfigError) as info:
-        resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
-    assert "[hosts.hades] must be a table" in info.value.message
+        resolve_roots(env={"DFWB_HOST": "gpu-node-1"}, cwd=cwd, user_config=user)
+    assert "[hosts.gpu-node-1] must be a table" in info.value.message
     assert "[hosts.<host>.roots]" in info.value.hint
 
 
 def test_host_roots_table_errors_use_the_host_prefix(places):
     cwd, user = places
-    (cwd / "dfwb.toml").write_text('[hosts.hades.roots]\nwork = ["a", "b"]\n')
-    with pytest.raises(ConfigError, match=r"hosts\.hades\.roots\.work must be a non-empty string"):
-        resolve_roots(env={"DFWB_HOST": "hades"}, cwd=cwd, user_config=user)
+    (cwd / "dfwb.toml").write_text('[hosts.gpu-node-1.roots]\nwork = ["a", "b"]\n')
+    with pytest.raises(
+        ConfigError, match=r"hosts\.gpu-node-1\.roots\.work must be a non-empty string"
+    ):
+        resolve_roots(env={"DFWB_HOST": "gpu-node-1"}, cwd=cwd, user_config=user)
 
 
 def test_current_host_is_short_and_lower_case(monkeypatch):
     assert current_host({"DFWB_HOST": "Lab-Box"}) == "lab-box"
-    monkeypatch.setattr("socket.gethostname", lambda: "Hades.cluster.local")
-    assert current_host({}) == "hades"
+    monkeypatch.setattr("socket.gethostname", lambda: "Gpu-Node-1.cluster.local")
+    assert current_host({}) == "gpu-node-1"
 
 
 def test_work_default_warns_when_datasets_span_locations(places):
@@ -132,13 +148,14 @@ def test_locate_dataset_error_lists_the_searched_roots(places, tmp_path):
 def test_dataset_overrides_from_env_and_host_table(places, tmp_path):
     cwd, user = places
     (cwd / "dfwb.toml").write_text(
-        '[datasets]\nkodf = "/shared/KoDF"\n[hosts.hades.datasets]\ncelebdf-v2 = "/fast/CDF2"\n'
+        '[datasets]\nkodf = "/shared/KoDF"\n'
+        '[hosts.gpu-node-1.datasets]\ncelebdf-v2 = "/fast/CDF2"\n'
     )
-    env = {"DFWB_HOST": "hades", "DFWB_DATASET_KODF": str(tmp_path / "mine")}
+    env = {"DFWB_HOST": "gpu-node-1", "DFWB_DATASET_KODF": str(tmp_path / "mine")}
     found = dataset_overrides(env=env, cwd=cwd, user_config=user)
     assert found["kodf"] == (tmp_path / "mine", "env: DFWB_DATASET_KODF")
     assert found["celebdf-v2"][0] == Path("/fast/CDF2")
-    assert "[hosts.hades.datasets]" in found["celebdf-v2"][1]
+    assert "[hosts.gpu-node-1.datasets]" in found["celebdf-v2"][1]
 
 
 def test_dataset_overrides_discovers_env_only_ids(places, tmp_path):

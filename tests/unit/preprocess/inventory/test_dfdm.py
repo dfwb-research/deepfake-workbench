@@ -272,6 +272,7 @@ def test_schemes_and_benchmark():
         "benchmark": "benchmark",
     }
     assert builder.benchmark == BenchmarkSpec(k_fake=50, strata=("task",))
+    assert builder.benchmark.compressions is None  # drawn across every compression
     assert builder.pairing_rule == "target-recording"
     assert builder.pairing_fanout is None
 

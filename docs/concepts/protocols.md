@@ -20,8 +20,9 @@ Most `dfwb protocols` commands take a reference of the form:
   pack publishes the same dataset id and the plain id would be ambiguous.
 - `/<scheme>` names one of the dataset's split schemes explicitly, e.g. `ffpp/official`, instead
   of taking the dataset's default.
-- `@<pin>` pins the reference to an exact pack version (`@1.4.0`) or to a scheme's content hash,
-  given as its first six or more hex characters (`@3f9a1c2`). Score files and run configs record
+- `@<pin>` pins the reference to an exact pack version (`@1.4.0`, or a PEP 440 pre-, post- or
+  dev-release such as `@0.1.0a2`) or to a scheme's content hash, given as its first six or more
+  hex characters (`@3f9a1c2`). Score files and run configs record
   a pinned reference, so exactly what a run trained or evaluated against can be reproduced later.
 
 A few valid references:
@@ -49,15 +50,18 @@ small number of general families:
   the parts the publisher actually released (a dataset that only ships an official test set has
   no official train or validation split).
 - **an official test plus a derived train/validation carve** — the publisher's official test set
-  is kept as is, and an identity-disjoint train/validation split is carved from the rest (or, for
-  some datasets, from everything) using a seeded, deterministic rule, so no identity crosses
-  between splits.
+  is kept as is, and an identity-disjoint train/validation split is carved, using a seeded,
+  deterministic rule so no identity crosses between splits, either from every other video or,
+  for a dataset whose publisher also lists a train split, from that train split alone.
 - **a fully derived, identity-disjoint split** — used when a dataset has no official split at
   all: every video's identity decides its split, by the same seeded, deterministic rule.
 - **all-test** — every video is test. Useful for evaluating a detector on a dataset it was never
   trained on.
 - **benchmark** — a small, seeded, class-balanced subset of a dataset's test videos, for a fast
-  comparison across datasets rather than an exhaustive evaluation.
+  comparison across datasets rather than an exhaustive evaluation. A benchmark can be defined at
+  given compressions, recorded in its scheme card's parameters, so it is the same subset
+  whichever other compressions a local copy holds: the FaceForensics++ and DeepFakeDetection
+  benchmarks are defined at c23.
 
 A scheme may also be published as a *recipe* rather than a list of keys: its rule, the rule's
 parameters, and the sha256 hash the resulting split rows must match, but no key list. This lets a
@@ -102,7 +106,7 @@ exception:
 | 0 | Success | Full coverage on `verify`; no error-level issues on `lint`; a matching hash on `materialize`. |
 | 2 | Usage or configuration problem | An invalid protocol reference; `--split` names a split the scheme does not have; no local inventory to verify against. |
 | 3 | Partial coverage | `verify`: at least one requested split is missing a video. |
-| 4 | Contract or data mismatch | `verify`: a video's label or method disagrees with the pack; `lint`: at least one error-level issue; `materialize`: the rebuilt split does not hash to the published value; `diff --expect-bump`: the pack's actual version change is smaller than what the differences between the two packs require. |
+| 4 | Contract or data mismatch | `verify`: a video's label or method disagrees with the pack; `lint`: at least one error-level issue; `materialize`: the rebuilt split does not hash to the published value; `diff --expect-bump`: the bump claimed is smaller than what the differences between the two packs require (an unchanged pack requires none). |
 | 5 | A needed optional dependency is missing | Commands that need the `preprocess` extra for media probing (e.g. `dfwb inventory build --probe`) when it is not installed. |
 
 Every error prints an `error:` line describing what went wrong and a `hint:` line describing the

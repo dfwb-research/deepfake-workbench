@@ -62,8 +62,8 @@ subcommand runs, never at import; a value already set in the real environment al
 
 ```bash
 # .env
-DFWB_DATASETS_ROOT=/data/fast:/data/nfs
-DFWB_WORK_ROOT=/data/fast/dfwb-work
+DFWB_DATASETS_ROOT=/data/datasets:/nfs/datasets
+DFWB_WORK_ROOT=/data/dfwb-work
 ```
 
 `--env-file PATH` loads a specific file instead, and `--no-env-file` skips loading one entirely.

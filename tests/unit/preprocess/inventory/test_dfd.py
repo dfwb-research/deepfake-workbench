@@ -243,7 +243,8 @@ def test_schemes_and_benchmark():
         "all-test": "all-test",
         "benchmark": "benchmark",
     }
-    assert builder.benchmark == BenchmarkSpec(k_fake=100)
+    # The benchmark is defined at c23, whatever other compressions are on disk.
+    assert builder.benchmark == BenchmarkSpec(k_fake=100, compressions=("c23",))
     assert builder.pairing_rule == "target-scene"
     assert builder.pairing_fanout is None
 
