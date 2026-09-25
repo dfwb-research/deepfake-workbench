@@ -31,7 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rich             = ["rich>=13"]
-eval             = ["scipy>=1.11", "matplotlib>=3.8"]
+eval             = ["scipy>=1.11", "matplotlib>=3.8", "pyarrow>=14"]
 preprocess       = ["opencv-python-headless>=4.9", "av>=12"]
 face-insightface = ["deepfake-workbench[preprocess]", "onnxruntime>=1.17"]
 face-mediapipe   = ["deepfake-workbench[preprocess]", "mediapipe>=0.10"]
@@ -85,6 +85,7 @@ dev = [
   "scikit-learn",
   "scipy",
   "matplotlib",
+  "pyarrow",
   "pre-commit",
   "types-PyYAML",
   "av>=12",
@@ -144,8 +145,9 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# scipy is the optional `[eval]` extra; dfwb.eval imports it lazily, inside functions only.
-module = ["scipy", "scipy.*"]
+# scipy and pyarrow are the optional `[eval]` extra; dfwb.eval/dfwb.score import them lazily,
+# inside functions only.
+module = ["scipy", "scipy.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

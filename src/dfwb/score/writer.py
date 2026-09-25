@@ -1,19 +1,23 @@
 """Assembles a score file's C5 meta (``<name>.scores.meta.json``) from what the harness knows
 about a scoring run: the resolved detector, the protocol split, the chosen processing profile and
-how it was adapted, the aggregation mode, and the rows that were actually written.
+how it was adapted, the aggregation mode, and the rows that were actually written. Also writes the
+optional per-clip/per-frame dump (``--frames``, ``<name>.frames.parquet``).
 
-Kept separate from :mod:`dfwb.score.harness` so the shape of a C5 meta payload lives in one place,
-independent of how the clips were actually scored.
+Kept separate from :mod:`dfwb.score.harness` so the shape of a C5 meta payload -- and of the
+frame-level dump -- lives in one place, independent of how the clips were actually scored.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dfwb.core.errors import InstallationError
 from dfwb.core.records import ScoreMeta, ScoreRow
 from dfwb.core.records.scores import coverage_counts
+from dfwb.core.registry import install_hint
 
 if TYPE_CHECKING:
     from dfwb.core.detector import DetectorMeta
@@ -21,7 +25,7 @@ if TYPE_CHECKING:
     from dfwb.data.adapt import AdaptResult
     from dfwb.protocols.protocol import Protocol
 
-__all__ = ["assemble_meta"]
+__all__ = ["FrameRecord", "assemble_meta", "frames_path_for", "write_frames"]
 
 
 def _git_payload(cwd: Path) -> dict[str, Any] | None:
@@ -100,3 +104,65 @@ def assemble_meta(
             "created": utc_now(),
         }
     )
+
+
+# ---------------------------------------------------------------------------------- frame dump
+
+
+@dataclass(frozen=True, slots=True)
+class FrameRecord:
+    """One row of ``--frames``'s ``<name>.frames.parquet``: one clip's one frame.
+
+    ``frame_score`` is the detector's own per-frame score when it returned one
+    (``DetectorOutput.frame_scores``); detectors that score a clip as a whole (most of them) leave
+    ``frame_scores`` unset, so the clip's own ``clip_score`` is repeated for each of its frames --
+    still useful for later analysis (which frames a clip's score drew on), even though every frame
+    of that clip then reads the same value.
+    """
+
+    dataset: str
+    key: str
+    compression: str | None
+    clip_index: int
+    frame_index: int
+    frame_score: float
+    clip_score: float
+
+
+def frames_path_for(csv_path: Path) -> Path:
+    """``<name>.scores.csv`` -> ``<name>.frames.parquet``."""
+    return csv_path.with_name(csv_path.name.removesuffix(".scores.csv") + ".frames.parquet")
+
+
+def _pyarrow() -> tuple[Any, Any]:
+    try:
+        import pyarrow
+        import pyarrow.parquet
+    except ModuleNotFoundError as exc:
+        raise InstallationError(
+            "the frame-level dump (--frames) needs pyarrow, which is not installed",
+            hint=install_hint("pyarrow"),
+        ) from exc
+    return pyarrow, pyarrow.parquet
+
+
+def write_frames(path: Path, records: Sequence[FrameRecord]) -> Path:
+    """Write ``records`` as ``path`` (a parquet file): one row per clip per frame.
+
+    Raises:
+        InstallationError: pyarrow (the ``[eval]`` extra) is not installed.
+    """
+    pa, pq = _pyarrow()
+    columns = {
+        "dataset": [r.dataset for r in records],
+        "key": [r.key for r in records],
+        "compression": [r.compression for r in records],
+        "clip_index": [r.clip_index for r in records],
+        "frame_index": [r.frame_index for r in records],
+        "frame_score": [r.frame_score for r in records],
+        "clip_score": [r.clip_score for r in records],
+    }
+    table = pa.table(columns)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, path)
+    return path

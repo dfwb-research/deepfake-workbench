@@ -67,6 +67,13 @@ PROTOCOL_PACKS: tuple[tuple[str, str, str], ...] = (
     ("toyfake", "dfwb:_packs/toyfake", "Built-in synthetic toyfake protocol pack"),
 )
 
+# Eval suites shipped inside the framework, one row each:
+#   (suite name, "<package>:<file>" of its YAML, one-line summary)
+# A suite is data too: registering it locates a file and imports nothing.
+EVAL_SUITES: tuple[tuple[str, str, str], ...] = (
+    ("toyfake", "dfwb:_packs/suites/toyfake.yaml", "Built-in synthetic toyfake eval suite"),
+)
+
 # The package every built-in face backend lives in.
 _FACE_BACKENDS_PACKAGE: Final = "dfwb.preprocess.face.backends"
 
@@ -305,3 +312,5 @@ def register(api: PluginAPI) -> None:
         )
     for pack, target, summary in PROTOCOL_PACKS:
         api.protocol_packs.add(pack, target=target, summary=summary)
+    for suite, target, summary in EVAL_SUITES:
+        api.eval_suites.add(suite, target=target, summary=summary)

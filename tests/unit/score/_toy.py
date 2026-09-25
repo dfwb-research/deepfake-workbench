@@ -52,6 +52,7 @@ __all__ = [
     "DATASET",
     "PACK",
     "PROTOCOL",
+    "SUITE",
     "FakeDetector",
     "install_scoretoy_pack",
     "load_fake",
@@ -62,7 +63,17 @@ __all__ = [
 DATASET = "scoretoy"
 PACK = "scoretoy-pack"
 PROTOCOL = f"{PACK}:{DATASET}/official"
+SUITE = "scoretoy"
 N_VIDEOS = 4  # per class
+
+# Two entries, each a single video (by identity) of PROTOCOL's test split, in different groups --
+# enough to exercise "one C5 file per entry" without scoring the whole fixture pack twice over.
+_SUITE_YAML = f"""\
+name: {SUITE}
+entries:
+  - {{protocol: {PROTOCOL}, split: test, where: {{identity: r00}}, group: real}}
+  - {{protocol: {PROTOCOL}, split: test, where: {{identity: f00}}, group: fake}}
+"""
 
 
 def _dump(model: Any) -> str:
@@ -130,8 +141,12 @@ class _FakeEntryPoint:
 
 
 def install_scoretoy_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Install ``scoretoy`` and the ``fake`` detector source; returns its dataset directory."""
+    """Install ``scoretoy``, the ``fake`` detector source, and the ``scoretoy`` eval suite (two
+    single-video entries of ``PROTOCOL``'s test split); returns its dataset directory."""
     root = make_pack(tmp_path, PACK, {DATASET: {}}, builders={DATASET: write_scoretoy_dataset})
+    suites_dir = root.parent / "suites"
+    suites_dir.mkdir()
+    (suites_dir / "scoretoy.yaml").write_text(_SUITE_YAML)
     monkeypatch.syspath_prepend(str(root.parent.parent))
 
     def _register(api: Any) -> None:
@@ -140,6 +155,9 @@ def install_scoretoy_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
         )
         api.detector_sources.add(
             "fake", target="tests.unit.score._toy:load_fake", summary="fake in-memory detector"
+        )
+        api.eval_suites.add(
+            SUITE, target=f"{root.parent.name}:suites/scoretoy.yaml", summary="fixture suite"
         )
 
     real_entry_points = plugins._entry_points

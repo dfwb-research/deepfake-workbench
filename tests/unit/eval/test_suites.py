@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from dfwb.core.errors import ConfigError, ContractError
-from dfwb.eval.suites import Suite, aggregate_suite, read_suite
+from dfwb.eval.suites import Suite, aggregate_suite, list_suites, load_suite, read_suite
 
 SUITE_YAML = """
 name: demo
@@ -94,6 +94,16 @@ def test_aggregate_suite_unknown_group_raises():
     )
     with pytest.raises(ConfigError, match="no entries"):
         aggregate_suite(suite, {0: {"auc": 0.9}})
+
+
+def test_builtin_toyfake_suite_is_registered_and_loadable():
+    assert "toyfake" in list_suites()
+    suite = load_suite("toyfake")
+    assert suite.name == "toyfake"
+    protocols = {(e.protocol, e.split) for e in suite.entries}
+    assert protocols == {("toyfake/official", "test"), ("toyfake/ident-72-14-14", "test")}
+    groups = {e.group for e in suite.entries}
+    assert groups == {"in-domain", "cross"}
 
 
 def test_aggregate_suite_missing_metric_raises():

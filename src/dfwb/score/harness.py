@@ -7,40 +7,34 @@ Every video the split names gets a row: ``ok`` (scored), ``missing`` (no usable 
 Nothing is silently dropped.
 
 A detector source may set plain attributes on the ``Detector`` it returns, beyond contract C4
-(``meta``, ``to()``, ``predict()``): ``checkpoint_sha256`` (the sha256 of the exact weights file
-scored), ``training_seed`` (the seed it was trained with), ``fingerprint_extra`` (a source-owned
-string that stands in for ``meta.source`` in the cache key, for a source whose ``meta.source`` is
-not a reliable identity on its own) and ``cacheable`` (``bool``, default ``True`` when unset --
-``False`` means an existing file at this detector's cache path is never trusted, no matter how
-recently it was written; :func:`score` always recomputes and overwrites it instead). None is
-required -- read with ``getattr(detector, "checkpoint_sha256", None)`` -- but when present they
-sharpen the C5 meta and the cache key beyond what ``meta.source`` alone can
-(:mod:`dfwb.models.source`'s ``run:`` sets the first two; :func:`dfwb.score.sources.load_py`'s
-``py:`` sets the third always, and the fourth when it cannot tell whether its own source has
-changed since the last load).
+(``meta``, ``to()``, ``predict()``) -- see :mod:`dfwb.score.cache` for what they are and how the
+cache uses them; :func:`score` reuses a cached file already sitting at its own output path unless
+``force`` is given or the detector itself says it is not cacheable.
+
+``frames=True`` also writes ``<name>.frames.parquet`` (the ``[eval]`` extra: pyarrow; skipped,
+with a log message, when it is not installed): one row per clip per frame actually scored, so a
+cache hit -- which scores nothing -- never produces one.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from dfwb.core.detector import InputSpec
-from dfwb.core.errors import ConfigError, ContractError, did_you_mean
-from dfwb.core.hashing import fingerprint
+from dfwb.core.errors import ConfigError, InstallationError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
-from dfwb.core.records import ScoreRow, read_scores, write_scores
-from dfwb.core.records.scores import ScoreMeta, meta_path_for
+from dfwb.core.records import ScoreRow, write_scores
 from dfwb.data.index import SourceSpec, VideoIndex
 from dfwb.eval.aggregate import aggregate as aggregate_scores
 from dfwb.protocols.protocol import Protocol
 from dfwb.protocols.protocol import load as load_protocol
+from dfwb.score.cache import DetectorIdentity, cache_key, look_up, score_path
 from dfwb.score.sources import resolve_detector
-from dfwb.score.writer import assemble_meta
+from dfwb.score.writer import FrameRecord, assemble_meta, frames_path_for, write_frames
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -54,7 +48,6 @@ _log = logging.getLogger(__name__)
 
 VideoKey = tuple[str, str, str | None]  # (dataset, key, compression)
 
-_SLUG = re.compile(r"[^a-z0-9]+")
 _SCORES_SUBDIR = "scores"
 _PRECISIONS = ("fp16", "bf16", "fp32")
 _AGGREGATE_MODES = ("mean-prob", "mean-logit", "max", "median")
@@ -62,16 +55,17 @@ _AGGREGATE_MODES = ("mean-prob", "mean-logit", "max", "median")
 
 @dataclass(frozen=True)
 class ScoreResult:
-    """What one call to :func:`score` produced."""
+    """What one call to :func:`score` produced.
+
+    ``frames_path`` is set only when ``frames=True`` was given, the run actually scored some
+    clips (not a cache hit) and pyarrow is installed; otherwise it is ``None``.
+    """
 
     csv_path: Path
     meta_path: Path
     coverage: dict[str, int]
     cached: bool
-
-
-def _slug(text: str) -> str:
-    return _SLUG.sub("-", text.strip().lower()).strip("-") or "x"
+    frames_path: Path | None = None
 
 
 def _check_choice(value: str, allowed: Sequence[str], *, name: str) -> None:
@@ -196,6 +190,42 @@ def _validated_scores(output: Any, batch_size: int) -> Tensor:
     return score
 
 
+def _frame_records(
+    batch: Any, keys: Sequence[VideoKey], scores: Sequence[float], output: Any
+) -> list[FrameRecord]:
+    """One :class:`~dfwb.score.writer.FrameRecord` per clip per frame of a successfully scored
+    batch. ``output.frame_scores`` (``[B, T]``) is used when the detector set it; a detector that
+    scores a clip as a whole (``frame_scores`` left ``None``) has its clip score repeated across
+    the clip's own frames instead, so every clip still contributes a row per frame it drew on."""
+    frame_scores = getattr(output, "frame_scores", None)
+    per_clip_frame_scores = (
+        frame_scores.detach().float().cpu().tolist() if frame_scores is not None else None
+    )
+    records: list[FrameRecord] = []
+    for i, key in enumerate(keys):
+        dataset, video_key, compression = key
+        clip_index = int(batch.clip_index[i].item())
+        frame_indices = batch.frame_indices[i].tolist()
+        per_frame = (
+            per_clip_frame_scores[i]
+            if per_clip_frame_scores is not None
+            else [scores[i]] * len(frame_indices)
+        )
+        for frame_index, frame_score in zip(frame_indices, per_frame, strict=True):
+            records.append(
+                FrameRecord(
+                    dataset=dataset,
+                    key=video_key,
+                    compression=compression,
+                    clip_index=clip_index,
+                    frame_index=int(frame_index),
+                    frame_score=float(frame_score),
+                    clip_score=scores[i],
+                )
+            )
+    return records
+
+
 def _score_videos(
     detector: Any,
     dataset: Any,
@@ -203,14 +233,17 @@ def _score_videos(
     batch_size: int,
     device: str,
     precision: str | None,
-) -> tuple[dict[VideoKey, list[float]], dict[VideoKey, str]]:
+    collect_frames: bool = False,
+) -> tuple[dict[VideoKey, list[float]], dict[VideoKey, str], list[FrameRecord]]:
     """Score every clip of ``dataset`` and group it by video.
 
-    Returns ``(clip_scores, errored)``: ``clip_scores`` maps a video key to its clip scores
-    (``ok``); ``errored`` maps a video key to why its batch failed. A video's clips never split
-    across two batches (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one
-    of the two. ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to
-    training and validation batches only, never a scoring one.
+    Returns ``(clip_scores, errored, frame_records)``: ``clip_scores`` maps a video key to its
+    clip scores (``ok``); ``errored`` maps a video key to why its batch failed; ``frame_records``
+    is every scored clip's per-frame record (see :func:`_frame_records`), collected only when
+    ``collect_frames`` is true. A video's clips never split across two batches
+    (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one of the two.
+    ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to training and
+    validation batches only, never a scoring one.
     """
     import torch
     from torch.utils.data import DataLoader
@@ -231,6 +264,7 @@ def _score_videos(
 
     clip_scores: dict[VideoKey, list[float]] = {}
     errored: dict[VideoKey, str] = {}
+    frame_records: list[FrameRecord] = []
     for batch in loader:
         keys: list[VideoKey] = [
             (batch.dataset_ids[i], batch.keys[i], batch.compressions[i])
@@ -256,7 +290,9 @@ def _score_videos(
             continue
         for key, value in zip(keys, scores, strict=True):
             clip_scores.setdefault(key, []).append(float(value))
-    return clip_scores, errored
+        if collect_frames:
+            frame_records.extend(_frame_records(batch, keys, scores, output))
+    return clip_scores, errored, frame_records
 
 
 def _rows_from_results(
@@ -345,119 +381,6 @@ def _missing_rows(
     return rows
 
 
-# ------------------------------------------------------------------------------- detector identity
-
-
-@dataclass(frozen=True)
-class _DetectorIdentity:
-    """What names a detector's exact weights, read duck-typed off whatever
-    :func:`~dfwb.score.sources.resolve_detector` returned (see the module docstring)."""
-
-    source: str | None
-    checkpoint_sha256: str | None
-    training_seed: int | None
-    fingerprint_extra: str | None
-    cacheable: bool
-
-    @classmethod
-    def of(cls, detector: Any) -> _DetectorIdentity:
-        return cls(
-            source=detector.meta.source,
-            checkpoint_sha256=getattr(detector, "checkpoint_sha256", None),
-            training_seed=getattr(detector, "training_seed", None),
-            fingerprint_extra=getattr(detector, "fingerprint_extra", None),
-            cacheable=getattr(detector, "cacheable", True),
-        )
-
-    def effective_seed(self, requested_seed: int) -> int:
-        """The seed C5 records: the detector's own training seed when it has one, else whatever
-        :func:`score` was called with."""
-        return self.training_seed if self.training_seed is not None else requested_seed
-
-
-def _fingerprint_payload(detector: Any, identity: _DetectorIdentity) -> dict[str, Any]:
-    meta = detector.meta
-    return {
-        "name": meta.name,
-        "version": meta.version,
-        "source": identity.source,
-        "contract_version": list(meta.contract_version),
-        "checkpoint_sha256": identity.checkpoint_sha256,
-        "fingerprint_extra": identity.fingerprint_extra,
-    }
-
-
-# -------------------------------------------------------------------------------------- output path
-
-
-def _cache_key(
-    *,
-    detector: Any,
-    identity: _DetectorIdentity,
-    effective_seed: int,
-    scheme_sha256: str,
-    split: str,
-    where: Mapping[str, Any] | None,
-    profile_sha256: str,
-    aggregate_mode: str,
-    clips_per_video: int,
-    labels: str,
-) -> str:
-    payload = {
-        "detector": _fingerprint_payload(detector, identity),
-        "seed": effective_seed,
-        "scheme_sha256": scheme_sha256,
-        "split": split,
-        "where": dict(where or {}),
-        "profile_sha256": profile_sha256,
-        "aggregation": aggregate_mode,
-        "clips_per_video": clips_per_video,
-        "labels": labels,
-    }
-    return fingerprint(payload)
-
-
-def _score_path(
-    out_root: Path, *, detector_name: str, protocol_ref: str, split: str, key: str
-) -> Path:
-    return out_root / _slug(detector_name) / _slug(protocol_ref) / f"{split}-{key[:8]}.scores.csv"
-
-
-def _cache_matches(
-    meta: ScoreMeta,
-    *,
-    identity: _DetectorIdentity,
-    scheme_sha256: str,
-    split: str,
-    profile_sha256: str,
-    aggregate_mode: str,
-) -> bool:
-    """Whether a cached file's meta actually matches this request -- the cache path is already
-    the request's own hash, so a mismatch would mean a hash collision or a stale/foreign file left
-    at that path by hand; either way, the honest thing is to recompute rather than trust it."""
-    return (
-        meta.detector.source == (identity.source or "unknown")
-        and meta.detector.checkpoint_sha256 == identity.checkpoint_sha256
-        and meta.protocol.scheme_sha256 == scheme_sha256
-        and meta.protocol.split == split
-        and meta.processing_profile is not None
-        and meta.processing_profile.sha256 == profile_sha256
-        and meta.aggregation is not None
-        and meta.aggregation.clip_to_video == aggregate_mode
-    )
-
-
-def _cached_result(target: Path, **expected: Any) -> ScoreResult | None:
-    try:
-        existing = read_scores(target)
-    except (ContractError, OSError):
-        return None
-    if existing.meta is None or not _cache_matches(existing.meta, **expected):
-        return None
-    coverage = dict(existing.meta.coverage.model_dump())
-    return ScoreResult(target, meta_path_for(target), coverage, True)
-
-
 # -------------------------------------------------------------------------------------------- API
 
 
@@ -478,17 +401,21 @@ def score(
     out: Path | None = None,
     force: bool = False,
     seed: int = 0,
+    frames: bool = False,
 ) -> ScoreResult:
     """Score every video of ``protocol``'s ``split`` with the detector named by ``detector_uri``.
 
     Resolves the detector (:func:`~dfwb.score.sources.resolve_detector`), chooses a processing
     profile and adapts stored clips to the detector's input, then -- unless an identical, still
-    valid score file already exists at the cache path and ``force`` is ``False``, and the detector
-    itself is cacheable (``getattr(detector, "cacheable", True)``) -- scores every clip under
-    ``torch.inference_mode()``, aggregates clip scores to one score per video, and writes a C5
-    score file. Every video of the split gets a row: ``ok``, ``missing`` (no usable processed
-    clip), or ``error`` (the detector raised while scoring it, or returned an output that fails
-    validation).
+    valid score file already exists at the cache path (:mod:`dfwb.score.cache`) and ``force`` is
+    ``False``, and the detector itself is cacheable (``getattr(detector, "cacheable", True)``) --
+    scores every clip under ``torch.inference_mode()``, aggregates clip scores to one score per
+    video, and writes a C5 score file. Every video of the split gets a row: ``ok``, ``missing``
+    (no usable processed clip), or ``error`` (the detector raised while scoring it, or returned an
+    output that fails validation).
+
+    ``frames=True`` additionally writes ``<name>.frames.parquet`` when clips were actually scored
+    (never on a cache hit, which scores nothing); see :attr:`ScoreResult.frames_path`.
 
     Raises:
         ConfigError: ``precision``/``aggregate`` is not one of the values below, or no local
@@ -506,7 +433,7 @@ def score(
 
     detector = resolve_detector(detector_uri)
     spec: InputSpec = detector.meta.input
-    identity = _DetectorIdentity.of(detector)
+    identity = DetectorIdentity.of(detector)
     effective_seed = identity.effective_seed(seed)
 
     roots = resolve_roots()
@@ -527,7 +454,7 @@ def score(
     # work (joining the split with the store, building a dataset, running the detector).
     out_root = Path(out) if out is not None else require_root("runs", roots) / _SCORES_SUBDIR
     profile_sha256 = chosen_profile.sha256()
-    key = _cache_key(
+    key = cache_key(
         detector=detector,
         identity=identity,
         effective_seed=effective_seed,
@@ -539,7 +466,7 @@ def score(
         clips_per_video=clips_per_video,
         labels=labels,
     )
-    target = _score_path(
+    target = score_path(
         out_root,
         detector_name=detector.meta.name,
         protocol_ref=loaded_protocol.ref,
@@ -547,7 +474,7 @@ def score(
         key=key,
     )
     if not force and identity.cacheable and target.is_file():
-        cached = _cached_result(
+        hit = look_up(
             target,
             identity=identity,
             scheme_sha256=loaded_protocol.sha256,
@@ -555,8 +482,8 @@ def score(
             profile_sha256=profile_sha256,
             aggregate_mode=aggregate,
         )
-        if cached is not None:
-            return cached
+        if hit is not None:
+            return ScoreResult(hit.csv_path, hit.meta_path, hit.coverage, True)
 
     index = VideoIndex.build(
         [SourceSpec(protocol, split, where)],
@@ -570,8 +497,13 @@ def score(
         index, clip_spec, train=False, transform=None, adapt_chain=adaptation.chain, seed=seed
     )
 
-    clip_scores, errored = _score_videos(
-        detector, dataset, batch_size=batch_size, device=device, precision=precision
+    clip_scores, errored, frame_records = _score_videos(
+        detector,
+        dataset,
+        batch_size=batch_size,
+        device=device,
+        precision=precision,
+        collect_frames=frames,
     )
     rows = _rows_from_results(
         index, clip_scores, errored, aggregate_mode=aggregate, frames_per_clip=spec.frames
@@ -601,4 +533,14 @@ def score(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     csv_path, meta_path = write_scores(target, rows, meta)
-    return ScoreResult(csv_path, meta_path, dict(meta.coverage.model_dump()), False)
+
+    frames_result_path: Path | None = None
+    if frames and frame_records:
+        try:
+            frames_result_path = write_frames(frames_path_for(csv_path), frame_records)
+        except InstallationError as exc:
+            _log.warning("--frames: %s (%s); skipping the frame-level dump", exc.message, exc.hint)
+
+    return ScoreResult(
+        csv_path, meta_path, dict(meta.coverage.model_dump()), False, frames_result_path
+    )

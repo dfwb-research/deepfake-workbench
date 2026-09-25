@@ -1,0 +1,12 @@
+name: toyfake
+description: >-
+  The framework's own smoke-test suite, built entirely from the synthetic toyfake pack: an
+  in-domain entry (the official test split) plus a second entry on the identity-disjoint split,
+  standing in for a genuine cross-dataset entry until a protocol pack that ships several real
+  datasets defines a suite of its own.
+entries:
+  - {protocol: toyfake/official, split: test, group: in-domain}
+  - {protocol: toyfake/ident-72-14-14, split: test, group: cross}
+aggregates:
+  - {group: in-domain, metric: auc, how: mean}
+  - {group: cross, metric: auc, how: mean}

@@ -86,6 +86,7 @@ TORCH_FREE_COMMANDS = [
     ["schema", "export", "c3"],
     ["schema", "export", "c4"],
     ["schema", "export", "c5"],
+    ["score", "--help"],
     ["train", "--help"],
     ["runs", "--help"],
     ["runs", "list"],

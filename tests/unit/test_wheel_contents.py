@@ -47,6 +47,8 @@ def test_wheel_ships_the_built_in_pack_the_newpack_templates_and_the_catalogue(t
         rel = path.relative_to(SRC).as_posix()
         assert f"dfwb/{rel}" in names, f"missing from wheel: dfwb/{rel}"
 
+    assert "dfwb/_packs/suites/toyfake.yaml" in names
+
     templates = sorted((SRC / "protocols" / "_newpack").glob("*.tmpl"))
     assert templates  # the new-pack scaffold must ship at least one template
     for template in templates:
