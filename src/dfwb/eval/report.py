@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from dfwb.core.errors import ConfigError
 from dfwb.core.records import ScoreFile, ScoreMeta, ScoreRow, read_scores
@@ -24,6 +24,16 @@ from dfwb.eval.suites import Suite, aggregate_suite, load_suite
 __all__ = ["EvalResult", "evaluate"]
 
 _Identity = tuple[str, str, str, tuple[tuple[str, Any], ...]]
+
+
+class MetricEntry(TypedDict):
+    """One metric's row: its point estimate, always present, and its bootstrap CI -- ``None``
+    for both bounds when ``bootstrap=0`` asked for no interval (see
+    :func:`~dfwb.eval.bootstrap.bootstrap_ci`)."""
+
+    value: float
+    ci_lo: float | None
+    ci_hi: float | None
 
 
 @dataclass(frozen=True)
@@ -69,8 +79,11 @@ def _identity(meta: ScoreMeta) -> _Identity:
 
 
 def _metric_table(
-    metrics: Sequence[str], values: dict[str, float], lo: dict[str, float], hi: dict[str, float]
-) -> dict[str, dict[str, float]]:
+    metrics: Sequence[str],
+    values: dict[str, float],
+    lo: dict[str, float | None],
+    hi: dict[str, float | None],
+) -> dict[str, MetricEntry]:
     return {m: {"value": values[m], "ci_lo": lo[m], "ci_hi": hi[m]} for m in values}
 
 
@@ -82,10 +95,13 @@ def _score_metrics(
     n_boot: int,
     seed: int,
     skip_undefined: bool,
-) -> dict[str, dict[str, float]]:
+) -> dict[str, MetricEntry]:
+    """``{metric: {value, ci_lo, ci_hi}}`` for every metric; ``ci_lo``/``ci_hi`` are ``None``
+    when ``n_boot == 0`` was asked for (no confidence interval, value only -- see
+    :func:`~dfwb.eval.bootstrap.bootstrap_ci`)."""
     values: dict[str, float] = {}
-    lo: dict[str, float] = {}
-    hi: dict[str, float] = {}
+    lo: dict[str, float | None] = {}
+    hi: dict[str, float | None] = {}
     for metric in metrics:
         try:
             result = bootstrap_ci(metric, y, p, n_boot=n_boot, seed=seed)
@@ -232,8 +248,10 @@ def evaluate(
     ``missing``/``error``, always over every row, unaffected by ``missing``), ``n`` (how many rows
     were actually fed to the metric once ``missing`` was applied -- equal to ``ok`` for
     ``"exclude"``, to every row for the other three policies), and every metric's point estimate
-    with its stratified-bootstrap CI. ``exit_code`` is ``3`` (never raised as an exception -- the
-    tables are still built and returned) when any file's coverage is below ``min_coverage``.
+    with its stratified-bootstrap CI (``bootstrap=0`` means no CI: ``ci_lo``/``ci_hi`` are
+    ``None``, the point estimate is still reported). ``exit_code`` is ``3`` (never raised as an
+    exception -- the tables are still built and returned) when any file's coverage is below
+    ``min_coverage``.
 
     ``by`` additionally breaks each file down by ``"method"``, ``"compression"``, ``"label_key"``
     or ``"family"`` (see :func:`~dfwb.eval.breakdown.group_rows`). For the three fake-side

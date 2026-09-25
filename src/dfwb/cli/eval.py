@@ -81,7 +81,9 @@ def _metric_cells(row: dict[str, Any], metrics: Sequence[str], *, latex: bool) -
             cells.append("")
             continue
         value, lo, hi = info["value"], info["ci_lo"], info["ci_hi"]
-        if latex:
+        if lo is None or hi is None:  # --bootstrap 0: a value, but no confidence interval
+            cells.append(f"${value:.4f}$" if latex else f"{value:.4f}")
+        elif latex:
             half_width = (hi - lo) / 2
             cells.append(f"${value:.4f} \\pm {half_width:.4f}$")
         else:

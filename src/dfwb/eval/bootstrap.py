@@ -33,11 +33,12 @@ IndexArray = NDArray[np.intp]
 
 @dataclass(frozen=True)
 class BootstrapResult:
-    """A point estimate plus its percentile bootstrap confidence interval."""
+    """A point estimate, plus its percentile bootstrap confidence interval -- or, when
+    ``n_boot == 0`` was asked for (no resampling, no interval), ``lo``/``hi`` of ``None``."""
 
     point: float
-    lo: float
-    hi: float
+    lo: float | None
+    hi: float | None
     n_boot: int
     seed: int
     alpha: float
@@ -122,7 +123,11 @@ def bootstrap_ci(
     Args:
         metric: A metric spec understood by :func:`~dfwb.eval.metrics.compute`, e.g. ``"auc"`` or
             ``"tpr@fpr=0.01"``.
-        n_boot: Number of resamples.
+        n_boot: Number of resamples; ``0`` means "no confidence interval": the point estimate is
+            still computed and returned, ``lo``/``hi`` are ``None``, and no resampling happens at
+            all (no generator draws, so a later, positive ``n_boot`` at the same ``seed`` is not
+            "the first ``n_boot`` resamples of a longer run" -- there is no notion of a shared
+            prefix between two different ``n_boot`` values to begin with).
         seed: Seed for the resampling generator.
         alpha: The CI is the ``[alpha/2, 1 - alpha/2]`` percentile interval (default: 95%).
 
@@ -131,6 +136,8 @@ def bootstrap_ci(
             them, from the point estimate on the unresampled data.
     """
     point = compute(metric, y, p)
+    if n_boot == 0:
+        return BootstrapResult(point=point, lo=None, hi=None, n_boot=0, seed=seed, alpha=alpha)
     name, params = parse_metric_spec(metric)
     rng = np.random.default_rng(seed)
     values = np.empty(n_boot, dtype=np.float64)

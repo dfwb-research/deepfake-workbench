@@ -39,6 +39,32 @@ def test_eval_bare_json(run, score_file):
     assert "input_files" in data
 
 
+def test_eval_bare_bootstrap_zero_reports_the_value_with_a_null_interval(run, score_file):
+    result = run("eval", str(score_file), "--metrics", "auc", "--bootstrap", "0", "--json")
+    assert result.code == 0
+    data = json.loads(result.out)
+    metric = data["tables"]["files"][0]["metrics"]["auc"]
+    assert metric["value"] > 0.5
+    assert metric["ci_lo"] is None
+    assert metric["ci_hi"] is None
+
+
+def test_eval_bare_bootstrap_zero_plain_table_shows_the_value_only(run, score_file):
+    result = run("eval", str(score_file), "--metrics", "auc", "--bootstrap", "0")
+    assert result.code == 0
+    assert "[" not in result.out  # no "[lo, hi]" interval rendered
+    assert "auc" in result.out.lower()
+
+
+def test_eval_bare_bootstrap_zero_latex_has_no_pm_term(run, score_file):
+    result = run(
+        "eval", str(score_file), "--metrics", "auc", "--bootstrap", "0", "--format", "latex"
+    )
+    assert result.code == 0
+    assert "\\pm" not in result.out
+    assert "\\toprule" in result.out
+
+
 def test_eval_bare_low_coverage_exits_3(run, tmp_path):
     from dfwb.core.records import ScoreRow
 

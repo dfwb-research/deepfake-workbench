@@ -67,6 +67,22 @@ def test_bootstrap_ci_covers_the_point_estimate():
     assert result.lo <= result.point <= result.hi
 
 
+def test_bootstrap_ci_zero_reports_the_value_without_an_interval():
+    """``n_boot=0`` means "no confidence interval": the point estimate is still computed, no
+    resampling happens at all, and ``lo``/``hi`` are ``None`` rather than the empty-array
+    ``np.quantile`` crash a naive "just skip the loop, keep the same quantile call" fix would
+    still hit."""
+    rng = np.random.default_rng(5)
+    y, p = _synthetic(20, rng)
+
+    result = bootstrap_ci("auc", y, p, n_boot=0, seed=0)
+
+    assert result.point == pytest.approx(compute("auc", y, p))
+    assert result.lo is None
+    assert result.hi is None
+    assert result.n_boot == 0
+
+
 def test_summarize_seeds_mean_and_sd():
     summary = summarize_seeds("auc", {0: 0.8, 1: 0.9, 2: 1.0})
     assert summary.seeds == (0, 1, 2)
