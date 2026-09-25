@@ -6,11 +6,14 @@ A store is one directory per hashed profile, holding:
   produced its faces;
 - ``index.jsonl``, one line appended per processed video, so a run that stops partway through and
   resumes later only has to redo the videos whose last row is not ``ok``;
+- ``index.shard-<i>-of-<n>.jsonl``, the same, for one shard of a sharded run (see ``shard=`` on
+  :class:`Store`); :func:`~dfwb.preprocess.face.shard.merge` folds every one of these, and any
+  ``index.jsonl``, back into a single ``index.jsonl``;
 - one output directory per video, ``<key>/<compression or "_">/`` (keys carry a ``/``, so this
   nests one directory per task inside one per dataset), holding its frames and ``clip.json``.
 
 Nothing here decodes a video or writes a frame -- that is :mod:`dfwb.preprocess.face.process`.
-This module only owns the directory layout and the two files that describe it, and the rule that
+This module only owns the directory layout and the files that describe it, and the rule that
 nothing is ever written under a datasets root: raw data is read-only.
 """
 
@@ -32,16 +35,38 @@ from dfwb.core.paths import ResolvedRoot, RootName, resolve_roots
 from dfwb.core.records.io import read_jsonl
 from dfwb.core.records.local import ProcessedRecord, ProcessingProfile
 
-__all__ = ["Store", "recover_video_dir", "video_relpath"]
+__all__ = [
+    "INDEX_FILE",
+    "Store",
+    "parse_shard_filename",
+    "recover_video_dir",
+    "shard_index_filename",
+    "video_relpath",
+]
 
 _log = logging.getLogger(__name__)
 
-_INDEX_FILE = "index.jsonl"
+INDEX_FILE = "index.jsonl"
 _PROFILE_FILE = "profile.json"
 _TMP_SUFFIX = re.compile(r"\.tmp-\d+$")
 _OLD_SUFFIX = re.compile(r"\.old-\d+$")
+_SHARD_FILE = re.compile(r"^index\.shard-(\d+)-of-(\d+)\.jsonl$")
 
 Key = tuple[str, str | None]
+
+
+def shard_index_filename(index: int, count: int) -> str:
+    """The file a sharded run (``shard=(index, count)``) appends to instead of
+    :data:`INDEX_FILE`: ``index.shard-<index>-of-<count>.jsonl``."""
+    return f"index.shard-{index}-of-{count}.jsonl"
+
+
+def parse_shard_filename(name: str) -> tuple[int, int] | None:
+    """``(index, count)`` from a shard index file's name, or ``None`` if ``name`` is not one."""
+    match = _SHARD_FILE.match(name)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def video_relpath(key: str, compression: str | None) -> str:
@@ -133,6 +158,12 @@ class Store:
         roots: Resolved roots to check ``root`` against (default:
             :func:`~dfwb.core.paths.resolve_roots`). Passing this in lets a caller check a store
             root without touching the real environment or config files.
+        shard: ``(index, count)`` when this store belongs to one shard of a sharded run: it then
+            appends to its own :func:`shard_index_filename` instead of :data:`INDEX_FILE`, and
+            :meth:`records`/:meth:`done_keys` read the union of that file and any ``index.jsonl``
+            (the last-merged state), the latest row per video winning -- never another shard's
+            file, which a concurrent machine may still be writing. ``None`` (the default) is an
+            ordinary, unsharded store.
 
     Raises:
         ConfigError: ``root`` is inside a datasets root.
@@ -144,17 +175,29 @@ class Store:
         profile: ProcessingProfile,
         *,
         roots: Mapping[RootName, ResolvedRoot] | None = None,
+        shard: tuple[int, int] | None = None,
     ) -> None:
         resolved = resolve_roots() if roots is None else roots
         datasets = resolved.get("datasets")
         _check_outside_datasets_roots(root, datasets.paths if datasets is not None else ())
         self.root = root
         self.profile = profile
+        self.shard = shard
 
     @property
     def index_path(self) -> Path:
-        """``<root>/index.jsonl``."""
-        return self.root / _INDEX_FILE
+        """The file this store appends to: ``<root>/index.jsonl``, or, when sharded,
+        ``<root>/index.shard-<index>-of-<count>.jsonl``."""
+        if self.shard is None:
+            return self.root / INDEX_FILE
+        index, count = self.shard
+        return self.root / shard_index_filename(index, count)
+
+    def _read_paths(self) -> tuple[Path, ...]:
+        """Every index file :meth:`records` combines: the merged index, plus, when sharded, this
+        shard's own file (never another shard's)."""
+        merged = self.root / INDEX_FILE
+        return (merged, self.index_path) if self.shard is not None else (merged,)
 
     def video_dir(self, record: ProcessedRecord) -> Path:
         """``<root>/<key>/<compression or "_">/``, the directory ``record`` is (or would be)
@@ -162,7 +205,8 @@ class Store:
         return self.root / video_relpath(record.key, record.compression)
 
     def append(self, record: ProcessedRecord) -> None:
-        """Append ``record`` to ``index.jsonl`` as one canonical JSON line, then flush and fsync.
+        """Append ``record`` to :attr:`index_path` as one canonical JSON line, then flush and
+        fsync.
 
         Every outcome is appended, not only ``ok`` ones, so the index always says what happened to
         every video that was attempted.
@@ -179,15 +223,18 @@ class Store:
             os.fsync(handle.fileno())
 
     def records(self) -> list[ProcessedRecord]:
-        """The latest row per ``(key, compression)``, sorted by ``(key, compression)``.
+        """The latest row per ``(key, compression)``, sorted by ``(key, compression)``, from
+        :meth:`_read_paths` (``index.jsonl`` alone, or, when sharded, unioned with this shard's
+        own file).
 
         Empty when nothing has been appended yet.
         """
-        if not self.index_path.is_file():
-            return []
         latest: dict[Key, ProcessedRecord] = {}
-        for record in read_jsonl(self.index_path, ProcessedRecord):
-            latest[(record.key, record.compression)] = record
+        for path in self._read_paths():
+            if not path.is_file():
+                continue
+            for record in read_jsonl(path, ProcessedRecord):
+                latest[(record.key, record.compression)] = record
         return [latest[key] for key in sorted(latest, key=lambda k: (k[0], k[1] or ""))]
 
     def done_keys(self) -> set[Key]:

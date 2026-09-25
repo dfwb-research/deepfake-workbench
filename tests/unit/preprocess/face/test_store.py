@@ -27,7 +27,13 @@ from dfwb.core.records.local import (
     TrackSpec,
     TrackStats,
 )
-from dfwb.preprocess.face.store import Store, recover_video_dir, video_relpath
+from dfwb.preprocess.face.store import (
+    Store,
+    parse_shard_filename,
+    recover_video_dir,
+    shard_index_filename,
+    video_relpath,
+)
 
 _NO_DATASETS_ROOT = {"datasets": ResolvedRoot("datasets", None, "unset", "DFWB_DATASETS_ROOT")}
 
@@ -72,6 +78,68 @@ def test_index_path_and_video_dir_nest_under_the_key():
     assert store.video_dir(_record("ffpp/vid002", compression=None)) == Path(
         "/tmp/store-root/ffpp/vid002/_"
     )
+
+
+def test_sharded_index_path_names_this_shards_own_file():
+    store = Store(Path("/tmp/store-root"), _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    assert store.index_path == Path("/tmp/store-root/index.shard-0-of-2.jsonl")
+
+
+def test_shard_index_filename_and_parse_shard_filename_round_trip():
+    assert shard_index_filename(0, 2) == "index.shard-0-of-2.jsonl"
+    assert parse_shard_filename("index.shard-0-of-2.jsonl") == (0, 2)
+    assert parse_shard_filename("index.shard-11-of-100.jsonl") == (11, 100)
+
+
+@pytest.mark.parametrize(
+    "name", ["index.jsonl", "index.shard-0-of-2.txt", "index.shard-a-of-2.jsonl", "profile.json"]
+)
+def test_parse_shard_filename_rejects_anything_else(name):
+    assert parse_shard_filename(name) is None
+
+
+def test_a_sharded_store_appends_to_its_own_shard_file_not_index_jsonl(tmp_path):
+    store = Store(tmp_path / "store", _profile(), roots=_NO_DATASETS_ROOT, shard=(1, 3))
+    store.append(_record("a/1"))
+
+    assert (tmp_path / "store" / "index.shard-1-of-3.jsonl").is_file()
+    assert not (tmp_path / "store" / "index.jsonl").exists()
+
+
+def test_a_sharded_stores_records_union_index_jsonl_and_its_own_shard_file(tmp_path):
+    root = tmp_path / "store"
+    unsharded = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+    unsharded.append(_record("a/1", status="ok", n_frames=4))
+    unsharded.append(_record("a/2", status="ok", n_frames=4))
+
+    sharded = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    sharded.append(_record("a/1", status="decode_error", n_frames=0))  # a redo, still in flight
+
+    records = {(r.key, r.compression): r for r in sharded.records()}
+    assert set(records) == {("a/1", None), ("a/2", None)}
+    assert records[("a/1", None)].status == "decode_error"  # this shard's row wins
+    assert records[("a/2", None)].status == "ok"  # only in index.jsonl, untouched by this shard
+    assert sharded.done_keys() == {("a/2", None)}
+
+
+def test_a_sharded_store_never_reads_another_shards_file(tmp_path):
+    root = tmp_path / "store"
+    other = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(1, 2))
+    other.append(_record("a/1", status="ok", n_frames=4))
+
+    mine = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    assert mine.records() == []
+    assert mine.done_keys() == set()
+
+
+def test_an_unsharded_store_ignores_a_shard_file_left_next_to_it(tmp_path):
+    root = tmp_path / "store"
+    sharded = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 1))
+    sharded.append(_record("a/1", status="ok", n_frames=4))
+
+    plain = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+    assert plain.records() == []
+    assert plain.index_path == root / "index.jsonl"
 
 
 def test_append_writes_one_line_per_record_and_flushes(tmp_path):

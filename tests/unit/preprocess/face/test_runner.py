@@ -52,7 +52,8 @@ from dfwb.core.records.protocol import LicenseInfo
 from dfwb.preprocess.face import runner
 from dfwb.preprocess.face.profiles import load_profile
 from dfwb.preprocess.face.runner import RunSummary, run
-from dfwb.preprocess.face.store import Store
+from dfwb.preprocess.face.shard import merge
+from dfwb.preprocess.face.store import Store, shard_index_filename
 from dfwb.preprocess.face.types import Face
 from dfwb.preprocess.inventory.runner import build_inventory
 
@@ -412,8 +413,12 @@ def test_limit_orders_a_protocol_split_by_key_and_compression_too(env):
 
 
 def _shard_of(key: Key, count: int) -> int:
-    text = f"{key[0]}\t{key[1] or ''}"
+    text = f"{key[0]}|{key[1] or ''}"
     return int(hashlib.md5(text.encode("utf-8")).hexdigest(), 16) % count
+
+
+def _shard_rows(store: Path, index: int, count: int) -> list[ProcessedRecord]:
+    return read_jsonl(store / shard_index_filename(index, count), ProcessedRecord)
 
 
 def test_shards_partition_the_scope_by_a_stable_hash_of_key_and_compression(env):
@@ -421,15 +426,26 @@ def test_shards_partition_the_scope_by_a_stable_hash_of_key_and_compression(env)
     store = _store_path(env.work)
     seen: list[set[Key]] = []
     for index in range(count):
-        before = len(_rows_if_any(store))
         summary = _run(shard=(index, count))
-        added = set(_keys(_rows_if_any(store)[before:]))
+        added = set(_keys(_shard_rows(store, index, count)))
         assert added == {key for key in ALL_KEYS if _shard_of(key, count) == index}
         assert summary.n_skipped == 0  # another shard's videos are out of scope, not skipped
         seen.append(added)
     assert sum(1 for keys in seen if keys) >= 2  # a real split, not everything in one shard
     assert set().union(*seen) == ALL_KEYS
     assert sum(len(keys) for keys in seen) == len(ALL_KEYS)  # pairwise disjoint
+    # A sharded run never touches the merged index; only its own shard file.
+    assert not (store / "index.jsonl").exists()
+
+
+def test_a_sharded_rerun_skips_what_its_own_shard_file_already_holds(env):
+    # A shard's skip decision reads its own shard file even though index.jsonl (never touched by
+    # a sharded run) does not exist at all.
+    first = _run(shard=(0, 2))
+    n_first = sum(first.counts_by_status.values())
+    assert n_first > 0
+    second = _run(shard=(0, 2))
+    assert second == RunSummary(counts_by_status={}, n_skipped=n_first, store=first.store)
 
 
 def test_the_shards_of_a_limited_run_add_up_to_the_limited_run(env):
@@ -437,12 +453,32 @@ def test_the_shards_of_a_limited_run_add_up_to_the_limited_run(env):
     store = _store_path(env.work)
     for index in range(2):
         _run(limit=4, shard=(index, 2))
+    merge(store)
     assert _keys(_rows(store)) == [
         ("FS_SWAP/000_001", "c23"),
         ("FS_SWAP/001_000", "c23"),
         ("REAL/000", "c23"),
         ("REAL/000", "c40"),
     ]
+
+
+def test_shard_merge_equals_single_run(env):
+    single = _run()
+    single_lines = set(_index_lines(single.store))
+    shutil.rmtree(single.store)
+
+    store = _store_path(env.work)
+    count = 2
+    for index in range(count):
+        _run(shard=(index, count))
+    assert not (store / "index.jsonl").exists()
+
+    summary = merge(store)
+
+    assert set(_index_lines(store)) == single_lines
+    assert summary.n_records == len(single_lines)
+    assert summary.n_shards == count
+    assert not list(store.glob("index.shard-*-of-*.jsonl"))
 
 
 @pytest.mark.parametrize("shard", [(3, 3), (-1, 2), (0, 0), (1, -2)])

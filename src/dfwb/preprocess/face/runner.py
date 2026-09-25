@@ -81,7 +81,7 @@ from dfwb.preprocess.inventory.runner import get_builder, read_inventory, resolv
 from dfwb.protocols.protocol import Protocol, _matches_where
 from dfwb.protocols.protocol import load as load_protocol
 
-__all__ = ["STATUSES", "RunSummary", "run"]
+__all__ = ["STATUSES", "RunSummary", "in_scope", "run"]
 
 _log = logging.getLogger(__name__)
 
@@ -174,9 +174,10 @@ def _protocol_scope(
     split: str | None,
     where: Mapping[str, Any] | None,
     work_root: Path,
-) -> list[InventoryRecord]:
+) -> list[tuple[InventoryRecord, str | None]]:
     """The inventory records the protocol's split (and ``where``) name, joined on
-    ``(key, compression)``; the protocol's own videos this inventory lacks are only counted."""
+    ``(key, compression)``, each paired with the split the scheme assigns it; the protocol's own
+    videos this inventory lacks are only counted."""
     protocol = load_protocol(ref, work_root=work_root)
     if protocol.dataset != dataset_id:
         raise ConfigError(
@@ -194,6 +195,7 @@ def _protocol_scope(
         (video.key, video.compression)
         for video in protocol.records(split=wanted_splits, where=where)
     }
+    split_by_key = {(row.key, row.compression): row.split for row in protocol.split_rows()}
     by_key = {(record.key, record.compression): record for record in inventory}
     missing = len(wanted - by_key.keys())
     if missing:
@@ -204,7 +206,7 @@ def _protocol_scope(
             protocol.ref,
             f" ({split})" if split is not None else "",
         )
-    return [by_key[key] for key in wanted if key in by_key]
+    return [(by_key[key], split_by_key.get(key)) for key in wanted if key in by_key]
 
 
 def _where_scope(
@@ -230,9 +232,44 @@ def _where_scope(
 
 def _shard_index(record: InventoryRecord, count: int) -> int:
     """Which of ``count`` shards ``record`` belongs to: stable across machines and runs."""
-    text = f"{record.key}\t{record.compression or ''}"
+    text = f"{record.key}|{record.compression or ''}"
     digest = hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
     return int(digest, 16) % count
+
+
+def in_scope(
+    dataset_id: str,
+    inventory: Sequence[InventoryRecord],
+    *,
+    protocol: str | None,
+    split: str | None,
+    where: Mapping[str, Any] | None,
+    work_root: Path,
+) -> list[tuple[InventoryRecord, str | None]]:
+    """The videos ``run`` (or ``status``) is about, each paired with the protocol split it is
+    assigned (``None`` without a protocol), sorted by ``(key, compression)``.
+
+    The protocol (or ``where``) narrows the inventory exactly as :func:`run` does; unlike
+    :func:`run`'s own scope, this never applies ``limit`` or ``shard``, since ``status`` reports
+    on the whole scope, not one run's or one shard's share of it.
+
+    Raises:
+        ConfigError: ``split`` was given without ``protocol``, a ``where`` field, split or
+            protocol is unknown, or the protocol is another dataset's.
+    """
+    if protocol is not None:
+        pairs = _protocol_scope(dataset_id, inventory, protocol, split, where, work_root)
+    elif split is not None:
+        raise ConfigError(
+            f"split {split!r} was given without a protocol",
+            hint="a split belongs to a protocol: pass --protocol <ref> with --split",
+        )
+    elif where:
+        pairs = [(record, None) for record in _where_scope(dataset_id, inventory, where)]
+    else:
+        pairs = [(record, None) for record in inventory]
+    pairs.sort(key=lambda pair: _sort_key(pair[0]))
+    return pairs
 
 
 def _scope(
@@ -252,18 +289,12 @@ def _scope(
     what is left, and ``shard`` last of all keeps this shard's share of those. Limiting before
     sharding means the shards of a limited run still add up to exactly the unsharded run.
     """
-    if protocol is not None:
-        records = _protocol_scope(dataset_id, inventory, protocol, split, where, work_root)
-    elif split is not None:
-        raise ConfigError(
-            f"split {split!r} was given without a protocol",
-            hint="a split belongs to a protocol: pass --protocol <ref> with --split",
+    records = [
+        record
+        for record, _ in in_scope(
+            dataset_id, inventory, protocol=protocol, split=split, where=where, work_root=work_root
         )
-    elif where:
-        records = _where_scope(dataset_id, inventory, where)
-    else:
-        records = list(inventory)
-    records.sort(key=_sort_key)
+    ]
     if limit is not None:
         records = records[:limit]
     if shard is not None:
@@ -656,11 +687,15 @@ def run(
     - without one, every inventory video, or those ``where`` matches, with the same rules
       (``VideoRecord`` fields, ``task``, ``attrs.<name>``; a list means any of its values);
     - then ``limit`` keeps the first N by ``(key, compression)``, and ``shard=(i, n)`` keeps the
-      videos whose ``md5("<key>\\t<compression or ''>")`` is ``i`` modulo ``n``.
+      videos whose ``md5("<key>|<compression or ''>")`` is ``i`` modulo ``n``.
 
     Of those, a video the store already has a row for is skipped unless that row's status is in
     ``redo``: a rerun picks up only what never finished, and ``redo={"no_face"}`` retries just
-    the videos that found no face.
+    the videos that found no face. A sharded run appends to its own
+    ``index.shard-<i>-of-<n>.jsonl`` instead of ``index.jsonl``, so two machines can each process
+    their shard without one overwriting the other's rows; its skip decision reads the union of
+    that file and ``index.jsonl``, the latest row winning. :func:`~dfwb.preprocess.face.shard.merge`
+    combines every shard file (and any ``index.jsonl``) back into one ``index.jsonl`` afterwards.
 
     A failing video is recorded and the run goes on. A video whose file is not found in any copy
     of the dataset folder is recorded as ``decode_error`` with reason ``"source not found"``; one
@@ -720,7 +755,10 @@ def run(
         work_root=work_root,
     )
     store = Store(
-        work_root / dataset_id / "processed" / processing.profile_id(), processing, roots=resolved
+        work_root / dataset_id / "processed" / processing.profile_id(),
+        processing,
+        roots=resolved,
+        shard=shard,
     )
     copies = _dataset_copies(dataset_id, resolved)
 
