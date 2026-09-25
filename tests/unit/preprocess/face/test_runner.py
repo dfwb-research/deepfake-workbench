@@ -20,6 +20,8 @@ import multiprocessing.context
 import os
 import shutil
 from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -27,11 +29,12 @@ import cv2
 import numpy as np
 import pytest
 import yaml
+from tests.unit.preprocess.face._failing import FailingBackend, install_plugin
 from tests.unit.preprocess.inventory._demo import install
 from tests.unit.protocols.conftest import _dump, make_pack
 
 from dfwb.core import licenses, plugins
-from dfwb.core.errors import ConfigError, InstallationError, UnknownKeyError
+from dfwb.core.errors import ConfigError, DFWBError, InstallationError, UnknownKeyError
 from dfwb.core.plugins import get_registry
 from dfwb.core.records import (
     DatasetCard,
@@ -90,14 +93,17 @@ SPLITS: dict[Key, str] = {
 # ------------------------------------------------------------------------------------- fixtures
 
 
-def _write_clip(path: Path, *, frames: int = 10, dark: bool = False) -> None:
-    """A lossless FFV1 clip, 48 x 32: a circle sliding across a plain background, or all black."""
+def _write_clip(path: Path, *, frames: int = 10, dark: bool = False, white: bool = False) -> None:
+    """A lossless FFV1 clip, 48 x 32: a circle sliding across a plain background, or all black,
+    or all white."""
     path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), 10.0, (48, 32))
     assert writer.isOpened(), path
     for index in range(frames):
         frame = np.zeros((32, 48, 3), np.uint8)
-        if not dark:
+        if white:
+            frame[:] = 255
+        elif not dark:
             frame[:] = 40
             cv2.circle(frame, (4 + 4 * index, 16), 6, (60, 180, 220), -1)
         writer.write(frame)
@@ -554,9 +560,12 @@ def test_a_video_interrupted_mid_write_is_cleaned_up_and_redone(env):
     assert sorted(path.name for path in done.parent.iterdir()) == ["c23", "c40"]
 
 
-def test_a_missing_source_is_recorded_as_a_decode_error_and_the_run_goes_on(env):
+def test_a_missing_source_is_recorded_as_a_decode_error_and_the_run_goes_on(env, caplog):
     (env.dataset / "originals" / "c40" / "001.avi").unlink()
-    summary = _run()
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        summary = _run()
+    assert "1 video(s)" in caplog.text
+    assert "REAL/001 (c40)" in caplog.text  # the first one missing is named
     assert summary.counts_by_status == {"ok": 6, "decode_error": 1}
     (row,) = [row for row in _rows(summary.store) if row.status != "ok"]
     assert (row.key, row.compression) == ("REAL/001", "c40")
@@ -643,16 +652,18 @@ def test_two_workers_write_what_one_process_writes_and_leave_the_environment_alo
             assert twin.read_bytes() == path.read_bytes(), path
 
 
-def test_an_error_in_a_worker_stops_the_run_and_reaches_the_caller(env):
-    # identity-cluster needs embeddings, which the center backend does not provide: every video
-    # fails the same way, in the worker, before decoding anything.
+@pytest.mark.parametrize("workers", [0, 2])
+def test_a_profile_the_backend_cannot_run_is_refused_before_any_work(env, workers):
+    # identity-cluster needs embeddings, which the center backend does not provide: that is known
+    # as soon as the backend is built, so no video is ever tried, in this process or a worker.
     profile = _write_profile(
         env.tmp,
         "center",
         track={"iou": 0.5, "strategy": "identity-cluster", "ema": None},
     )
     with pytest.raises(ConfigError, match="identity-cluster"):
-        _run(profile=profile, workers=2)
+        _run(profile=profile, workers=workers)
+    assert not (env.work / "demo" / "processed").exists()
 
 
 def test_a_worker_builds_its_backend_on_its_first_video_only_and_closes_it_at_exit(
@@ -666,14 +677,15 @@ def test_a_worker_builds_its_backend_on_its_first_video_only_and_closes_it_at_ex
     monkeypatch.setattr(runner, "_worker", None)
     profile = load_profile(_write_profile(env.tmp, "counting"))
 
-    runner._start_worker(profile, "counting", {}, "cuda:0")
+    runner._start_worker(runner._Settings(profile, "counting", {}, "cuda:0"))
     assert CountingBackend.events == []  # starting a worker builds nothing
 
     records = read_jsonl(env.work / "demo" / "inventory.jsonl", InventoryRecord)[:3]
     for record in records:
         out_dir = env.tmp / "out" / record.key / (record.compression or "_")
         job = runner._Job(env.dataset / record.relpath, record, out_dir)
-        assert runner._work(job).status == "ok"
+        outcome = runner._work(job)
+        assert (outcome.record.status, outcome.error) == ("ok", None)
     assert CountingBackend.events == ["build cuda:0"]  # built once, on the first video
 
     ((func, args),) = at_exit
@@ -681,11 +693,332 @@ def test_a_worker_builds_its_backend_on_its_first_video_only_and_closes_it_at_ex
     assert CountingBackend.events == ["build cuda:0", "close"]
 
 
+def test_a_worker_whose_backend_cannot_be_built_records_the_error_for_the_video(env, monkeypatch):
+    monkeypatch.setattr(runner, "_worker", None)
+    profile = load_profile(PROFILE)
+    runner._start_worker(runner._Settings(profile, "no-such-backend", {}, "cpu"))
+    (record, *_) = read_jsonl(env.work / "demo" / "inventory.jsonl", InventoryRecord)
+    outcome = runner._work(runner._Job(env.dataset / record.relpath, record, env.tmp / "out"))
+    assert outcome.record.status == "decode_error"
+    assert outcome.error == outcome.record.reason
+    assert outcome.error == "error: UnknownKeyError: face_backends: unknown key 'no-such-backend'"
+    assert "Traceback" in outcome.detail
+
+
 def test_a_process_the_pool_did_not_start_refuses_work(env, monkeypatch):
     monkeypatch.setattr(runner, "_worker", None)
     (record, *_) = read_jsonl(env.work / "demo" / "inventory.jsonl", InventoryRecord)
     with pytest.raises(RuntimeError, match="did not initialise"):
         runner._work(runner._Job(env.dataset / record.relpath, record, env.tmp / "out"))
+
+
+# ------------------------------------------------------------------------- failing videos
+
+
+def _failing_on(
+    monkeypatch: pytest.MonkeyPatch, fails: Callable[[int, InventoryRecord], BaseException | None]
+) -> None:
+    """Make in-process processing raise ``fails(n, record)`` for the n-th video it is given
+    (counting from 0), when that is not ``None``, and process the video as usual otherwise."""
+    real = runner.process_video
+    calls = iter(range(1_000))
+
+    def process_video(source: Path, record: InventoryRecord, *args: Any) -> ProcessedRecord:
+        error = fails(next(calls), record)
+        if error is not None:
+            raise error
+        return real(source, record, *args)
+
+    monkeypatch.setattr(runner, "process_video", process_video)
+
+
+@pytest.fixture
+def fifteen_videos(env: Env) -> list[Key]:
+    """Eight more reals in c23, the inventory rebuilt: 15 videos, returned in processing order."""
+    for index in range(3, 11):
+        _write_clip(env.dataset / "originals" / "c23" / f"{index:03d}.avi")
+    build_inventory("demo")
+    records = read_jsonl(env.work / "demo" / "inventory.jsonl", InventoryRecord)
+    return [(record.key, record.compression) for record in records]
+
+
+def test_a_video_that_raises_is_recorded_as_a_decode_error_naming_it(env, monkeypatch, caplog):
+    def fails(n: int, record: InventoryRecord) -> BaseException | None:
+        if (record.key, record.compression) == ("REAL/001", "c40"):
+            return RuntimeError("a frame the detector could not take\nsecond line of detail")
+        return None
+
+    real = runner.process_video
+    _failing_on(monkeypatch, fails)
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        summary = _run()
+
+    assert summary.counts_by_status == {"ok": 6, "decode_error": 1}
+    (row,) = [row for row in _rows(summary.store) if row.status != "ok"]
+    assert (row.key, row.compression) == ("REAL/001", "c40")
+    assert row.reason == "error: RuntimeError: a frame the detector could not take"
+    assert (row.n_frames, row.frame_indices, row.track) == (0, [], None)
+    assert "REAL/001 (c40)" in caplog.text
+    assert "a frame the detector could not take" in caplog.text
+
+    # Such a row is retried like any other failure.
+    monkeypatch.setattr(runner, "process_video", real)
+    retried = _run(redo={"decode_error"})
+    assert retried == RunSummary({"ok": 1}, 6, summary.store)
+
+
+def test_ten_errors_in_a_row_abort_the_run_naming_the_last_video(env, monkeypatch, fifteen_videos):
+    def fails(n: int, record: InventoryRecord) -> BaseException | None:
+        return None if n == 0 else RuntimeError("CUDA out of memory")
+
+    _failing_on(monkeypatch, fails)
+    with pytest.raises(DFWBError) as caught:
+        _run()
+
+    last_key, last_compression = fifteen_videos[10]
+    assert f"{last_key} ({last_compression})" in caught.value.message
+    assert "10 videos in a row" in caught.value.message
+    assert "error: RuntimeError: CUDA out of memory" in caught.value.message
+    assert "--redo decode_error" in caught.value.hint
+    # Everything recorded before the abort stays: one ok, then the ten errors.
+    rows = _rows(_store_path(env.work))
+    assert [(row.key, row.compression) for row in rows] == fifteen_videos[:11]
+    assert [row.status for row in rows] == ["ok"] + ["decode_error"] * 10
+
+
+def test_errors_that_are_not_consecutive_never_abort(env, monkeypatch, fifteen_videos):
+    def fails(n: int, record: InventoryRecord) -> BaseException | None:
+        return None if n == 9 else RuntimeError("flaky")
+
+    _failing_on(monkeypatch, fails)
+    summary = _run()
+    assert summary.counts_by_status == {"ok": 1, "decode_error": 14}
+
+
+def test_an_interrupt_stops_the_run_keeping_every_row_already_written(env, monkeypatch):
+    # Rows are appended as each video finishes, not at the end: stopping on the third video
+    # leaves the first two in the index.
+    def fails(n: int, record: InventoryRecord) -> BaseException | None:
+        return KeyboardInterrupt() if n == 2 else None
+
+    _failing_on(monkeypatch, fails)
+    with pytest.raises(KeyboardInterrupt):
+        _run()
+    assert _keys(_rows(_store_path(env.work))) == [
+        ("FS_SWAP/000_001", "c23"),
+        ("FS_SWAP/001_000", "c23"),
+    ]
+
+
+@pytest.fixture
+def failing_plugin(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The ``failing`` backend, installed as a plugin spawned workers find, and registered here;
+    REAL/001 c40 is black (its worker dies) and FS_SWAP/001_000 white (its worker raises).
+    Returns the profile's path."""
+    site = tmp_path / "site"
+    install_plugin(site)
+    monkeypatch.syspath_prepend(str(site))
+    _register("failing", FailingBackend)
+    _write_clip(env.dataset / "originals" / "c40" / "001.avi", dark=True)
+    _write_clip(env.dataset / "swapped" / "c23" / "001_000.avi", white=True)
+    return _write_profile(env.tmp, "failing")
+
+
+def test_a_worker_crash_is_pinned_on_its_video_and_the_run_completes(env, failing_plugin, caplog):
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        summary = _run(profile=failing_plugin, workers=2)
+
+    assert summary.counts_by_status == {"ok": 5, "decode_error": 2}
+    rows = {(row.key, row.compression): row for row in _rows(summary.store)}
+    assert set(rows) == ALL_KEYS  # every video recorded exactly once
+    assert len(_rows(summary.store)) == 7
+    assert rows[("REAL/001", "c40")].reason == "error: worker crashed"
+    assert rows[("FS_SWAP/001_000", "c23")].reason == (
+        "error: RuntimeError: the detector choked on a white frame"
+    )
+    assert all(
+        row.status == "ok"
+        for key, row in rows.items()
+        if key not in {("REAL/001", "c40"), ("FS_SWAP/001_000", "c23")}
+    )
+    assert "REAL/001 (c40)" in caplog.text
+    assert "FS_SWAP/001_000 (c23)" in caplog.text
+
+
+class FakePool:
+    """A stand-in process pool that runs each video here, at once, when it is submitted.
+
+    ``breaks`` says how many more times handing out a video breaks the pool, as a worker crash
+    does: that video's future fails with ``BrokenProcessPool``, and so does every later
+    submission to the same pool. Once is an innocent video that happened to be in flight when
+    another crashed; more is the video that crashes its worker every time. A video in ``hangs``
+    never finishes.
+    """
+
+    made: ClassVar[list[FakePool]] = []
+    breaks: ClassVar[dict[Key, int]] = {}
+    hangs: ClassVar[set[Key]] = set()
+
+    def __init__(self, *, max_workers: int, mp_context: Any, initializer: Any, initargs: Any):
+        self.max_workers = max_workers
+        self.shutdowns: list[tuple[bool, bool]] = []
+        self.broken = False
+        initializer(*initargs)
+        type(self).made.append(self)
+
+    def submit(self, fn: Callable[..., Any], job: Any) -> Future[Any]:
+        if self.broken:
+            raise BrokenProcessPool("a process in the pool was terminated abruptly")
+        key = (job.record.key, job.record.compression)
+        future: Future[Any] = Future()
+        if type(self).breaks.get(key, 0) > 0:
+            type(self).breaks[key] -= 1
+            self.broken = True
+            future.set_exception(BrokenProcessPool("a process in the pool was terminated"))
+        elif key not in type(self).hangs:
+            try:
+                future.set_result(fn(job))
+            except BaseException as exc:  # a real pool reports even an interrupt this way
+                future.set_exception(exc)
+        return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        self.shutdowns.append((wait, cancel_futures))
+
+
+@pytest.fixture
+def fake_pool(monkeypatch: pytest.MonkeyPatch) -> type[FakePool]:
+    monkeypatch.setattr(FakePool, "made", [])
+    monkeypatch.setattr(FakePool, "breaks", {})
+    monkeypatch.setattr(FakePool, "hangs", set())
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(runner, "_worker", None)
+    monkeypatch.setattr("atexit.register", lambda *args: None)
+    return FakePool
+
+
+def test_after_a_crash_each_suspect_runs_alone_and_the_rest_in_a_new_pool(env, fake_pool):
+    # FS_SWAP/001_000 is only caught up in the first crash; REAL/000 c23 crashes every time.
+    fake_pool.breaks = {("FS_SWAP/001_000", "c23"): 1, ("REAL/000", "c23"): 2}
+    summary = _run(workers=2)
+
+    assert summary.counts_by_status == {"ok": 6, "decode_error": 1}
+    rows = {(row.key, row.compression): row for row in _rows(summary.store)}
+    assert len(rows) == len(_rows(summary.store)) == 7  # every video recorded exactly once
+    assert rows[("FS_SWAP/001_000", "c23")].status == "ok"
+    assert rows[("REAL/000", "c23")].reason == "error: worker crashed"
+    # A pool broke on FS_SWAP/001_000, which then ran fine alone; a fresh pool broke on
+    # REAL/000 c23, which broke its own pool of one too; a third pool took the rest.
+    assert [pool.max_workers for pool in fake_pool.made] == [2, 1, 2, 1, 2]
+    assert all(pool.shutdowns == [(True, False)] for pool in fake_pool.made)
+
+
+def test_errors_in_a_row_stop_a_pooled_run_too(env, fake_pool, monkeypatch, fifteen_videos):
+    _failing_on(monkeypatch, lambda n, record: RuntimeError("CUDA out of memory"))
+    with pytest.raises(DFWBError, match="videos in a row"):
+        _run(workers=2)
+    rows = _rows(_store_path(env.work))
+    # Results arrive four at a time here, so the stop comes at the first batch that reaches ten.
+    assert 10 <= len(rows) < len(fifteen_videos)
+    assert {row.reason for row in rows} == {"error: RuntimeError: CUDA out of memory"}
+
+
+def test_crashes_count_towards_the_errors_in_a_row_that_stop_a_run(env, fake_pool, fifteen_videos):
+    # A backend that kills every worker would otherwise pin down and record one video at a time,
+    # indefinitely: its crashes stop the run just as repeated errors do.
+    fake_pool.breaks = dict.fromkeys(fifteen_videos, 99)
+    with pytest.raises(DFWBError, match="10 videos in a row") as caught:
+        _run(workers=2)
+    assert "error: worker crashed" in caught.value.message
+    rows = _rows(_store_path(env.work))
+    assert [row.reason for row in rows] == ["error: worker crashed"] * 10
+
+
+def test_an_error_carried_back_from_a_worker_is_recorded_for_its_video(env, fake_pool, monkeypatch):
+    real_work = runner._work
+
+    def work(job: Any) -> Any:
+        if (job.record.key, job.record.compression) == ("REAL/002", "c23"):
+            raise OSError("the result could not be sent back")
+        return real_work(job)
+
+    monkeypatch.setattr(runner, "_work", work)
+    summary = _run(workers=2)
+    assert summary.counts_by_status == {"ok": 6, "decode_error": 1}
+    (row,) = [row for row in _rows(summary.store) if row.status != "ok"]
+    assert row.reason == "error: OSError: the result could not be sent back"
+
+
+def _interrupted_in_worker(monkeypatch: pytest.MonkeyPatch, key: Key) -> None:
+    """Make the worker handling video ``key`` be interrupted, as Ctrl-C interrupts every process."""
+    real_work = runner._work
+
+    def work(job: Any) -> Any:
+        if (job.record.key, job.record.compression) == key:
+            raise KeyboardInterrupt
+        return real_work(job)
+
+    monkeypatch.setattr(runner, "_work", work)
+
+
+def test_an_interrupt_during_the_pool_keeps_finished_videos_and_cancels_the_rest(
+    env, fake_pool, monkeypatch
+):
+    fake_pool.hangs = {("REAL/000", "c40")}
+    fake_pool.breaks = {("REAL/002", "c23"): 1}
+    _interrupted_in_worker(monkeypatch, ("REAL/001", "c40"))
+    real_wait = runner.wait
+    calls = iter(range(1_000))
+
+    def wait(*args: Any, **kwargs: Any) -> Any:
+        if next(calls) == 1:
+            raise KeyboardInterrupt
+        return real_wait(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "wait", wait)
+    with pytest.raises(KeyboardInterrupt):
+        _run(workers=2)
+    # Four videos were handed out first, one of which never finishes; the three that did were
+    # recorded. Then REAL/001 c23 finished, REAL/001 c40 was interrupted in its worker and
+    # REAL/002 c23 broke the pool, before this process was interrupted too: only the finished one
+    # is recorded, and the pool is shut down with everything still queued cancelled.
+    assert _keys(_rows(_store_path(env.work))) == [
+        ("FS_SWAP/000_001", "c23"),
+        ("FS_SWAP/001_000", "c23"),
+        ("REAL/000", "c23"),
+        ("REAL/001", "c23"),
+    ]
+    (pool,) = fake_pool.made
+    assert pool.shutdowns == [(True, True)]
+
+
+def test_an_interrupt_in_a_worker_stops_the_run_recording_nothing_for_its_video(
+    env, fake_pool, monkeypatch
+):
+    _interrupted_in_worker(monkeypatch, ("REAL/000", "c23"))
+    with pytest.raises(KeyboardInterrupt):
+        _run(workers=2)
+    # The other three videos handed out with it finished and are recorded; the interrupted one
+    # has no row, so the next run does it again.
+    assert _keys(_rows(_store_path(env.work))) == [
+        ("FS_SWAP/000_001", "c23"),
+        ("FS_SWAP/001_000", "c23"),
+        ("REAL/000", "c40"),
+    ]
+    (pool,) = fake_pool.made
+    assert pool.shutdowns == [(True, True)]
+
+
+def test_the_parent_closes_its_backend_before_the_pool_starts(env, monkeypatch):
+    monkeypatch.setattr(CountingBackend, "events", [])
+    _register("counting", CountingBackend)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        runner, "_run_pool", lambda *args, **kwargs: seen.append(list(CountingBackend.events))
+    )
+    _run(profile=_write_profile(env.tmp, "counting"), workers=2)
+    assert seen == [["build cpu", "prepare", "close"]]
+    assert CountingBackend.events == ["build cpu", "prepare", "close"]  # closed once only
 
 
 # ---------------------------------------------------------------- backend lifecycle, licence
@@ -711,10 +1044,10 @@ def test_the_backend_is_closed_even_when_the_run_fails(env, monkeypatch):
     _register("counting", CountingBackend)
 
     def fail(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("the decoder crashed")
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(runner, "process_video", fail)
-    with pytest.raises(RuntimeError, match="the decoder crashed"):
+    with pytest.raises(KeyboardInterrupt):
         _run(profile=_write_profile(env.tmp, "counting"))
     assert CountingBackend.events == ["build cpu", "prepare", "close"]
 

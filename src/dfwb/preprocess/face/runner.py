@@ -13,6 +13,15 @@ that names exactly the videos that finished. Each video is scheduled once per ru
 workers ever write the same output directory; a video that was being written when a run was
 killed has no index row, so the next run cleans up after it and does it again.
 
+One video never stops a run. A video whose processing raises is recorded as ``decode_error``
+with the exception as its reason (``--redo decode_error`` retries it), and a video that kills its
+worker outright, as a crash in native decoding or inference code does, is pinned down by re-running
+each video that was in flight on its own; the one that kills its worker again is recorded as
+``decode_error`` too. Only a failure that repeats for video after video -- ten in a row -- stops
+the run, since that points at something systemic rather than at the videos. Problems of
+configuration, such as a profile needing something its backend cannot do, are checked before any
+video is tried.
+
 The backend is built once in the calling process too, before any video is touched: building it
 enforces the licence acknowledgement its weights may need, its description goes into
 ``profile.json``, and its optional ``prepare()`` fetches and verifies its model files, so that
@@ -38,14 +47,16 @@ import json
 import logging
 import multiprocessing
 import sys
-from collections import Counter
+import traceback
+from collections import Counter, deque
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Final, get_args, get_type_hints
 
 from dfwb.core import licenses
-from dfwb.core.errors import ConfigError, did_you_mean
+from dfwb.core.errors import ConfigError, DFWBError, did_you_mean
 from dfwb.core.hashing import canonical_json
 from dfwb.core.paths import (
     ResolvedRoot,
@@ -56,9 +67,14 @@ from dfwb.core.paths import (
     resolve_roots,
 )
 from dfwb.core.plugins import get_registry
-from dfwb.core.records import InventoryRecord, ProcessedRecord, ProcessingProfile
+from dfwb.core.records import (
+    InventoryRecord,
+    ProcessedRecord,
+    ProcessingProfile,
+    to_video_record,
+)
 from dfwb.preprocess.face.backends import FaceBackend
-from dfwb.preprocess.face.process import process_video
+from dfwb.preprocess.face.process import check_backend, process_video
 from dfwb.preprocess.face.profiles import load_profile
 from dfwb.preprocess.face.store import Store, video_relpath
 from dfwb.preprocess.inventory.runner import get_builder, read_inventory, resolve_video_path
@@ -76,25 +92,17 @@ STATUSES: Final[tuple[str, ...]] = get_args(get_type_hints(ProcessedRecord)["sta
 # takes every other split.
 _EXCLUDE_SPLIT = "exclude"
 
-# The inventory columns a ``where`` filter can name without a protocol: the same ones a protocol's
-# own records carry (``task`` and ``attrs.<name>`` are derived from ``key`` and ``attrs``).
-_WHERE_COLUMNS = (
-    "key",
-    "compression",
-    "label_key",
-    "method",
-    "identity",
-    "source_id",
-    "target_id",
-    "pair_key",
-    "attrs",
-)
-
 # How many videos are handed to the pool per worker ahead of time: enough to keep every worker
 # busy, few enough that stopping early leaves little queued work to wait for.
 _QUEUED_PER_WORKER = 2
 
 _NOT_FOUND = "source not found"
+_CRASHED = "error: worker crashed"
+
+# This many failures in a row, of videos whose processing raised or whose worker crashed, stop a
+# run: a fault that repeats for every video is systemic, and trying the rest would only record
+# the same failure for each of them.
+_MAX_CONSECUTIVE_ERRORS = 10
 
 Key = tuple[str, str | None]
 
@@ -208,8 +216,7 @@ def _where_scope(
     kept: list[InventoryRecord] = []
     for record in inventory:
         seen_attrs.update(record.attrs)
-        row = {column: getattr(record, column) for column in _WHERE_COLUMNS}
-        if _matches_where(row, where):
+        if _matches_where(dataclasses.asdict(to_video_record(record)), where):
             kept.append(record)
     unknown = sorted(attr_names - seen_attrs)
     if unknown:
@@ -335,6 +342,103 @@ def _backend_record(backend: FaceBackend) -> dict[str, Any]:
     return loaded
 
 
+# ------------------------------------------------------------------------------ outcomes
+
+
+def _video(record: InventoryRecord | ProcessedRecord) -> str:
+    """How a video is named in messages: its key, and its compression when it has one."""
+    return f"{record.key} ({record.compression})" if record.compression else record.key
+
+
+def _failed(record: InventoryRecord, reason: str) -> ProcessedRecord:
+    return ProcessedRecord(
+        key=record.key,
+        compression=record.compression,
+        status="decode_error",
+        n_frames=0,
+        frame_indices=[],
+        relpath=video_relpath(record.key, record.compression),
+        track=None,
+        reason=reason,
+    )
+
+
+def _error_reason(exc: BaseException) -> str:
+    """``error: <Type>: <first line of the message>``, or ``error: <Type>`` without one."""
+    lines = str(exc).strip().splitlines()
+    name = type(exc).__name__
+    return f"error: {name}: {lines[0]}" if lines else f"error: {name}"
+
+
+@dataclasses.dataclass(frozen=True)
+class _Outcome:
+    """One video's result: its index row, and, when its processing raised, the error (the row's
+    reason) and its traceback."""
+
+    record: ProcessedRecord
+    error: str | None = None
+    detail: str | None = None
+
+
+def _raised(record: InventoryRecord, exc: BaseException, detail: str | None) -> _Outcome:
+    reason = _error_reason(exc)
+    return _Outcome(_failed(record, reason), reason, detail)
+
+
+class _Recorder:
+    """Appends each video's row to the index as it arrives, counts outcomes, and keeps the run of
+    consecutive errors that stops a run with a systemic fault."""
+
+    def __init__(self, store: Store, advance: Callable[[], None]) -> None:
+        self._store = store
+        self._advance = advance
+        self.counts: Counter[str] = Counter()
+        self._streak = 0
+        self._last: _Outcome | None = None
+
+    def add(self, outcome: _Outcome) -> None:
+        record = outcome.record
+        self._store.append(record)
+        self.counts[record.status] += 1
+        self._advance()
+        if outcome.error is None:
+            self._streak = 0
+            return
+        self._streak += 1
+        self._last = outcome
+        _log.warning("%s: %s; recorded as decode_error", _video(record), outcome.error)
+        if outcome.detail:
+            _log.debug("%s: %s", _video(record), outcome.detail)
+
+    def check(self) -> None:
+        """Stop the run once :data:`_MAX_CONSECUTIVE_ERRORS` videos in a row have failed.
+
+        Raises:
+            DFWBError: naming the last of them and its error.
+        """
+        if self._streak < _MAX_CONSECUTIVE_ERRORS or self._last is None:
+            return
+        raise DFWBError(
+            f"{self._streak} videos in a row failed with an error, so the run was stopped; "
+            f"the last, {_video(self._last.record)}: {self._last.error}",
+            hint="a fault that repeats for every video is rarely the videos' own: check the "
+            "backend, its libraries, the device and the disk (--debug shows each traceback); "
+            "the failed videos are in the index and are retried with --redo decode_error",
+        )
+
+
+def _attempt(job: _Job, profile: ProcessingProfile, backend: Callable[[], FaceBackend]) -> _Outcome:
+    """Process one video, turning any exception into a ``decode_error`` outcome for it.
+
+    ``backend`` returns the backend to use; building one can fail too, and that failure is the
+    video's like any other. ``KeyboardInterrupt`` and other non-``Exception`` errors propagate.
+    """
+    try:
+        return _Outcome(process_video(job.source, job.record, profile, backend(), job.out_dir))
+    except Exception as exc:
+        return _raised(job.record, exc, traceback.format_exc())
+
+
 # ----------------------------------------------------------------------------------- workers
 
 
@@ -347,81 +451,142 @@ class _Job:
     out_dir: Path
 
 
-@dataclasses.dataclass
-class _WorkerState:
+@dataclasses.dataclass(frozen=True)
+class _Settings:
+    """What every worker needs to process videos, handed over once when it starts."""
+
     profile: ProcessingProfile
     backend_name: str
     backend_params: dict[str, Any]
     device: str
+
+
+@dataclasses.dataclass
+class _WorkerState:
+    settings: _Settings
     backend: FaceBackend | None = None
+
+    def get_backend(self) -> FaceBackend:
+        """The worker's backend, built on first use and closed when the worker exits."""
+        if self.backend is None:
+            settings = self.settings
+            self.backend = _build_backend(
+                settings.backend_name, settings.backend_params, settings.device
+            )
+            # A worker ends when its pool shuts down; whatever the backend holds open is
+            # released then, while the interpreter is still whole.
+            atexit.register(_close, self.backend)
+        return self.backend
 
 
 # Set in each worker process by the pool's initializer; never set in the calling process.
 _worker: _WorkerState | None = None
 
 
-def _start_worker(
-    profile: ProcessingProfile, backend_name: str, backend_params: dict[str, Any], device: str
-) -> None:
+def _start_worker(settings: _Settings) -> None:
     """The pool's initializer: remember how to build the backend, but build nothing yet."""
     global _worker
-    _worker = _WorkerState(profile, backend_name, backend_params, device)
+    _worker = _WorkerState(settings)
 
 
-def _work(job: _Job) -> ProcessedRecord:
+def _work(job: _Job) -> _Outcome:
     """Process one video in a worker, building the worker's backend on its first video."""
     state = _worker
     if state is None:
         raise RuntimeError("a video was sent to a worker the pool did not initialise")
-    if state.backend is None:
-        state.backend = _build_backend(state.backend_name, state.backend_params, state.device)
-        # A worker ends when the pool shuts down; whatever the backend holds open is released
-        # then, while the interpreter is still whole.
-        atexit.register(_close, state.backend)
-    return process_video(job.source, job.record, state.profile, state.backend, job.out_dir)
+    return _attempt(job, state.settings.profile, state.get_backend)
 
 
-def _run_pool(
-    jobs: Sequence[_Job],
-    *,
-    workers: int,
-    profile: ProcessingProfile,
-    backend_name: str,
-    backend_params: dict[str, Any],
-    device: str,
-    finish: Callable[[ProcessedRecord], None],
-) -> None:
-    """Process ``jobs`` on a pool of ``workers`` spawned processes, finishing each result here.
+def _interrupted(future: Future[_Outcome]) -> bool:
+    """Whether a finished future's worker was interrupted (Ctrl-C reaches every process), rather
+    than finishing its video or failing on it."""
+    failure = future.exception()
+    return failure is not None and not isinstance(failure, Exception)
 
-    Only a few videos per worker are queued at a time. If one raises, nothing more is queued,
-    the videos already under way are waited for and finished, and the first error is raised.
+
+def _outcome_of(future: Future[_Outcome], job: _Job) -> _Outcome | None:
+    """A finished, uninterrupted future's outcome, or ``None`` when its worker died and broke
+    the pool."""
+    failure = future.exception()
+    if isinstance(failure, BrokenProcessPool):
+        return None
+    if failure is not None:  # the worker could not even report back
+        return _raised(job.record, failure, None)
+    return future.result()
+
+
+def _pool_round(
+    queue: deque[_Job], workers: int, settings: _Settings, recorder: _Recorder
+) -> list[_Job]:
+    """Process videos from ``queue`` on a fresh pool of ``workers`` spawned processes until the
+    queue is empty or a worker dies; return the videos that were in flight when one died.
+
+    Only a few videos per worker are handed out at a time. If anything is raised here -- an
+    interrupt, here or in a worker, or the stop after too many errors in a row -- the videos
+    already finished are recorded, every queued one is cancelled, and the pool is shut down
+    before it propagates. A video whose worker was interrupted is not recorded at all, so the
+    next run does it again.
     """
-    pending: set[Future[ProcessedRecord]] = set()
-    queue = iter(jobs)
-    error: BaseException | None = None
-    with ProcessPoolExecutor(
+    pool = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
         initializer=_start_worker,
-        initargs=(profile, backend_name, backend_params, device),
-    ) as pool:
+        initargs=(settings,),
+    )
+    pending: dict[Future[_Outcome], _Job] = {}
+    in_flight: list[_Job] = []
+    broken = False
+    try:
         while True:
-            while error is None and len(pending) < workers * _QUEUED_PER_WORKER:
-                job = next(queue, None)
-                if job is None:
-                    break
-                pending.add(pool.submit(_work, job))
+            while not broken and queue and len(pending) < workers * _QUEUED_PER_WORKER:
+                job = queue.popleft()
+                try:
+                    pending[pool.submit(_work, job)] = job
+                except BrokenProcessPool:
+                    queue.appendleft(job)  # never handed out, so never in flight
+                    broken = True
             if not pending:
                 break
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                failure = future.exception()
-                if failure is not None:
-                    error = error or failure
+                job = pending.pop(future)
+                if _interrupted(future):
+                    raise KeyboardInterrupt  # nothing is recorded for it, so it is done again
+                outcome = _outcome_of(future, job)
+                if outcome is None:
+                    in_flight.append(job)
+                    broken = True
                 else:
-                    finish(future.result())
-    if error is not None:
-        raise error
+                    recorder.add(outcome)
+            recorder.check()
+    except BaseException:
+        for future, job in pending.items():
+            if future.done() and not future.cancelled() and not _interrupted(future):
+                outcome = _outcome_of(future, job)
+                if outcome is not None:
+                    recorder.add(outcome)
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return in_flight
+
+
+def _run_pool(
+    jobs: Sequence[_Job], *, workers: int, settings: _Settings, recorder: _Recorder
+) -> None:
+    """Process ``jobs`` on pools of ``workers`` spawned processes, surviving worker crashes.
+
+    When a worker dies, the pool is lost with every video it had in flight, and which of them
+    killed it is unknown. Each of those is run again on its own, in a pool of one; a video that
+    kills that worker too is recorded as ``decode_error`` (``"error: worker crashed"``), and the
+    rest of the videos go on in a new pool.
+    """
+    queue = deque(jobs)
+    while queue:
+        for job in _pool_round(queue, workers, settings, recorder):
+            if _pool_round(deque([job]), 1, settings, recorder):
+                recorder.add(_Outcome(_failed(job.record, _CRASHED), _CRASHED))
+                recorder.check()
 
 
 # ---------------------------------------------------------------------------------- progress
@@ -465,19 +630,6 @@ def _progress(total: int, description: str) -> Iterator[Callable[[], None]]:
 # ------------------------------------------------------------------------------------ run
 
 
-def _source_not_found(record: InventoryRecord) -> ProcessedRecord:
-    return ProcessedRecord(
-        key=record.key,
-        compression=record.compression,
-        status="decode_error",
-        n_frames=0,
-        frame_indices=[],
-        relpath=video_relpath(record.key, record.compression),
-        track=None,
-        reason=_NOT_FOUND,
-    )
-
-
 def run(
     dataset_id: str,
     *,
@@ -508,9 +660,13 @@ def run(
 
     Of those, a video the store already has a row for is skipped unless that row's status is in
     ``redo``: a rerun picks up only what never finished, and ``redo={"no_face"}`` retries just
-    the videos that found no face. A video whose file is not found in any copy of the dataset
-    folder is recorded as ``decode_error`` with reason ``"source not found"``, and the run goes
-    on.
+    the videos that found no face.
+
+    A failing video is recorded and the run goes on. A video whose file is not found in any copy
+    of the dataset folder is recorded as ``decode_error`` with reason ``"source not found"``; one
+    whose processing raises, with reason ``"error: <Type>: <message>"``; one that kills its
+    worker process (after being re-run on its own to be sure), with ``"error: worker crashed"``.
+    Every row is appended as its video finishes, so rows written before an interrupt stay.
 
     Args:
         dataset_id: The dataset, whose inventory must already be built.
@@ -526,7 +682,9 @@ def run(
         limit: Process at most the first N videos in scope.
         accept_license: Record the licence acknowledgement the backend's weights need, if any,
             before building it.
-        roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
+        roots: Resolved roots, for the work root and the datasets roots (default:
+            :func:`~dfwb.core.paths.resolve_roots`). Backends find their model files under the
+            cache root themselves, resolved from the environment and config files, not from these.
 
     Returns:
         What was processed and skipped, and where the store is.
@@ -534,7 +692,10 @@ def run(
     Raises:
         ConfigError: An argument is out of range, a ``where`` field, split or redo status is
             unknown, the protocol is another dataset's, the work root is unset, the inventory is
-            missing, the dataset folder is not found, or the store would land in a datasets root.
+            missing, the dataset folder is not found, the store would land in a datasets root, or
+            the profile needs something the backend cannot do. Raised before any video is tried.
+        DFWBError: Ten videos in a row failed with an error; the message names the last one.
+            Every row recorded before that stays in the index.
         InstallationError: The backend's weights need a licence acknowledgement that has not been
             given (exit code 5), or the backend's extra is not installed. Raised before any video
             is touched.
@@ -571,8 +732,8 @@ def run(
         _accept_licence(backend_name)
     backend = _build_backend(backend_name, backend_params, device)
     unclosed: FaceBackend | None = backend
-    counts: Counter[str] = Counter()
     try:
+        check_backend(processing, backend)
         prepare = getattr(backend, "prepare", None)
         if prepare is not None:
             prepare()
@@ -583,49 +744,40 @@ def run(
             unclosed = None
 
         with _progress(len(to_do), f"{dataset_id} {processing.profile_id()}") as advance:
-
-            def finish(record: ProcessedRecord) -> None:
-                store.append(record)
-                counts[record.status] += 1
-                advance()
-
+            recorder = _Recorder(store, advance)
             jobs: list[_Job] = []
-            missing = 0
+            missing: list[InventoryRecord] = []
             for record in to_do:
                 try:
                     source = resolve_video_path(record, copies, datasets_roots=resolved)
                 except ConfigError as exc:
                     _log.debug("%s", exc.message)
-                    missing += 1
-                    finish(_source_not_found(record))
+                    missing.append(record)
+                    recorder.add(_Outcome(_failed(record, _NOT_FOUND)))
                     continue
                 out_dir = store.root / video_relpath(record.key, record.compression)
                 jobs.append(_Job(source, record, out_dir))
             if missing:
                 _log.warning(
-                    "%s: %d video(s) were not found in any copy of the dataset folder, and are "
-                    "recorded as decode_error (%s)",
+                    "%s: %d video(s) were not found in any copy of the dataset folder, the first "
+                    "%s; recorded as decode_error (%s)",
                     dataset_id,
-                    missing,
+                    len(missing),
+                    _video(missing[0]),
                     _NOT_FOUND,
                 )
 
             if workers:
-                _run_pool(
-                    jobs,
-                    workers=workers,
-                    profile=processing,
-                    backend_name=backend_name,
-                    backend_params=backend_params,
-                    device=device,
-                    finish=finish,
-                )
+                settings = _Settings(processing, backend_name, backend_params, device)
+                _run_pool(jobs, workers=workers, settings=settings, recorder=recorder)
             else:
                 for job in jobs:
-                    finish(process_video(job.source, job.record, processing, backend, job.out_dir))
+                    recorder.add(_attempt(job, processing, lambda: backend))
+                    recorder.check()
     finally:
         if unclosed is not None:
             _close(unclosed)
+    counts = recorder.counts
     return RunSummary(
         counts_by_status={status: counts[status] for status in STATUSES if counts[status]},
         n_skipped=n_skipped,

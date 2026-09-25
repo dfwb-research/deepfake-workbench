@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-__all__ = ["process_video"]
+__all__ = ["check_backend", "process_video"]
 
 _log = logging.getLogger(__name__)
 
@@ -159,6 +159,26 @@ def _embed_all(
     return embedded
 
 
+def check_backend(profile: ProcessingProfile, backend: FaceBackend) -> None:
+    """Refuse a ``profile`` that needs something ``backend`` does not provide.
+
+    :func:`process_video` checks this itself before decoding anything; a caller about to process
+    many videos checks it once, first, so that a mismatch stops everything before any work
+    rather than failing every video in turn.
+
+    Raises:
+        ConfigError: the profile's track strategy is ``"identity-cluster"`` but ``backend`` has no
+            ``embed`` method.
+    """
+    if profile.track.strategy == "identity-cluster" and getattr(backend, "embed", None) is None:
+        raise ConfigError(
+            f"track strategy 'identity-cluster' needs face embeddings, but backend "
+            f"{backend.name!r} does not provide embed()",
+            hint="use a backend that implements embed(), or choose track strategy "
+            "'largest-then-iou'",
+        )
+
+
 def process_video(
     source_path: Path,
     record: InventoryRecord,
@@ -196,15 +216,9 @@ def process_video(
     """
     recover_video_dir(out_dir)
 
+    check_backend(profile, backend)
     identity_cluster = profile.track.strategy == "identity-cluster"
     embed = getattr(backend, "embed", None)
-    if identity_cluster and embed is None:
-        raise ConfigError(
-            f"track strategy 'identity-cluster' needs face embeddings, but backend "
-            f"{backend.name!r} does not provide embed()",
-            hint="use a backend that implements embed(), or choose track strategy "
-            "'largest-then-iou'",
-        )
 
     try:
         source = open_source(source_path, library=profile.decode.library)
