@@ -102,11 +102,55 @@ def test_build_errors_are_reported_with_hints(run, demo):
     typo = run("inventory", "build", "demo", "--compressions", "c32")
     assert typo.code == 2
     assert "did you mean 'c23'" in typo.err
-    probe = run("inventory", "build", "demo", "--probe")
-    assert probe.code == 5
-    assert "[preprocess]" in probe.err
     jobs = run("inventory", "build", "demo", "--jobs", "0")
     assert jobs.code == 2
+
+
+def test_build_probe_writes_media_properties(run, demo):
+    av = pytest.importorskip("av")
+    raw, work = demo
+    # A minimal, valid video so at least one record probes successfully.
+    real = raw / "Demo" / "originals" / "c23" / "000.mp4"
+    container = av.open(str(real), mode="w")
+    stream = container.add_stream("mpeg4", rate=10)
+    stream.width, stream.height, stream.pix_fmt = 16, 16, "yuv420p"
+    container.mux(stream.encode(av.VideoFrame(16, 16, "yuv420p")))
+    container.mux(stream.encode())
+    container.close()
+
+    result = run("inventory", "build", "demo", "--probe", "--jobs", "4", "--json")
+    assert result.code == 0, result.err
+
+    from dfwb.core.records import InventoryRecord, read_jsonl
+
+    records = read_jsonl(work / "demo" / "inventory.jsonl", InventoryRecord)
+    by_key = {(r.key, r.compression): r for r in records}
+    assert by_key[("REAL/000", "c23")].probe.frames == 1
+    # The rest of the demo tree is empty stub files: probing warns but never fails the build.
+    assert by_key[("REAL/000", "c40")].probe is not None
+
+
+def test_build_probe_reports_a_missing_extra(run, demo, monkeypatch):
+    import importlib.abc
+    import sys
+
+    for name in [n for n in sys.modules if n == "av" or n.startswith("av.")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    class _Blocker(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.partition(".")[0] == "av":
+                raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+            return None
+
+    blocker = _Blocker()
+    sys.meta_path.insert(0, blocker)
+    try:
+        probe = run("inventory", "build", "demo", "--probe")
+    finally:
+        sys.meta_path.remove(blocker)
+    assert probe.code == 5
+    assert "[preprocess]" in probe.err
 
 
 def test_show_rejects_an_unknown_column(run, demo):

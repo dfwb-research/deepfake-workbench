@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rich = ["rich>=13"]
+preprocess = ["av>=12"]
 
 [project.scripts]
 dfwb = "dfwb.cli.main:main"
@@ -62,6 +63,7 @@ dev = [
   "scikit-learn",
   "pre-commit",
   "types-PyYAML",
+  "av>=12",
 ]
 
 [tool.ruff]
