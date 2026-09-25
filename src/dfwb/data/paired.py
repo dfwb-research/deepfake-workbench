@@ -37,7 +37,7 @@ def _by_key(index: VideoIndex) -> dict[str, VideoItem]:
     return by_key
 
 
-class PairedClipDataset(Dataset[ClipSample]):
+class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Real/fake clip pairs from ``pairs`` (e.g. :meth:`dfwb.protocols.protocol.Protocol.pairs`),
     restricted to keys actually present in ``index``.
 

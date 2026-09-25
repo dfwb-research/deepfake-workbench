@@ -67,7 +67,7 @@ def _torch_seed(seed: int, epoch: int, i: int) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
-class ClipDataset(Dataset[ClipSample]):
+class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """``__getitem__(i)`` decodes one clip: ``spec.frames`` PNGs from one video's processed store,
     stacked into ``[T, C, H, W]`` float32 in ``[0, 1]``.
 
@@ -104,7 +104,7 @@ class ClipDataset(Dataset[ClipSample]):
         self.adapt_chain = adapt_chain
         self.seed = seed
         self._epoch = torch.zeros((), dtype=torch.int64)
-        self._epoch.share_memory_()  # type: ignore[no-untyped-call]
+        self._epoch.share_memory_()  # type: ignore[no-untyped-call, unused-ignore]
         self._clips_per_video = spec.clips_per_mode(train=train)
 
     @property
@@ -155,7 +155,7 @@ class ClipDataset(Dataset[ClipSample]):
         )
 
 
-class MultiSource(Dataset[ClipSample]):
+class MultiSource(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Concatenates several :class:`ClipDataset` sources, tagging every sample with the index of
     the dataset (its position in ``datasets``) it came from, in ``extras["dfwb/source_id"]``.
 

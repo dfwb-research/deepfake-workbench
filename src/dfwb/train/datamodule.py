@@ -81,7 +81,7 @@ class _EpochSampler(Protocol):
     def set_epoch(self, epoch: int) -> None: ...
 
 
-class _EpochShuffle(Sampler[int]):
+class _EpochShuffle(Sampler[int]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Every index of a dataset once per epoch, in an order seeded by ``(seed, epoch)``."""
 
     def __init__(self, length: int, *, seed: int) -> None:
@@ -147,7 +147,7 @@ def source_names(entries: Sequence[DataSource], *, work_root: Path) -> list[str]
     return _unique_names(bases)
 
 
-class ProtocolDataModule(L.LightningDataModule):
+class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ignore]  # w/o torch
     """Builds the training and validation data of one run from a config's ``data:`` section.
 
     Args:

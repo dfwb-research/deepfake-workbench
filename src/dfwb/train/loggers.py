@@ -33,7 +33,7 @@ def _wandb_logger_class() -> type[Logger]:
     # Imported only once W&B is actually wanted: the module pulls in wandb itself.
     from lightning.pytorch.loggers import WandbLogger
 
-    return WandbLogger
+    return WandbLogger  # type: ignore[no-any-return, unused-ignore]  # Any w/o torch
 
 
 def build_loggers(

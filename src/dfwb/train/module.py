@@ -168,7 +168,7 @@ def _build_loss(spec: ComponentSpec) -> torch.nn.Module:
     return loss
 
 
-class DetectorModule(L.LightningModule):
+class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """The Lightning module of one training run.
 
     Args:

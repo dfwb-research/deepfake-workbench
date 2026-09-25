@@ -50,7 +50,7 @@ def _binary_logit(out: DetectorOutput, *, where: str) -> Tensor:
     return out.logit
 
 
-class BCELoss(nn.Module):
+class BCELoss(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """Binary cross-entropy on the detector's logit ``[B]`` against float labels."""
 
     def __init__(self, pos_weight: float | None = None) -> None:
@@ -69,7 +69,7 @@ class BCELoss(nn.Module):
         return LossOutput(total=loss, parts={"bce": loss})
 
 
-class CELoss(nn.Module):
+class CELoss(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """Categorical cross-entropy on ``[B,K]`` logits, for multi-class (``K>1``) heads."""
 
     def __init__(self, label_smoothing: float = 0.0) -> None:
@@ -88,7 +88,7 @@ class CELoss(nn.Module):
         return LossOutput(total=loss, parts={"ce": loss})
 
 
-class FocalLoss(nn.Module):
+class FocalLoss(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """Binary focal loss on the logit. ``gamma=0`` and ``alpha=None`` is exactly BCE."""
 
     def __init__(self, alpha: float | None = 0.25, gamma: float = 2.0) -> None:
@@ -110,7 +110,7 @@ class FocalLoss(nn.Module):
         return LossOutput(total=loss, parts={"focal": loss})
 
 
-class LabelSmoothingBCELoss(nn.Module):
+class LabelSmoothingBCELoss(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """BCE with smoothed targets: ``y(1-eps) + eps/2``."""
 
     def __init__(self, eps: float = 0.1) -> None:

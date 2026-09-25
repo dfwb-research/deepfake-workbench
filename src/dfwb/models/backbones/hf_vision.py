@@ -43,7 +43,7 @@ class HFVisionBackbone(Backbone):
         if pretrained:
             raw = AutoModel.from_pretrained(model)
         else:
-            raw = AutoModel.from_config(  # type: ignore[no-untyped-call]
+            raw = AutoModel.from_config(  # type: ignore[no-untyped-call, unused-ignore]
                 AutoConfig.from_pretrained(model)
             )
         vision_config = getattr(raw.config, "vision_config", raw.config)
@@ -75,9 +75,7 @@ def _resolve_native_input(model: str) -> InputSpec:
     from transformers import AutoImageProcessor
 
     try:
-        processor: Any = AutoImageProcessor.from_pretrained(  # type: ignore[no-untyped-call]
-            model
-        )
+        processor: Any = AutoImageProcessor.from_pretrained(model)  # type: ignore[no-untyped-call, unused-ignore]
     except OSError as exc:
         raise ConfigError(
             f"model: no image processor found for {model!r}",

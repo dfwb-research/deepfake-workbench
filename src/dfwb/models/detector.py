@@ -32,7 +32,7 @@ __all__ = ["AssembledDetector", "build_detector"]
 _FRAMEWORK_DISTRIBUTION = "deepfake-workbench"
 
 
-class AssembledDetector(nn.Module):
+class AssembledDetector(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """backbone -> (stem ->) (pool ->) head. Implements the ``Detector`` contract: ``meta`` plus
     ``predict``, and ``.to()`` inherited from :class:`torch.nn.Module`.
     """

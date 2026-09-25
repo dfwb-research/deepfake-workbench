@@ -67,9 +67,7 @@ class TimmBackbone(Backbone):
             ) from exc
         self.model = backbone
         self.out_dim = backbone.num_features
-        data_config: dict[str, Any] = resolve_data_config(  # type: ignore[no-untyped-call]
-            {}, model=backbone
-        )
+        data_config: dict[str, Any] = resolve_data_config({}, model=backbone)  # type: ignore[no-untyped-call, unused-ignore]
         _, height, width = data_config["input_size"]
         self.native_input = InputSpec(
             size=(height, width),

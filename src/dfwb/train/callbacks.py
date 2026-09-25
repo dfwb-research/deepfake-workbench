@@ -88,7 +88,7 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
 # ------------------------------------------------------------------------------ checkpoints
 
 
-class SafetensorsCheckpoint(Callback):
+class SafetensorsCheckpoint(Callback):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Keeps ``<directory>/best`` and ``<directory>/last``, each a
     :func:`dfwb.models.checkpoint.save` directory (``model.safetensors`` + ``detector.json``).
 
@@ -230,7 +230,7 @@ def _missing_rows(source: SourceData, labels: str) -> list[ScoreRow]:
     return rows
 
 
-class ValScoreDump(Callback):
+class ValScoreDump(Callback):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Writes ``<directory>/<source>.scores.{csv,meta.json}`` (C5) for every validation source
     after each validation epoch, replacing the previous epoch's files.
 
@@ -326,7 +326,7 @@ class ValScoreDump(Callback):
 # ------------------------------------------------------------------------------ early stop
 
 
-class EarlyStop(Callback):
+class EarlyStop(Callback):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Stops training once the module's monitor has gone ``patience`` validations without
     improving by more than ``min_delta``."""
 
@@ -373,7 +373,7 @@ class EarlyStop(Callback):
 # ------------------------------------------------------------------------------- NaN guard
 
 
-class NonFiniteGuard(Callback):
+class NonFiniteGuard(Callback):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Raises :class:`NonFiniteLoss` once ``tolerance`` training steps in a row had a loss that
     was NaN or infinite. The module skips each such step's update, so a short run of them (a
     rare bad batch) passes without harm; a finite loss resets the count."""
@@ -418,7 +418,7 @@ class NonFiniteGuard(Callback):
 # ------------------------------------------------------------------------------- heartbeat
 
 
-class Heartbeat(Callback):
+class Heartbeat(Callback):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Rewrites ``path`` (JSON: ``step``, ``epoch``, ``time`` in UTC) every ``every_n_steps``
     training batches."""
 

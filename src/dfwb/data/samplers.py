@@ -95,7 +95,7 @@ def _pack(groups: list[list[int]], batch_size: int) -> list[list[int]]:
     return batches
 
 
-class VideoLabelBalanced(Sampler[int]):
+class VideoLabelBalanced(Sampler[int]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Draws sample indices of ``source`` so both labels are equally likely, regardless of how
     imbalanced ``source`` actually is.
 
@@ -132,7 +132,7 @@ class VideoLabelBalanced(Sampler[int]):
         return iter(draws.tolist())
 
 
-class SourceBalanced(Sampler[int]):
+class SourceBalanced(Sampler[int]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Draws sample indices of a :class:`~dfwb.data.dataset.MultiSource` in proportion to
     ``multi.weights`` -- not to how many samples each source actually has.
 
@@ -167,7 +167,7 @@ class SourceBalanced(Sampler[int]):
         return iter(indices.tolist())
 
 
-class VideoGrouped(Sampler[list[int]]):
+class VideoGrouped(Sampler[list[int]]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """A batch sampler for eval: every clip of one video lands in the same batch, so a video's
     clips are never split across two calls of a scoring loop.
 
@@ -199,7 +199,7 @@ class VideoGrouped(Sampler[list[int]]):
         return len(self._batches)
 
 
-class PairGrouped(Sampler[list[int]]):
+class PairGrouped(Sampler[list[int]]):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """A batch sampler for paired training: a pair's real rows and fake rows always land in the
     same batch, so a pairwise loss always finds a row's partner next to it.
 

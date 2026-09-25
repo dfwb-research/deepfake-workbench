@@ -14,7 +14,7 @@ from torch import Tensor, nn
 __all__ = ["AttentionPool", "MaxPool", "MeanPool", "TemporalPool"]
 
 
-class TemporalPool(nn.Module):
+class TemporalPool(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """``[B,T,D] -> [B,D]``. ``dim`` is given by the assembler, from the backbone's ``out_dim``."""
 
     def __init__(self, dim: int) -> None:

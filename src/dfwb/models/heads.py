@@ -18,7 +18,7 @@ def _init_linear(module: nn.Linear) -> None:
         nn.init.zeros_(module.bias)
 
 
-class Head(nn.Module):
+class Head(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """``[B,D] -> [B]`` (``num_classes=1``) or ``[B,K]``. ``dim`` is given by the assembler.
 
     ``num_classes`` is part of the interface (every head sets it in ``__init__``): scoring

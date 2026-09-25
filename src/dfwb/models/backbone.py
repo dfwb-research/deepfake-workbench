@@ -66,7 +66,7 @@ class BackboneOutput:
     tokens: Tensor | None = None
 
 
-class Backbone(nn.Module):
+class Backbone(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """Feature extractor: ``kind="image"`` sees ``[B*T,C,H,W]``; ``kind="video"`` sees
     ``[B,T,C,H,W]``."""
 

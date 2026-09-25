@@ -270,7 +270,7 @@ def _set_epochs_done(trainer: L.Trainer, epochs: int) -> None:
             setattr(tracker, stage, epochs)
 
 
-class ResumeCheckpoint(Callback):
+class ResumeCheckpoint(Callback):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """Writes ``directory`` (see the module docstring) at the end of every training epoch; given
     ``restore``, puts that state back when fitting starts.
 
