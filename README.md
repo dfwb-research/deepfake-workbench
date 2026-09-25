@@ -5,7 +5,7 @@ inventory → face clips → trained detector → score file → evaluation repo
 pluggable and every result traceable to a protocol version, a processing profile and a config
 fingerprint.
 
-> **Status:** pre-release (`0.1.0a1`). Linux is the only supported and tested OS. Python ≥ 3.12.
+> **Status:** pre-release (`0.1.0a2`). Linux is the only supported and tested OS. Python ≥ 3.12.
 
 ## Run from a clone
 
@@ -14,6 +14,27 @@ git clone https://github.com/dfwb-research/deepfake-workbench && cd deepfake-wor
 uv sync
 uv run dfwb doctor
 ```
+
+## Quickstart
+
+dfwb ships a synthetic dataset, toyfake, generated entirely from a seed, so the whole
+raw-dataset → inventory → protocol pipeline can be tried with nothing to download:
+
+```bash
+export DFWB_DATASETS_ROOT=~/datasets
+export DFWB_WORK_ROOT=~/dfwb-work
+
+uv run dfwb datasets synth toyfake --out "$DFWB_DATASETS_ROOT"
+uv run dfwb inventory build toyfake
+uv run dfwb protocols verify toyfake
+```
+
+`datasets synth` writes a small set of synthetic real and blended-fake videos to
+`$DFWB_DATASETS_ROOT/toyfake`. `inventory build` scans that folder and writes
+`$DFWB_WORK_ROOT/toyfake/inventory.jsonl`. `protocols verify` joins that inventory against dfwb's
+built-in toyfake protocol pack and writes a coverage report; with the defaults above it reports
+full coverage. See `docs/concepts/protocols.md` for what `verify` checks and its exit codes, and
+`docs/guides/add-a-dataset.md` for wiring up a real dataset of your own.
 
 ## Data policy
 
@@ -46,10 +67,10 @@ For settings that should be checked in (shared defaults plus per-host overrides)
 [roots]
 datasets = "/shared/datasets"
 
-[hosts.hades.roots]
+[hosts.gpu-node-1.roots]
 datasets = ["/fast/datasets", "/nfs/datasets"]
 
-[hosts.hades.datasets]
+[hosts.gpu-node-1.datasets]
 kodf = "/fast/KoDF-mirror"
 ```
 
