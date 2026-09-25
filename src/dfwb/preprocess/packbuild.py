@@ -81,6 +81,13 @@ _log = logging.getLogger(__name__)
 
 PACK_YAML: Final = "pack.yaml"
 
+# What a decided distribution lets the pack publish, as the NOTICE words it.
+_DISTRIBUTION_MEANING: Final = {
+    "list": "these lists may be redistributed",
+    "recipe": "the pack publishes each split's rule, parameters and hash rather than its "
+    "list; dfwb protocols materialize recomputes the list from a local copy of the dataset",
+}
+
 
 def _locate_hint(dataset_id: str) -> str:
     return f"locate the dataset folder (see dfwb datasets info {dataset_id})"
@@ -371,11 +378,24 @@ def _notice(card: DatasetCard) -> str:
         "",
         "## Terms",
         "",
-        "Terms review pending: whether these lists may be redistributed has not been decided "
-        "yet, so dataset.yaml records distribution: undecided. This notice is completed once "
-        "the dataset's terms have been reviewed.",
+        _terms(card),
     ]
     return "\n".join(lines) + "\n"
+
+
+def _terms(card: DatasetCard) -> str:
+    """The NOTICE's terms paragraph, which always agrees with the card's ``distribution``."""
+    if card.distribution == "undecided":
+        return (
+            "Terms review pending: whether these lists may be redistributed has not been decided "
+            "yet, so dataset.yaml records distribution: undecided. This notice is completed once "
+            "the dataset's terms have been reviewed."
+        )
+    text = (
+        f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
+        f"{_DISTRIBUTION_MEANING[card.distribution]}."
+    )
+    return f"{text} {card.terms.notes}" if card.terms.notes else text
 
 
 # ---------------------------------------------------------------------------------------------
