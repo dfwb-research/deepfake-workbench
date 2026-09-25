@@ -164,6 +164,21 @@ def test_decode_library_rejects_unknown_values():
         ProcessingProfile.model_validate(_profile(**{"library: pyav": "library: ffmpeg"}))
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "field"),
+    [
+        # Every frame is decoded and written as RGB; nothing reads another order.
+        ("color: rgb", "color: bgr", "color"),
+        # Crops are always square and never aligned; nothing else is implemented.
+        ("square: true", "square: false", "square"),
+        ("align: none", "align: similarity", "align"),
+    ],
+)
+def test_a_setting_the_pipeline_does_not_implement_is_invalid(old, new, field):
+    with pytest.raises(ValidationError, match=field):
+        ProcessingProfile.model_validate(_profile(**{old: new}))
+
+
 def test_extras_mesh_true_is_invalid():
     with pytest.raises(ValidationError, match="mesh"):
         ProcessingProfile.model_validate(_profile(**{"mesh: false": "mesh: true"}))

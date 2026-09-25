@@ -227,13 +227,15 @@ def process_video(
     Returns:
         A :class:`ProcessedRecord` describing the outcome: ``status`` is ``"too_short"`` when the
         source reports no frames at all, ``"decode_error"`` when it cannot be opened or read (at
-        open, or partway through decoding), ``"no_face"`` when frames were decoded but none
-        produced a usable, croppable face, and ``"ok"`` otherwise (with ``reason`` set to
-        ``"short: N of M"`` when fewer frames were written than the profile asked for).
+        open, partway through decoding, or not one frame of those it claims), ``"no_face"`` when
+        frames were decoded but none produced a usable, croppable face, and ``"ok"`` otherwise
+        (with ``reason`` set to ``"short: N of M"`` when fewer frames were written than the
+        profile asked for).
 
     Raises:
         ConfigError: the profile's track strategy is ``"identity-cluster"`` but ``backend`` has no
             ``embed`` method. Raised before any decoding happens.
+        OSError: a frame could not be written (a full or read-only disk, say); nothing is kept.
     """
     recover_video_dir(out_dir)
 
@@ -281,12 +283,14 @@ def process_video(
 
     frames_meta: list[dict[str, Any]] = []
     failed_frames: list[dict[str, Any]] = []
+    n_decoded = 0
     cv2 = None
     # Whatever ends this block -- a result other than ok, or an exception of any kind, an
     # interrupt included -- the private directory goes with it; once the swap below has moved it
     # into out_dir's place there is nothing left to remove.
     try:
         for window in _windows(source.read(requested), _WINDOW):
+            n_decoded += len(window)
             per_frame = _batch_detect(backend, window)
             if identity_cluster:
                 per_frame = _embed_all(embed, window, per_frame)
@@ -312,18 +316,26 @@ def process_video(
                     ]
                 cv2 = cv2 or _require_cv2()
                 bgr = cv2.cvtColor(crop_result.image, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(
-                    str(tmp_dir / f"frame_{index:06d}.png"), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6]
-                )
+                name = f"frame_{index:06d}.png"
+                if not cv2.imwrite(str(tmp_dir / name), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6]):
+                    raise OSError(f"OpenCV could not write {name} (is the disk full or read-only?)")
                 frames_meta.append(
                     {
                         "index": index,
                         "bbox": list(crop_result.box),
+                        "face_bbox": [float(value) for value in face.bbox],
                         "score": float(face.score),
                         "landmarks5": landmarks,
                     }
                 )
 
+        if n_decoded == 0:
+            # The container opened and claimed frames, yet not one of them decoded.
+            return _failure(
+                record,
+                status="decode_error",
+                reason=f"no frame decoded (container claims {total_frames})",
+            )
         if not frames_meta:
             return _failure(record, status="no_face", reason="no frame produced a usable face")
 

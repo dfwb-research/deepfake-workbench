@@ -140,7 +140,9 @@ def run(
         )
         return
     rows: list[list[Any]] = [[status, count] for status, count in summary.counts_by_status.items()]
-    rows.append(["skipped", summary.n_skipped])
+    # Videos this run left alone because the store already holds their outcome; named apart from
+    # the "skipped" status a video's own row can carry.
+    rows.append(["already done", summary.n_skipped])
     click.echo(table(["STATUS", "COUNT"], rows))
     click.echo(f"store: {summary.store}")
 
@@ -203,8 +205,8 @@ def _sampling_text(spec: SamplingSpec) -> str:
 
 
 def _crop_text(spec: CropSpec) -> str:
-    shape = "square" if spec.square else "free"
-    return f"{spec.scale}x/{spec.size}/{shape}"
+    # Every crop is square (the profile allows nothing else), but the column says so all the same.
+    return f"{spec.scale}x/{spec.size}/square"
 
 
 @preprocess.command("profiles")

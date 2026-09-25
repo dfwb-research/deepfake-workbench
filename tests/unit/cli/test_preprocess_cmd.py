@@ -142,6 +142,17 @@ def test_run_processes_the_dataset_and_prints_a_summary_table(run, demo):
     assert any(line.startswith("store:") for line in rest)
 
 
+def test_the_summary_table_counts_videos_already_done_apart_from_the_skipped_status(run, demo):
+    assert run("preprocess", "run", "demo", "--profile", PROFILE).code == 0
+    result = run("preprocess", "run", "demo", "--profile", PROFILE)
+    assert result.code == 0, result.err
+    header, *rest = result.out.splitlines()
+    assert header.split() == ["STATUS", "COUNT"]
+    assert [line.split() for line in rest if not line.startswith("store:")] == [
+        ["already", "done", "3"]
+    ]
+
+
 def test_run_json_prints_a_run_summary(run, demo):
     result = run("preprocess", "run", "demo", "--profile", PROFILE, "--json")
     assert result.code == 0, result.err
@@ -322,6 +333,5 @@ def test_sampling_text_covers_every_shape():
     assert _sampling_text(SamplingSpec(mode="stride", frames=10, stride=3)) == "stride 10f/3"
 
 
-def test_crop_text_covers_both_shapes():
+def test_crop_text_gives_scale_size_and_shape():
     assert _crop_text(CropSpec(scale=1.3, size=256, square=True, align="none")) == "1.3x/256/square"
-    assert _crop_text(CropSpec(scale=1.0, size=64, square=False, align="none")) == "1.0x/64/free"

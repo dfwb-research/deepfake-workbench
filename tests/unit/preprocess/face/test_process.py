@@ -253,9 +253,13 @@ def test_clip_json_has_the_documented_schema(tmp_path):
     assert clip["track"]["strategy"] == "largest-then-iou"
     assert clip["track"]["identity_switch"] is False
     for frame in clip["frames"]:
-        assert set(frame) == {"index", "bbox", "score", "landmarks5"}
+        assert set(frame) == {"index", "bbox", "face_bbox", "score", "landmarks5"}
         assert frame["landmarks5"] is None
-        assert len(frame["bbox"]) == 4
+        # The crop square, in whole source pixels; the detector's box, in source pixels as found.
+        assert frame["bbox"] == [8, 0, 40, 32]
+        assert all(type(value) is int for value in frame["bbox"])
+        assert frame["face_bbox"] == [8.0, 0.0, 40.0, 32.0]
+        assert all(type(value) is float for value in frame["face_bbox"])
         assert frame["score"] == 1.0
 
 
@@ -521,6 +525,41 @@ def test_a_degenerate_box_is_recorded_as_crop_empty_without_failing_the_whole_cl
     assert [frame["index"] for frame in clip["frames"]] == [0, 4, 7]
 
 
+class _SlidingBackend:
+    """One 16 x 16 face per frame, 4 pixels further right on each frame of the batch."""
+
+    name = "sliding-fake"
+    version = "1"
+    license = "MIT"
+    has_pose = False
+    meta: ClassVar[dict[str, Any]] = {}
+
+    def detect(self, frames: np.ndarray) -> list[list[Face]]:
+        return [
+            [Face(bbox=(4.0 * position, 0.0, 4.0 * position + 16, 16.0), score=1.0)]
+            for position in range(len(frames))
+        ]
+
+
+def test_face_bbox_is_the_smoothed_box_the_crop_was_taken_around(tmp_path):
+    video = tmp_path / "video.avi"
+    _write_clip(video, 3)
+    profile = _profile(
+        track=TrackSpec(iou=0.3, strategy="largest-then-iou", ema=0.5),
+        sampling=SamplingSpec(mode="first-consecutive", frames=3),
+    )
+    out_dir = tmp_path / "out"
+
+    process_video(video, _inventory_record(), profile, _SlidingBackend(), out_dir)
+
+    clip = json.loads((out_dir / "clip.json").read_text("utf-8"))
+    assert [frame["face_bbox"] for frame in clip["frames"]] == [
+        [0.0, 0.0, 16.0, 16.0],  # the first box starts the smoothing
+        [2.0, 0.0, 18.0, 16.0],  # 0.5 * (4, 0, 20, 16) + 0.5 * (0, 0, 16, 16)
+        [5.0, 0.0, 21.0, 16.0],  # 0.5 * (8, 0, 24, 16) + 0.5 * (2, 0, 18, 16)
+    ]
+
+
 # -------------------------------------------------------------------------------- landmarks flag
 
 
@@ -675,18 +714,57 @@ def _truncate_until_nothing_decodes(path: Path) -> None:
     raise AssertionError(f"{path}: no truncation fraction gave zero decodable frames")
 
 
-def test_a_completely_undecodable_video_with_a_nonzero_reported_count_is_no_face(tmp_path):
+@pytest.mark.parametrize(
+    ("library", "reason"),
+    [
+        # OpenCV reads nothing and stops, as at the end of any clip.
+        ("opencv", "no frame decoded (container claims 20)"),
+        # PyAV reports the damage on its first frame.
+        ("pyav", "video.avi: decoding failed partway through"),
+    ],
+)
+def test_a_video_that_claims_frames_but_decodes_none_is_a_decode_error(tmp_path, library, reason):
     video = tmp_path / "video.avi"
     _write_clip(video, 20)
     _truncate_until_nothing_decodes(video)
 
-    profile = _profile(sampling=SamplingSpec(mode="all"))
+    profile = _profile(
+        sampling=SamplingSpec(mode="all"), decode=DecodeSpec(library=library, color="rgb")
+    )
     out_dir = tmp_path / "out"
 
     result = process_video(video, _inventory_record(), profile, CenterBackend(), out_dir)
 
-    assert result.status == "no_face"
+    assert result.status == "decode_error"
+    assert result.reason is not None
+    assert result.reason.startswith(reason)
+    assert (result.n_frames, result.frame_indices, result.track) == (0, [], None)
     assert not out_dir.exists()
+    assert list(tmp_path.glob("out.tmp-*")) == []
+
+
+def test_a_frame_that_cannot_be_written_fails_the_video(tmp_path, monkeypatch):
+    video = tmp_path / "video.avi"
+    _write_clip(video, 8)
+    profile = _profile(sampling=SamplingSpec(mode="uniform", frames=4))
+    out_dir = tmp_path / "out"
+    real_imwrite = cv2.imwrite
+
+    def into_a_read_only_directory(filename: str, image: np.ndarray, params: Any = None) -> bool:
+        # The directory turns read-only under the writer, as a full or read-only disk would.
+        Path(filename).parent.chmod(0o555)
+        return bool(real_imwrite(filename, image, params))
+
+    monkeypatch.setattr(cv2, "imwrite", into_a_read_only_directory)
+    try:
+        with pytest.raises(OSError, match=r"frame_000000\.png"):
+            process_video(video, _inventory_record(), profile, CenterBackend(), out_dir)
+    finally:
+        for leftover in tmp_path.glob("out.tmp-*"):
+            leftover.chmod(0o755)
+
+    assert not out_dir.exists()
+    assert list(tmp_path.glob("out.tmp-*")) == []
 
 
 def test_a_second_ok_run_replaces_the_first_output_directory(tmp_path):

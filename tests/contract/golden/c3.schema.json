@@ -38,6 +38,7 @@
       "additionalProperties": false,
       "properties": {
         "align": {
+          "const": "none",
           "title": "Align",
           "type": "string"
         },
@@ -52,6 +53,7 @@
           "type": "integer"
         },
         "square": {
+          "const": true,
           "title": "Square",
           "type": "boolean"
         }
@@ -193,10 +195,7 @@
       "additionalProperties": false,
       "properties": {
         "color": {
-          "enum": [
-            "rgb",
-            "bgr"
-          ],
+          "const": "rgb",
           "title": "Color",
           "type": "string"
         },

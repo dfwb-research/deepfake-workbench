@@ -129,8 +129,9 @@ class TrackSpec(RecordModel):
 class CropSpec(RecordModel):
     scale: float = Field(gt=0)
     size: int = Field(ge=1)
-    square: bool
-    align: str
+    # Only square, unaligned crops are implemented, so a profile cannot ask for anything else.
+    square: Literal[True]
+    align: Literal["none"]
 
 
 class SamplingSpec(RecordModel):
@@ -149,7 +150,8 @@ class SamplingSpec(RecordModel):
 
 class DecodeSpec(RecordModel):
     library: Literal["opencv", "pyav"]
-    color: Literal["rgb", "bgr"]
+    # Frames are always decoded, cropped and written as RGB, whichever library decodes them.
+    color: Literal["rgb"]
 
 
 class ExtrasSpec(RecordModel):

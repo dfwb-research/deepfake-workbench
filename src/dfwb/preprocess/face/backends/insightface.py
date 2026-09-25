@@ -40,7 +40,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from dfwb.core.errors import ConfigError, ContractError, InstallationError
-from dfwb.core.fetch import fetch
+from dfwb.core.fetch import OFFLINE_ENV, fetch
 from dfwb.preprocess.face.backends._common import (
     cache_models_dir,
     check_frame,
@@ -131,7 +131,17 @@ def _download_pack(target: Path) -> None:
     """
     archive_path = target.parent / f".{PACK}.{os.getpid()}.zip"
     _log.info("downloading the insightface %s models (289 MB) from %s", PACK, PACK_URL)
-    fetch(PACK_URL, PACK_SHA256, archive_path)
+    try:
+        fetch(PACK_URL, PACK_SHA256, archive_path)
+    except InstallationError as exc:
+        # fetch's own hint names the download's private file, which is no use to anyone placing
+        # the models by hand: name the two model files and where they are looked for instead.
+        directories = " or ".join(str(directory) for directory in model_dirs())
+        raise InstallationError(
+            exc.message,
+            hint=f"put {DETECTOR} and {RECOGNIZER} from {PACK_URL} in {directories} yourself; "
+            f"otherwise check your network connection and that {OFFLINE_ENV} is unset",
+        ) from None
     try:
         with zipfile.ZipFile(archive_path) as archive:
             for name, sha256 in MODEL_FILES.items():
