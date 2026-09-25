@@ -36,7 +36,7 @@ from dfwb.models.source import load_run
 
 DFWB = Path(sys.executable).parent / "dfwb"
 
-VIDEOS = 40
+VIDEOS = 200  # the built-in toyfake pack's official scheme lists exactly this tree
 SEED = 0
 PROFILE = "toy-64-center-8f"
 
@@ -127,15 +127,12 @@ def test_the_srm_stem_trains_and_is_really_srm(tmp_path):
     config = tmp_path / "train.yaml"
     config.write_text(_CONFIG, "utf-8")
 
-    # only 9 training clips are left once the built-in pack's video list is joined against this
-    # smaller tree (see test_toyfake_train.py), so the template's own batch size (16) is too big.
     trained = _run(
         tmp_path,
         env,
         "train",
         "-c",
         str(config),
-        "data.loader.batch_size=4",
         "--device",
         "cpu",
         "--json",

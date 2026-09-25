@@ -1,15 +1,13 @@
 """The toyfake journey end to end, through the ``dfwb`` command, on CPU.
 
-``datasets synth`` writes 40 videos, ``inventory build`` scans them, ``preprocess run`` with the
+``datasets synth`` writes 200 videos, ``inventory build`` scans them, ``preprocess run`` with the
 ``toy-64-center-8f`` profile processes every one of them into a store, and ``dfwb train`` on the
 shipped ``toy-cpu`` template trains a tiny detector for two epochs.
 
-The built-in ``toyfake`` protocol pack's ``official`` scheme pins its video list to the tree
-``--videos 200 --seed 0`` makes, so most of what it lists is missing from this smaller run's
-store: those videos are excluded with the documented reason, and training still runs on what is
-left. With ``--seed 0`` (the template's own seed), the fakes that do survive that exclusion happen
-to land in the validation split alongside its reals, so the reported AUC is a real, defined number,
-never the "no validation" fallback.
+``--videos 200 --seed 0`` is not an arbitrary size: it is exactly the tree the built-in ``toyfake``
+protocol pack's ``official`` scheme lists (its card says so), so every video the scheme's train and
+val splits ask for is actually in the store -- nothing is excluded, and both classes end up in both
+splits, so the reported AUC is a real, defined number, never the "no validation" fallback.
 
 Skipped where PyAV or OpenCV (the ``preprocess`` extra) is not installed, since ``datasets synth``
 needs PyAV to encode real media and the face pipeline needs OpenCV to decode it; skipped where
@@ -37,13 +35,9 @@ from dfwb.models.source import load_run
 
 DFWB = Path(sys.executable).parent / "dfwb"
 
-VIDEOS = 40
+VIDEOS = 200  # the built-in toyfake pack's official scheme lists exactly this tree
 SEED = 0
 PROFILE = "toy-64-center-8f"
-
-# ``toy-cpu``'s own loader batch size (16) is larger than the 9 training clips left once the
-# built-in pack's mismatch excludes the rest: see the test's assertions on ``data.json`` below.
-_BATCH_SIZE = "4"
 
 _CONFIG = """\
 schema: dfwb.train/1
@@ -153,7 +147,6 @@ def test_the_toyfake_journey_trains_on_cpu(tmp_path):
         "train",
         "-c",
         str(config),
-        f"data.loader.batch_size={_BATCH_SIZE}",
         "--device",
         "cpu",
         "--json",
@@ -186,17 +179,17 @@ def test_the_toyfake_journey_trains_on_cpu(tmp_path):
         "last/model.safetensors",
     ]
 
-    # the built-in pack's video list does not match this smaller, freshly seeded tree: most of it
-    # is excluded as not processed, and training runs on the videos that do match by name.
+    # this is exactly the tree the built-in pack's official scheme lists: nothing is excluded,
+    # and both classes reach both splits.
     data = json.loads((run_dir / "data.json").read_text("utf-8"))
     (train_source,) = data["train"][0]["index"]["sources"]
     (val_source,) = data["val"][0]["index"]["sources"]
-    assert train_source["counts"]["excluded"] == {"not-processed": 113}
-    assert train_source["counts"]["included"] == 9
-    assert train_source["labels"] == {"0": 9}
-    assert val_source["counts"]["excluded"] == {"not-processed": 32}
-    assert val_source["counts"]["included"] == 5
-    assert val_source["labels"] == {"0": 4, "1": 1}  # both classes reach validation
+    assert train_source["counts"]["excluded"] == {}
+    assert val_source["counts"]["excluded"] == {}
+    for source in (train_source, val_source):
+        assert source["counts"]["included"] > 0
+        assert set(source["labels"]) == {"0", "1"}
+        assert all(count > 0 for count in source["labels"].values())
 
     # the validation AUC is a defined number: not NaN, not the "no validation" fallback
     monitor = result["metrics"]["monitor"]
