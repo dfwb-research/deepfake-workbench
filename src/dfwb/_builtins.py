@@ -112,6 +112,30 @@ def register(api: PluginAPI) -> None:
         summary="Linear, an optional BatchNorm, GELU, Dropout, then a Linear output layer",
         requires=("torch",),
     )
+    api.losses.add(
+        "bce",
+        target="dfwb.train.losses:BCELoss",
+        summary="Binary cross-entropy on the logit, with an optional pos_weight",
+        requires=("torch",),
+    )
+    api.losses.add(
+        "ce",
+        target="dfwb.train.losses:CELoss",
+        summary="Categorical cross-entropy for multi-class heads, with label smoothing",
+        requires=("torch",),
+    )
+    api.losses.add(
+        "focal",
+        target="dfwb.train.losses:FocalLoss",
+        summary="Binary focal loss on the logit (alpha, gamma); gamma=0, alpha=None is bce",
+        requires=("torch",),
+    )
+    api.losses.add(
+        "label-smoothing-bce",
+        target="dfwb.train.losses:LabelSmoothingBCELoss",
+        summary="Binary cross-entropy with smoothed targets y(1-eps) + eps/2",
+        requires=("torch",),
+    )
     api.detector_sources.add(
         "run",
         target="dfwb.models.source:load_run",
