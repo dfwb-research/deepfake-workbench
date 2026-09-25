@@ -5,9 +5,10 @@ into dfwb's registries: `layers`, `transforms`, `backbones`, `temporal_pools`, `
 `metrics`, `eval_suites`, `face_backends`, `inventory_builders`, `protocol_packs`, `detectors`,
 `detector_sources` and `callbacks`. Inventory builders and protocol packs are covered in
 `docs/guides/add-a-dataset.md`; this guide covers the model and training side — a stem layer, a
-backbone, a temporal pool, a head, a loss, or a `detector_sources` entry — since those are what
-turn published research (a forensic front-end, a backbone architecture, a loss function) into
-something a `model:`/`loss:` config can name, without patching the framework itself.
+backbone, a temporal pool, a head, a loss, a training callback, or a `detector_sources` entry —
+since those are what turn published research (a forensic front-end, a backbone architecture, a
+loss function) into something a `model:`/`loss:`/`train:` config can name, without patching the
+framework itself.
 
 ## The entry point
 
@@ -150,6 +151,14 @@ the layer itself — appends a `1x1` conv when `out_channels != 3`. This is the 
 makes forensic front-ends (an SRM residual filter bank, a frequency-domain transform, ...) usable
 in front of any backbone without either backbone or framework code knowing about them.
 
+The stem sees each frame exactly as the backbone would have: `[B*T, C, H, W]` **after** input
+adaptation, so already resized to the backbone's input size, in its colour order and value
+range, and normalised with its mean and std (see "Input adaptation" in
+`docs/concepts/detectors.md`). A filter that expects raw `[0, 1]` pixels has to allow for that
+normalisation. A stem only applies to `kind="image"` backbones: a `kind="video"` backbone sees
+whole clips, never single frames, so a stem configured in front of one is a `ConfigError` when the
+detector is built.
+
 ### `backbones`
 
 ```python
@@ -164,6 +173,14 @@ class Backbone(nn.Module):
         self, freeze: FreezeSpec
     ) -> None: ...  # base class handles every mode but lora
 ```
+
+A checkpoint rebuilds a backbone with `pretrained` switched off (its weights come from the
+checkpoint) through the `Backbone.from_checkpoint(params, state)` classmethod, which by default
+simply calls the class with the saved config parameters. A backbone whose parameters alone
+cannot rebuild its architecture offline (a hub id that would have to be fetched, say) returns
+what it needs, as JSON, from `checkpoint_state()` at save time and overrides `from_checkpoint`
+to build from it, as `hf-vision` does with its Hugging Face config. Loading a checkpoint must
+never download anything.
 
 `param_groups()` names this backbone's own parameter groups (by convention `"stem"`, `"blocks.<i>"`,
 `"norm"`, ...); `partial` freezing and layer-wise LR decay both go only by this ordering, never a
@@ -205,6 +222,28 @@ def forward(self, out: DetectorOutput, batch: ClipBatch) -> LossOutput: ...
 logging (a loss with no sub-parts still puts `total` under one key, as the worked example above
 does). Read `out.logit`, never `out.score`, for a training loss; `out.logit` is only set on the
 `forward()` (training) path.
+
+### `callbacks`
+
+A Lightning `Callback` (`lightning.pytorch.callbacks.Callback`), built with the params a config
+gives it. A run adds the callbacks named in `train.callbacks` beside the framework's own:
+
+```yaml
+train:
+  callbacks: [{name: my-callback, every: 2}]
+```
+
+Its params are checked with the rest of the config, before any data loads. Whatever its
+`state_dict()` returns (tensors, numbers, strings and containers of them) is saved with the run's
+resume state at every epoch end and handed back to `load_state_dict()` when an interrupted run
+resumes, so state such as a running estimate survives a resume. `train.lightning` cannot add
+callbacks; `train.callbacks` is the way in.
+
+### Samplers are not pluggable
+
+There is no `samplers` registry in this version: the training sampler is one of the
+`data.loader.balance` modes (`none`, `video-label`, `source`) or, with `data.pairs: true`, the
+pair-grouped batching. A plugin that needs its own batch construction cannot supply one yet.
 
 ### `detector_sources`
 

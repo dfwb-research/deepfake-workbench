@@ -69,7 +69,14 @@ class DetectorMeta:
 For a detector `dfwb train` assembles, `name` is `<backbone>-<pool>-<head>`, `version` is the
 installed `dfwb` version, `license` comes from the `deepfake-workbench` distribution's own
 metadata, and `weights_license`/`citation` are left unset (nothing to declare for a run trained
-locally). `source` is filled in once the detector is loaded back from a saved run (see below).
+locally). `source` is set when the detector is built, to `run:<fingerprint>` (the fingerprint of
+the config that trained it), and saved with it. `training_data` lists the protocols the run
+trained on, one pinned reference each, `<pack>:<dataset>/<scheme>@<pack version>` (for example
+`dfwb-protocols:ffpp/official@1.2.0`); which splits and `where` filters were used is in the run's
+`data.json`. The run also records its clip regime in `input`: `frames` and `sampling` are the
+`data.clip` it trained and validated on, unless `model.input` sets them, so scoring the detector
+later builds the same clips. A detector loaded back from a checkpoint keeps all of this exactly as
+it was saved; nothing is regenerated from the software installed at load time.
 
 ### `ClipBatch` and `DetectorOutput`
 
@@ -108,7 +115,8 @@ itself before returning `DetectorOutput`.
 `backbone -> (stem ->) (temporal pool ->) head`. It has two entry points, not one:
 
 - `forward(batch)` — the training path. Returns logits (`DetectorOutput.logit` set, `score` its
-  sigmoid); losses read `logit`, not `score`.
+  sigmoid); losses read `logit`, not `score`. The head and the sigmoid always run in float32,
+  even under mixed-precision autocast, so scores are never rounded to half precision.
 - `predict(batch)` — the `Detector` contract's inference path. Switches to `eval()` for the
   duration (restoring whatever mode the module was in before, even on error), runs under
   `torch.inference_mode()`, and also fills `frame_scores` when the backbone is an image backbone
@@ -128,15 +136,21 @@ run:<dir>[#best|#last]
 ```
 
 `<dir>` may be a run directory itself (holding `checkpoints/<tag>/`), a `latest` symlink, or a
-run-name directory with a `latest` symlink inside it; `#best` is the default tag. For example,
+run-name directory with a `latest` symlink inside it; `#best` is the default tag, so
+`run:<dir>` loads the best checkpoint by the run's monitor. For example,
 after `dfwb train -c my-config.yaml`, `run:runs/my-experiment/latest#best` and
 `run:runs/my-experiment/latest#last` both resolve, as does `run:runs/my-experiment` (its own
 `latest` symlink) or the exact timestamped directory. A dangling `latest` symlink, or a tag with no
 matching checkpoint, raises `ConfigError` naming what was tried.
 
-Resolving the reference rebuilds the detector purely from registries and JSON — `dfwb.models.source`
-never imports `dfwb.train`, so loading a run needs only the `train` extra's runtime pieces
-(torch, timm/transformers as applicable), not Lightning.
+Resolving the reference rebuilds the detector purely from registries, JSON and the saved
+weights — `dfwb.models.source` never imports `dfwb.train`, so loading a run needs only the
+`train` extra's runtime pieces (torch, timm/transformers as applicable), not Lightning. **Loading
+never downloads anything**: the backbone is rebuilt with `pretrained` off, since its weights come
+from `model.safetensors`, and an `hf-vision` backbone is rebuilt from the full Hugging Face model
+config saved in `detector.json` (`backbone_state`), never from the hub or the original model
+directory. A checkpoint therefore loads on a machine without network access, and keeps loading
+after the upstream model is removed.
 
 ### What a run directory holds
 
@@ -151,7 +165,7 @@ runs/<run.name>/<YYYYmmdd-HHMMSS>-s<seed>/
   checkpoints/last/model.safetensors
   checkpoints/last/detector.json
   logs/                          # metrics.csv, TensorBoard, heartbeat.json
-  scores/val/<source>.scores.{csv,meta.json}
+  scores/val/<source>.scores.{csv,meta.json}   # the last epoch's validation scores
   report.md
   metrics.json
 runs/<run.name>/latest -> <newest run>       # relative symlink
@@ -160,15 +174,21 @@ runs/<run.name>/latest -> <newest run>       # relative symlink
 `checkpoints/<tag>/` is the only place weights live, and it is always two files:
 
 - **`model.safetensors`** — weights only, via `safetensors.torch.save_file`/`load_file`.
-- **`detector.json`** — `DetectorMeta` (as a plain dict), the resolved `model:` config, and, for
-  every component the config uses (`backbones`, `temporal_pools`, `heads`, and `layers` when a
-  stem is set), which registry key built it, which provider registered that key, and the
-  provider's installed version at save time.
+- **`detector.json`** — `DetectorMeta` (as a plain dict), the resolved `model:` config, what the
+  backbone needs to rebuild its architecture offline (`backbone_state`; empty for most
+  backbones), and, for every component the config uses (`backbones`, `temporal_pools`, `heads`,
+  and `layers` when a stem is set), which registry key built it, which provider registered that
+  key, and the provider's installed version at save time.
+
+`scores/val/` holds the validation scores of the **last** epoch, not of `checkpoints/best`:
+`dfwb eval scores/val/` reproduces the last validation's logged numbers, while the checkpoint
+`run:<dir>` loads by default is the best one (see `docs/concepts/training.md`).
 
 **No pickled modules, ever.** Loading a checkpoint never calls `torch.load`; it reads
 `model.safetensors` (a data-only tensor format with no code execution) and `detector.json` (plain
 JSON), then rebuilds the module from scratch through the same registries the original config used.
-If a recorded provider is not installed, or is installed at an incompatible major version,
+If a recorded provider is not installed, or is installed at an incompatible version (another
+major version; below 1.0, another minor version, since a 0.x minor release may break things),
 `InstallationError` names it (registry, key, provider and version) rather than failing on an
 `AttributeError` deep inside a class that no longer exists. Resuming an interrupted run (`resume/`
 inside the run directory, removed once the run finishes) follows the same rule: weights and
@@ -192,9 +212,10 @@ Two things cannot be derived honestly, and are refused with `ContractError` unle
 - **`spec.crop_scale` wider than the store's own** — the store never kept the extra margin a wider
   crop would need.
 
-The error names a compatible profile when one of the caller's candidate profiles would actually
-serve the spec (same crop kind, at least the requested scale), and otherwise states the
-requirement plainly and points at `dfwb preprocess profiles`. With `allow_mismatch=True`, both
+The error names a compatible profile when one of the processed stores already in the work root
+would actually serve the spec (same crop kind, at least the requested scale), and lists every
+built-in profile that would serve it once the data is processed with it; with neither, it states
+the requirement plainly and points at `dfwb preprocess profiles`. With `allow_mismatch=True`, both
 refusals instead proceed: `AdaptResult.mismatch` is `True` and `AdaptResult.reason` records which
 mismatch was allowed, so the caller (training, and later scoring) can note it rather than silently
 pretend the data lines up.
@@ -205,6 +226,8 @@ transform pipeline — a backbone declares the mean/std its pretrained weights e
 
 ## See also
 
+- `docs/concepts/training.md` — what the training keys do: clip sampling, data loading,
+  precision, freezing, the optimiser, and what a run's checkpoints and score files hold.
 - `docs/concepts/processing-profiles.md` — what a processed store's `ProcessingProfile` records,
   which `adapt()` reads.
 - `docs/guides/write-a-plugin.md` — registering a `backbones`, `temporal_pools`, `heads` or `layers`

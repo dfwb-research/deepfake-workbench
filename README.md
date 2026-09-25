@@ -58,8 +58,9 @@ that identifies the experiment.
 
 See `docs/concepts/protocols.md` for what `verify` checks and its exit codes,
 `docs/concepts/processing-profiles.md` for the shipped face-processing profiles and the processed
-store's layout, `docs/concepts/detectors.md` for the detector contract a trained run implements and
-how to load one back, `docs/install.md` for installing the face-detection backends and a PyTorch
+store's layout, `docs/concepts/training.md` for what the training keys do,
+`docs/concepts/detectors.md` for the detector contract a trained run implements and how to load
+one back, `docs/install.md` for installing the face-detection backends and a PyTorch
 build, and `docs/guides/add-a-dataset.md` / `docs/guides/write-a-plugin.md` for wiring up a real
 dataset or a model component of your own.
 
