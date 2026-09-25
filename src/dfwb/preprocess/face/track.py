@@ -1,7 +1,10 @@
 """Choosing one face per frame and following it through a clip.
 
-These are the rules the earlier face pipeline used, carried over unchanged so that a store built
-with this framework picks the same face on every frame as a store built before it:
+These are the rules the earlier face pipeline used, carried over unchanged. With the
+``largest-then-iou`` strategy, a store built with this framework therefore picks the same face on
+every frame as a store built before it. With ``identity-cluster`` it does so given the same
+subject; the subject itself can differ, because the subject search weighs each face by its true
+head yaw (see :mod:`~dfwb.preprocess.face.identity`), which the earlier pipeline did not:
 
 1. A face whose detection score is below ``min_score`` counts as not there at all.
 2. With a subject embedding (the ``identity-cluster`` strategy), the face most similar to the

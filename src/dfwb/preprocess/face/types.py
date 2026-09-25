@@ -21,7 +21,9 @@ class Face:
         landmarks5: Five facial landmarks (eyes, nose tip, mouth corners) as ``(x, y)`` pairs in
             the same coordinates as ``bbox``, when the backend provides them.
         embedding: An identity embedding for the face, when the backend computes one; only
-            identity-guided subject selection uses it. It takes no part in comparing or hashing
+            identity-guided subject selection uses it. It is scaled to unit length (Euclidean
+            norm 1), as insightface's ``normed_embedding`` is, so the dot product of two
+            embeddings is their cosine similarity. It takes no part in comparing or hashing
             faces: ``==`` on two numpy arrays gives an array rather than a bool, which would make
             comparing two faces raise.
         yaw: The head's left-right rotation in degrees (0 is facing the camera), when the backend

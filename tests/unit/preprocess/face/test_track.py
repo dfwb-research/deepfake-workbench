@@ -1,10 +1,12 @@
 """Choosing one face per frame and following it across a clip.
 
-The rules pinned here are the earlier face pipeline's, so that a store built with this framework
-picks the same face on every frame as a store built before it: the largest face first, then the
-face overlapping the last chosen one most, back to the largest when nothing overlaps enough,
-frames without a usable face simply dropped, and (for identity-guided selection) the face most
-similar to the clip's subject.
+The rules pinned here are the earlier face pipeline's: the largest face first, then the face
+overlapping the last chosen one most, back to the largest when nothing overlaps enough, frames
+without a usable face simply dropped, and (for identity-guided selection) the face most similar
+to the clip's subject. With ``largest-then-iou`` a store built with this framework therefore picks
+the same face on every frame as a store built before it; with ``identity-cluster`` it does so
+given the same subject, since the subject search now weighs faces by their true head yaw and can
+settle on a different subject than the earlier pipeline did.
 """
 
 from __future__ import annotations
