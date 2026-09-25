@@ -216,6 +216,10 @@ name = "models, score and zoo never import eval or preprocess"
 type = "forbidden"
 source_modules = ["dfwb.models", "dfwb.score", "dfwb.zoo"]
 forbidden_modules = ["dfwb.eval", "dfwb.preprocess"]
+# score reuses the torch-free clip-to-video reduction eval.aggregate already ships, rather than
+# a second copy of it; every other eval.* module (metrics, bootstrap, compare, ...) stays off
+# limits to score.
+ignore_imports = ["dfwb.score.harness -> dfwb.eval.aggregate"]
 
 [[tool.importlinter.contracts]]
 id = "train-no-preprocess"
