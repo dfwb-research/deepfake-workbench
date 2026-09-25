@@ -8,7 +8,7 @@ import pytest
 
 from dfwb.core.log import get_logger, setup_logging
 from dfwb.core.paths import resolve_roots
-from dfwb.core.runmeta import capture_env, capture_git, collect_run_info, sanitize_command, utc_now
+from dfwb.core.runmeta import capture_git, collect_run_info, sanitize_command, utc_now
 from dfwb.core.seed import seed_everything
 
 
@@ -20,12 +20,18 @@ def test_seed_everything_is_reproducible(monkeypatch):
     assert (random.random(), np.random.rand()) == first  # noqa: NPY002
 
 
-def test_seed_everything_skips_missing_torch(monkeypatch):
-    from dfwb.core import seed
-
-    monkeypatch.setattr(seed, "_installed", lambda name: name == "numpy")
-    seed_everything(1, deterministic=True)  # no torch: nothing to do, no error
-    assert "torch" not in sys.modules
+def test_seed_everything_skips_missing_torch():
+    # A fresh interpreter, so "torch" starts absent from sys.modules regardless of whatever
+    # other, unrelated tests in this worker process have legitimately imported by now (the
+    # models layer imports torch at module level; see dfwb.models.backbone).
+    code = (
+        "import sys\n"
+        "from dfwb.core import seed\n"
+        "seed._installed = lambda name: name == 'numpy'\n"
+        "seed.seed_everything(1, deterministic=True)\n"  # no torch: nothing to do, no error
+        "assert 'torch' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_setup_logging_is_idempotent_and_leaves_root_alone(capsys):
@@ -55,11 +61,18 @@ def test_utc_now_format():
 
 
 def test_capture_env_does_not_import_torch():
-    env = capture_env()
-    assert env["python"].count(".") == 2
-    assert env["dfwb"]
-    assert "torch" not in sys.modules
-    assert env["device"] is None
+    # A fresh interpreter: see test_seed_everything_skips_missing_torch for why this can't check
+    # sys.modules in-process once anything else in the suite has legitimately imported torch.
+    code = (
+        "import sys\n"
+        "from dfwb.core.runmeta import capture_env\n"
+        "env = capture_env()\n"
+        "assert env['python'].count('.') == 2\n"
+        "assert env['dfwb']\n"
+        "assert 'torch' not in sys.modules\n"
+        "assert env['device'] is None\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_capture_git(tmp_path):

@@ -64,3 +64,9 @@ def register(api: PluginAPI) -> None:
         target="dfwb.eval.metrics:aurc",
         summary="Area under the risk-coverage curve for selective prediction",
     )
+    api.backbones.add(
+        "tiny-cnn",
+        target="dfwb.models.backbones.tiny_cnn:TinyCNN",
+        summary="A tiny 3-block CNN backbone for CPU tests and toy training runs",
+        requires=("torch",),
+    )

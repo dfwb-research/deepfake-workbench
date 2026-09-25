@@ -1,9 +1,20 @@
 """Importing dfwb (every module of it) changes nothing: no .env loading, no env vars, no files,
 no logging handlers, no warning filters, no plugin loading and no optional-extra imports.
 
-numpy is excluded from that last check: it is a base, always-installed dependency (unlike torch,
-dotenv and rich, which are optional extras), and the layers that compute with it import it at
-module level like any other required library."""
+numpy is excluded from that last check: it is a base, always-installed dependency (unlike dotenv
+and rich, which are optional extras), and the layers that compute with it import it at module
+level like any other required library.
+
+torch, when it is installed, gets the same treatment as numpy: it is pre-imported, before the
+before/after snapshot is taken, so its own import-time warning-filter registrations (torch does
+several, unconditionally) are never mistaken for a side effect of importing dfwb. It is a required
+dependency of the torch layers (``dfwb.data``, ``dfwb.models``, ``dfwb.train``, ``dfwb.score``,
+``dfwb.zoo``), which import it at module level by design, not as a side effect. Those layers are
+only walked here when torch happens to be installed, so this test still runs (and still proves the
+torch-free layers are silent) in an environment without it. What it does *not* check is whether
+torch is *absent* from the torch-free layers (``dfwb.core``, ``dfwb.protocols``, ``dfwb.eval``,
+``dfwb.preprocess``) when it is not installed at all: that is ``test_torch_free.py``'s job, which
+runs those layers' imports with torch actively blocked."""
 
 import json
 import os
@@ -11,15 +22,36 @@ import subprocess
 import sys
 
 CODE = r"""
-import importlib, json, logging, os, pkgutil, sys, warnings
+import importlib, importlib.util, json, logging, os, pkgutil, sys, warnings
 import numpy  # noqa: F401 -- loaded first so its own import-time filter registration is not
               # mistaken for a side effect of importing dfwb (see the module docstring)
+
+TORCH_LAYERS = ("dfwb.data", "dfwb.models", "dfwb.train", "dfwb.score", "dfwb.zoo")
+
+
+def _torch_installed():
+    try:
+        return importlib.util.find_spec("torch") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _is_torch_layer(name):
+    return any(name == layer or name.startswith(layer + ".") for layer in TORCH_LAYERS)
+
+
+torch_installed = _torch_installed()
+if torch_installed:
+    import torch  # noqa: F401 -- pre-imported for the same reason as numpy above
+
 env = dict(os.environ)
 handlers = list(logging.getLogger().handlers)
 filters = list(warnings.filters)
 files = sorted(os.listdir("."))
 import dfwb
 for info in pkgutil.walk_packages(dfwb.__path__, "dfwb."):
+    if not torch_installed and _is_torch_layer(info.name):
+        continue
     importlib.import_module(info.name)
 plugins = sys.modules.get("dfwb.core.plugins")
 print(json.dumps({
@@ -28,7 +60,7 @@ print(json.dumps({
     "warning_filters_changed": warnings.filters != filters,
     "files_changed": sorted(os.listdir(".")) != files,
     "plugins_loaded": bool(plugins is not None and plugins._report is not None),
-    "heavy_modules": sorted(m for m in ("torch", "dotenv", "rich") if m in sys.modules),
+    "heavy_modules": sorted(m for m in ("dotenv", "rich") if m in sys.modules),
 }))
 """
 
@@ -61,6 +93,15 @@ def test_importing_every_module_has_no_side_effects(tmp_path):
         "heavy_modules": [],
     }
     assert list(home.iterdir()) == []
+
+
+def test_walk_skips_the_torch_layers_when_torch_is_unavailable(blocked):
+    """The same walk, but with torch actively blocked: it must still succeed, proving the torch
+    layers are only walked when ``find_spec("torch")`` finds it, not merely when it happens to be
+    installed in this particular environment (which it is, throughout the rest of this file)."""
+    done = blocked([sys.executable, "-c", CODE], block=("torch",))
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["heavy_modules"] == []
 
 
 def test_package_init_only_exposes_the_version():

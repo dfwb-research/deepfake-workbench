@@ -64,7 +64,8 @@ def _check(exe: Path, **env: str) -> None:
     assert status["fake-broken"] == ("failed", "RuntimeError: simulated failure inside register()")
 
     human = _dfwb("plugins", "list", exe=exe, **env)
-    assert "layers/fake-stem  dfwb-fake-plugin-ok  Fake stem layer" in human.stdout
+    assert "layers/fake-stem" in human.stdout
+    assert "dfwb-fake-plugin-ok  Fake stem layer" in human.stdout
     assert "1 plugin(s) failed or were skipped" in human.stderr
 
     lookup = _dfwb("plugins", "info", "heads/half-registered", exe=exe, **env)

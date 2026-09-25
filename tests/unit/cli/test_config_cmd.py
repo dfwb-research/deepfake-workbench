@@ -52,10 +52,14 @@ def test_show_reports_validation_errors(run, tmp_path):
 
 def test_validate_checks_components(run, tmp_path):
     exp = _experiment(tmp_path)
+    # "tiny-cnn" is a real, registered backbone, so a bogus name keeps this test's own concern
+    # (an unknown component key is reported with a hint) independent of which registries the
+    # framework happens to have real built-ins for.
+    exp.write_text(exp.read_text().replace("tiny-cnn", "nonexistent-backbone"))
     result = run("config", "validate", "-c", str(exp))
     assert result.code == 2
     assert "invalid component value(s)" in result.err
-    assert "backbones: unknown key 'tiny-cnn'" in result.err
+    assert "backbones: unknown key 'nonexistent-backbone'" in result.err
 
 
 def test_validate_ok(run, tmp_path, monkeypatch):
