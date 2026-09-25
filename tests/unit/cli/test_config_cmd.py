@@ -115,7 +115,9 @@ def test_validate_checks_components(run, tmp_path):
     assert "backbones: unknown key 'nonexistent-backbone'" in result.err
 
 
-def test_validate_ok(run, tmp_path, monkeypatch):
+def _stand_in_components(monkeypatch):
+    """Stand-ins for the experiment's torch components (so no torch is needed), and the real
+    metrics (numpy only), as the only installed plugin."""
     from dfwb.core import plugins
 
     def register(api):
@@ -127,9 +129,10 @@ def test_validate_ok(run, tmp_path, monkeypatch):
             ("losses", "bce"),
             ("transforms", "hflip"),
             ("transforms", "color-jitter"),
-            *(("metrics", name) for name in ("auc", "eer", "tpr", "ece", "brier", "nll")),
         ]:
             getattr(api, reg).add(key, target=t, summary="test")
+        for name in ("auc", "eer", "tpr", "fpr", "ece", "brier", "nll"):
+            api.metrics.add(name, target=f"dfwb.eval.metrics:{name}", summary="test")
 
     class EP:
         name, value, group, dist = "t", "t:register", "dfwb.plugins", None
@@ -140,6 +143,10 @@ def test_validate_ok(run, tmp_path, monkeypatch):
     monkeypatch.setattr(
         plugins, "_entry_points", lambda group: [EP()] if group == "dfwb.plugins" else []
     )
+
+
+def test_validate_ok(run, tmp_path, monkeypatch):
+    _stand_in_components(monkeypatch)
     exp = _experiment(tmp_path)
     result = run("config", "validate", "-c", str(exp))
     assert result.code == 0, result.err
@@ -147,8 +154,9 @@ def test_validate_ok(run, tmp_path, monkeypatch):
     assert json.loads(run("config", "validate", "-c", str(exp), "--json").out)["valid"] is True
 
 
-def test_validate_checks_the_eval_section_and_precision(run, tmp_path):
+def test_validate_checks_the_eval_section_and_precision(run, tmp_path, monkeypatch):
     # typos here used to pass validation and only fail after a whole training epoch
+    _stand_in_components(monkeypatch)
     exp = _experiment(tmp_path)
     result = run(
         "config",
