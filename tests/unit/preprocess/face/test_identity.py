@@ -229,7 +229,7 @@ def test_the_detection_score_weighs_in():
 @pytest.mark.parametrize(
     ("yaw", "large_wins"),
     [
-        (None, True),  # no pose: a frontal weight of 1
+        (None, True),  # no yaw estimate: a frontal weight of 1
         (0.0, True),
         (30.0, True),  # 18000 * 2/3 = 12000
         (-60.0, False),  # 18000 * 1/3 = 6000; the sign of the yaw does not matter

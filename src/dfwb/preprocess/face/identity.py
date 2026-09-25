@@ -1,10 +1,10 @@
 """Finding a clip's main subject from the identity embeddings of the faces sampled from it.
 
-This is the earlier face pipeline's subject search, carried over unchanged: every face found on a
-handful of frames spread across the clip is pooled, the pool is clustered by identity, and the
-cluster that is large in the frame, confidently detected and facing the camera wins. The mean of
-its embeddings, scaled to unit length, is the subject that frame-by-frame selection then looks
-for.
+This follows the earlier face pipeline's subject search: every face found on a handful of frames
+spread across the clip is pooled, the pool is clustered by identity, and the cluster whose faces
+are large in the frame, confidently detected and facing the camera (a small head yaw) wins. The
+mean of its embeddings, scaled to unit length, is the subject that frame-by-frame selection then
+looks for.
 
 The clustering is average-linkage agglomerative clustering on cosine distance, cut at a distance
 threshold: the same flat clusters as scipy's ``fcluster(linkage(pdist(x, "cosine"), "average"),
@@ -40,9 +40,10 @@ def cluster_subject(
     Faces without an embedding are left out. The rest are clustered (average linkage on cosine
     distance, merging while the closest clusters are at most ``threshold`` apart), and each
     cluster is scored as the sum over its faces of ``box area * detection score * max(0, 1 -
-    |yaw| / 90)``; a face with no yaw estimate counts as facing the camera (a weight of 1). The
-    highest-scoring cluster wins, ties going to the cluster whose first face comes first in
-    ``faces``.
+    |yaw| / 90)``. Here ``yaw`` is ``Face.yaw``, the head's left-right turn in degrees, so a face
+    counts for less the further it is turned towards profile, and for nothing from 90 degrees on;
+    a face with no yaw estimate counts as facing the camera (a weight of 1). The highest-scoring
+    cluster wins, ties going to the cluster whose first face comes first in ``faces``.
 
     Args:
         faces: The faces found on the frames sampled from the clip, in the order they were found.
@@ -73,7 +74,7 @@ def cluster_subject(
 
 
 def _cluster_score(faces: Sequence[Face]) -> float:
-    """Sum of box area * detection score * frontal weight over one cluster's faces."""
+    """Sum of box area * detection score * frontal weight (from head yaw) over a cluster."""
     total = 0.0
     for face in faces:
         x1, y1, x2, y2 = face.bbox

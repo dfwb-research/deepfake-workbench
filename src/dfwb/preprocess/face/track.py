@@ -15,6 +15,9 @@ A frame with no usable face is dropped, never filled in from its neighbours, and
 on from the last face that was chosen. Overlap is always measured on the detector's own box; the
 optional smoothing only changes the box that is reported for cropping.
 
+When rule 4 has to step in after a face has already been chosen, the track may have jumped to a
+different person, so the clip is flagged as a possible identity switch.
+
 Numpy is only needed to compare embeddings with the subject, so it is imported there rather than
 at module scope, matching the rest of the framework.
 """
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -35,7 +39,7 @@ if TYPE_CHECKING:
     from dfwb.core.records.local import TrackSpec
     from dfwb.preprocess.face.types import Face
 
-__all__ = ["select_track"]
+__all__ = ["TrackResult", "select_track"]
 
 Box = tuple[float, float, float, float]
 
@@ -56,13 +60,31 @@ _SMOOTHING_MAX_GAP = 2
 _STRATEGY_HINT = "use track.strategy 'largest-then-iou' or 'identity-cluster'"
 
 
+@dataclass(frozen=True)
+class TrackResult:
+    """The face chosen on each frame of a clip, and whether the track may have changed person.
+
+    Attributes:
+        frames: One ``(frame index, face, failure reason)`` per input frame, in input order (see
+            :func:`select_track`).
+        identity_switch: True when, on some frame after the first chosen one, no face overlapped
+            the last chosen face enough and the largest face was taken instead. That fallback
+            counts even when it lands on the only face in the frame, since a face that jumped
+            that far cannot be told apart from a different one. Frames chosen by similarity to
+            the subject never set it.
+    """
+
+    frames: list[tuple[int, Face | None, str | None]]
+    identity_switch: bool
+
+
 def select_track(
     per_frame: Sequence[tuple[int, list[Face]]],
     spec: TrackSpec,
     *,
     min_score: float,
     subject: npt.NDArray[Any] | None = None,
-) -> list[tuple[int, Face | None, str | None]]:
+) -> TrackResult:
     """Choose at most one face on each frame of a clip, following the same face across frames.
 
     Args:
@@ -78,10 +100,11 @@ def select_track(
             ``largest-then-iou``, as the earlier pipeline did when it could not find a subject.
 
     Returns:
-        One ``(frame index, face, failure reason)`` per input frame, in input order. A frame that
-        failed has face ``None`` and one of these reasons: ``"no-face"`` (nothing detected),
-        ``"low-score"`` (every face scored below ``min_score``) or ``"no-subject-match"`` (no face
-        is similar enough to ``subject``). A frame that succeeded has reason ``None``.
+        A :class:`TrackResult`. Its ``frames`` hold one ``(frame index, face, failure reason)``
+        per input frame, in input order. A frame that failed has face ``None`` and one of these
+        reasons: ``"no-face"`` (nothing detected), ``"low-score"`` (every face scored below
+        ``min_score``) or ``"no-subject-match"`` (no face is similar enough to ``subject``). A
+        frame that succeeded has reason ``None``.
 
         With ``spec.ema`` unset, the face returned is the detector's own. With it set, the
         returned face is a copy whose box is ``ema * raw + (1 - ema) * previous smoothed box``,
@@ -111,6 +134,7 @@ def select_track(
     previous_smoothed: Box | None = None
     previous_good_index: int | None = None
     previous_index: int | None = None
+    identity_switch = False
 
     for index, faces in per_frame:
         if previous_index is not None and index <= previous_index:
@@ -126,7 +150,10 @@ def select_track(
         if not usable:
             results.append((index, None, "low-score"))
             continue
-        chosen = _choose(usable, previous_raw, subject_vector, spec.iou)
+        chosen, fell_back = _choose(usable, previous_raw, subject_vector, spec.iou)
+        # the first chosen face is always the largest; that starts the track, it does not switch it
+        if fell_back and previous_raw is not None:
+            identity_switch = True
         if chosen is None:
             results.append((index, None, "no-subject-match"))
             continue
@@ -153,7 +180,7 @@ def select_track(
         previous_raw = raw
         results.append((index, reported, None))
 
-    return results
+    return TrackResult(frames=results, identity_switch=identity_switch)
 
 
 def _check_strategy(strategy: str) -> None:
@@ -184,8 +211,11 @@ def _choose(
     previous_bbox: Box | None,
     subject: npt.NDArray[np.float32] | None,
     iou_threshold: float,
-) -> Face | None:
-    """The face to take on one frame; ``None`` only when the subject is not among ``faces``."""
+) -> tuple[Face | None, bool]:
+    """The face to take on one frame, and whether it was taken as the largest face.
+
+    The face is ``None`` only when the subject is not among ``faces``.
+    """
     if subject is not None:
         import numpy as np
 
@@ -201,7 +231,7 @@ def _choose(
                 best_similarity = similarity
                 best = face
         if any_embedding:
-            return best if best_similarity >= _SUBJECT_MIN_SIMILARITY else None
+            return (best if best_similarity >= _SUBJECT_MIN_SIMILARITY else None), False
         # no face on this frame carries an embedding: fall through to overlap and size
 
     if previous_bbox is not None:
@@ -213,10 +243,10 @@ def _choose(
                 best_overlap = overlap
                 best_overlap_face = face
         if best_overlap >= iou_threshold:
-            return best_overlap_face
+            return best_overlap_face, False
 
     # max() keeps the first of several equally large faces
-    return max(faces, key=_area)
+    return max(faces, key=_area), True
 
 
 def _area(face: Face) -> float:
