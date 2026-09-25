@@ -3,9 +3,10 @@
 This is where a dataset's inventory builder -- the dataset knowledge: its official split reader,
 pairing rule, benchmark spec, label table and card -- meets the generic rules and the pack writer
 of :mod:`dfwb.protocols`. :func:`build_dataset` reads the inventory, computes every scheme with
-:func:`~dfwb.protocols.materialize.assign_rule` (the very function ``dfwb protocols materialize``
-recomputes a recipe scheme with, so a published scheme and its materialized copy cannot drift
-apart), resolves the fake/real pairs and writes the dataset's files.
+:func:`~dfwb.protocols.materialization.assign_rule` (the very function
+``dfwb protocols materialize`` recomputes a recipe scheme with, so a published scheme and its
+materialized copy cannot drift apart), resolves the fake/real pairs and writes the dataset's
+files.
 
 The output depends only on the inventory, the builder and the publisher's split files: nothing
 holds a timestamp or a local path, so rebuilding from the same inventory gives the same bytes.
@@ -59,7 +60,7 @@ from dfwb.preprocess.inventory.runner import (
     metadata_copy,
     read_inventory,
 )
-from dfwb.protocols.materialize import (
+from dfwb.protocols.materialization import (
     OFFICIAL_RULES,
     assign_rule,
     benchmark_params,

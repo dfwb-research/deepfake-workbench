@@ -256,6 +256,24 @@ def test_package_exports_are_lazy(toyone_pack):
         _ = protocols_pkg.nope
 
 
+def test_verify_and_materialize_stay_functions_once_their_modules_are_imported():
+    # Importing a submodule binds its name on the package, so a module named like the function it
+    # holds would replace that exported function. Theirs are named differently.
+    import types
+
+    import dfwb.protocols
+    import dfwb.protocols.materialization
+    import dfwb.protocols.verification
+    from dfwb.protocols import materialize, verify
+
+    for exported in (dfwb.protocols.verify, dfwb.protocols.materialize, verify, materialize):
+        assert callable(exported)
+        assert isinstance(exported, types.FunctionType)
+        assert not isinstance(exported, types.ModuleType)
+    assert dfwb.protocols.verify is dfwb.protocols.verification.verify
+    assert dfwb.protocols.materialize is dfwb.protocols.materialization.materialize
+
+
 def test_list_protocols_marks_default_and_broken(fixture_packs):
     roots = fixture_packs(
         {"toyone-pack": {"toyone": {}}, "broken": {"toytwo": {}}},

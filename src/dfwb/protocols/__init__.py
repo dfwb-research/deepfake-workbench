@@ -11,11 +11,11 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from dfwb.protocols.materialize import materialize
+    from dfwb.protocols.materialization import materialize
     from dfwb.protocols.protocol import LabelMapping, Protocol, ProtocolInfo, load
     from dfwb.protocols.protocol import list_protocols as list
     from dfwb.protocols.refs import ProtocolRef, parse_ref
-    from dfwb.protocols.verify import CoverageReport, verify, write_report
+    from dfwb.protocols.verification import CoverageReport, verify, write_report
 
 __all__ = [
     "CoverageReport",
@@ -37,12 +37,12 @@ _LAZY = {
     "ProtocolInfo": "dfwb.protocols.protocol",
     "LabelMapping": "dfwb.protocols.protocol",
     "load": "dfwb.protocols.protocol",
-    "materialize": "dfwb.protocols.materialize",
+    "materialize": "dfwb.protocols.materialization",
     "ProtocolRef": "dfwb.protocols.refs",
     "parse_ref": "dfwb.protocols.refs",
-    "CoverageReport": "dfwb.protocols.verify",
-    "verify": "dfwb.protocols.verify",
-    "write_report": "dfwb.protocols.verify",
+    "CoverageReport": "dfwb.protocols.verification",
+    "verify": "dfwb.protocols.verification",
+    "write_report": "dfwb.protocols.verification",
 }
 # name -> (module, attribute), for exports whose public name differs from the underlying one
 # (``list`` would otherwise shadow the builtin inside ``protocol.py`` itself).

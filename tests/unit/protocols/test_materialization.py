@@ -1,4 +1,4 @@
-"""Tests for ``dfwb.protocols.materialize``: recompute a recipe scheme from a local inventory.
+"""Tests for ``dfwb.protocols.materialization``: recompute a recipe scheme from a local inventory.
 
 The pack is built from the synthetic ``packdemo`` dataset of the pack-building tests, then a split
 file is deleted: the pack then describes that scheme only by its rule, parameters and hash, as a
@@ -19,7 +19,7 @@ from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
 from dfwb.core.records import InventoryRecord, read_jsonl, read_split_tsv, write_jsonl
 from dfwb.preprocess.inventory.runner import build_inventory, get_builder
 from dfwb.preprocess.packbuild import add_to_pack_yaml, build_dataset
-from dfwb.protocols.materialize import (
+from dfwb.protocols.materialization import (
     MaterializeResult,
     assign_rule,
     benchmark_params,
@@ -48,15 +48,14 @@ def _official(built):
 
 
 def test_materialize_is_exported_lazily():
-    # Read in a fresh interpreter: once ``dfwb.protocols.materialize`` (the module) is imported,
-    # the import system binds that name on the package to the module itself.
+    # A fresh interpreter: the package names it without importing the module up front.
     code = (
         "import sys, dfwb.protocols as p; "
-        "assert 'dfwb.protocols.materialize' not in sys.modules; "
+        "assert 'dfwb.protocols.materialization' not in sys.modules; "
         "f = p.materialize; print(f.__module__, f.__name__, 'materialize' in p.__all__)"
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
-    assert done.stdout.split() == ["dfwb.protocols.materialize", "materialize", "True"]
+    assert done.stdout.split() == ["dfwb.protocols.materialization", "materialize", "True"]
 
 
 @pytest.mark.parametrize("scheme", _SCHEMES)

@@ -125,8 +125,8 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
     relabelled. A missing inventory is a usage error (exit 2).
     """
     from dfwb.core.paths import require_root, resolve_roots
-    from dfwb.protocols.verify import verify as run_verify
-    from dfwb.protocols.verify import write_report
+    from dfwb.protocols.verification import verify as run_verify
+    from dfwb.protocols.verification import write_report
 
     work_root = require_root("work", resolve_roots())
     report = run_verify(ref, inventory=inventory, splits=splits or None, work_root=work_root)
@@ -253,8 +253,8 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
     from dfwb.core.records import InventoryRecord, read_jsonl
     from dfwb.preprocess.inventory.runner import get_builder, inventory_path
     from dfwb.preprocess.packbuild import locate_metadata_root
-    from dfwb.protocols.materialize import materialize as run_materialize
-    from dfwb.protocols.materialize import needs_official
+    from dfwb.protocols.materialization import materialize as run_materialize
+    from dfwb.protocols.materialization import needs_official
     from dfwb.protocols.refs import parse_ref
 
     roots = resolve_roots()
