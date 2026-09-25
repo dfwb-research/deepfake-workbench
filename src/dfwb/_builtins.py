@@ -45,6 +45,12 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
     ("deepspeak-v2", "deepspeak:DeepSpeakV2Builder", "DeepSpeak v2", "DeepSpeak-v2"),
     ("idforge-v1", "idforge:IDForgeV1Builder", "IDForge-v1", "IDForge-v1"),
     ("lav-df", "lavdf:LAVDFBuilder", "LAV-DF", "LAV-DF"),
+    (
+        "av-deepfake1m-pp",
+        "avdeepfake1mpp:AVDeepfake1MPPBuilder",
+        "AV-Deepfake1M++",
+        "AV-Deepfake1M++",
+    ),
 )
 
 
