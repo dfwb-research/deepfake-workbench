@@ -273,6 +273,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "types-pyyaml" },
 ]
 
@@ -302,6 +303,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "types-pyyaml" },
 ]
 

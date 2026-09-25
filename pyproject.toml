@@ -61,6 +61,7 @@ dev = [
   "hypothesis",
   "import-linter",
   "scikit-learn",
+  "scipy",
   "pre-commit",
   "types-PyYAML",
   "av>=12",
