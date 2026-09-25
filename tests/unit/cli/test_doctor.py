@@ -2,11 +2,13 @@ import json
 
 from tests.unit.preprocess.inventory._demo import install, make_demo_tree
 
+import dfwb
+
 
 def test_doctor_human(run):
     result = run("doctor")
     assert result.code == 0
-    assert result.out.startswith("dfwb      0.1.0a3\n")
+    assert result.out.startswith(f"dfwb      {dfwb.__version__}\n")
     assert "datasets  (unset)" in result.out
     assert "note: DFWB_DATASETS_ROOT is unset" in result.err
     assert "PLUGIN" in result.out

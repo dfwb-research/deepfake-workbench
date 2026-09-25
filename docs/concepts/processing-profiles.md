@@ -22,9 +22,9 @@ gets a new store rather than silently mixing with the old one's rows.
 | `face-256-1.3x-32f-mp` | mediapipe | — | 1.3x / 256 / square | uniform 32 | — | the permissive twin of `face-256-1.3x-32f`: same crop and sampling, MediaPipe's Apache-2.0 detector instead of insightface's non-commercial weights, so it needs no licence acknowledgement. |
 | `toy-64-center-8f` | center | — | 1.0x / 64 / square | uniform 8 | — | a tiny, dependency-free profile with no detector at all, for smoke tests and for data whose frames are already face crops (e.g. WildDeepfake). |
 
-`dfwb preprocess profiles` (add `--json` for a machine-readable form) prints this same table,
-computed from the shipped YAML files rather than kept in sync by hand, so it always matches what a
-run actually does. "Detection size" is the side, in pixels, of the square image insightface's
+`dfwb preprocess profiles` (add `--json` for a machine-readable form) lists the same profiles with
+their id, full profile id (with its hash), backend, sampling and crop, read from the shipped YAML
+files, so it always matches what a run actually does. "Detection size" is the side, in pixels, of the square image insightface's
 detector runs on; MediaPipe and `center` have no such setting. "EMA" is the smoothing weight
 applied to the tracked box between adjacent frames (`smoothed = ema * raw + (1 - ema) *
 previous_smoothed`, reset whenever the frame gap is more than two); it only helps when sampled
@@ -42,7 +42,8 @@ profile:
   were found — model files and their sha256s, thresholds, the execution providers used).
 - `index.jsonl`, one line per video, appended as each one finishes: its key, compression, outcome
   (`ok`, `no_face`, `decode_error`, `too_short` or `skipped`), how many frames were written, their
-  indices, its output directory (relative to the store), and, when it is not `ok`, a reason.
+  indices, its output directory (relative to the store), the tracking summary (mean detection
+  confidence and whether the tracker switched faces), and, when it is not `ok`, a reason.
 - one output directory per video, `<key>/<compression or "_">/` (a video's key already carries a
   `/`, so this nests one directory per task inside one per dataset), holding one
   `frame_<index:06d>.png` per kept frame — lossless, `cv2.imwrite` with PNG compression level 6,

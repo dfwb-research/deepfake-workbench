@@ -5,7 +5,7 @@ inventory → face clips → trained detector → score file → evaluation repo
 pluggable and every result traceable to a protocol version, a processing profile and a config
 fingerprint.
 
-> **Status:** pre-release (`0.1.0a2`). Linux is the only supported and tested OS. Python ≥ 3.12.
+> **Status:** pre-release (`0.1.0a3`). Linux is the only supported and tested OS. Python ≥ 3.12.
 
 ## Run from a clone
 
