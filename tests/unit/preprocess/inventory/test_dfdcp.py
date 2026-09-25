@@ -35,7 +35,7 @@ def _make_synthetic_dfdcp_root(tmp_path: Path) -> Path:
 
     As on the real release, videos are nested ``<target>/<target>_<suffix>/`` in every task.
     """
-    root = tmp_path / "DFDCP"
+    root = tmp_path / "DFDC-P"
     real_1 = root.joinpath(*REAL_DIR, "1003254", "1003254_A")
     real_2 = root.joinpath(*REAL_DIR, "1004567", "1004567_B")
     fake_1 = root.joinpath(*METHOD_A_DIR, "1003254", "1003254_A")
@@ -406,7 +406,7 @@ def test_dataset_card():
 
 def test_the_layout_names_the_nesting_and_the_metadata():
     text = DFDCPreviewBuilder().describe_layout()
-    assert "'DFDCP'" in text
+    assert "'DFDC-P'" in text
     assert "original_content/original/videos/**/<video>" in text
     assert ".official_files/dataset.json" in text
     assert "{cX}" not in text
@@ -414,4 +414,6 @@ def test_the_layout_names_the_nesting_and_the_metadata():
 
 def test_it_is_registered():
     assert isinstance(get_builder("dfdc-p"), DFDCPreviewBuilder)
-    assert DFDCPreviewBuilder.expected_folder == "DFDCP"
+    # The raw release's folder; DFDCP is only the label prefix.
+    assert DFDCPreviewBuilder.expected_folder == "DFDC-P"
+    assert DFDCPreviewBuilder.label_prefix == "DFDCP"

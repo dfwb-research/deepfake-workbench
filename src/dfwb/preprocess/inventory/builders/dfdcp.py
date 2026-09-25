@@ -1,6 +1,6 @@
 """DFDC Preview: the preview release of the Deepfake Detection Challenge dataset.
 
-Layout, relative to the ``DFDCP`` folder (a single version, no compression levels). Every task
+Layout, relative to the ``DFDC-P`` folder (a single version, no compression levels). Every task
 nests its videos in a folder per target identity and one per recording, so each task directory
 is searched recursively:
 
@@ -104,7 +104,7 @@ class DFDCPreviewBuilder(BaseBuilder):
     """DFDC Preview (``dfdc-p``): actor clips and face swaps made with two methods."""
 
     dataset_id = "dfdc-p"
-    expected_folder = "DFDCP"
+    expected_folder = "DFDC-P"
     label_prefix = "DFDCP"
     tasks = (
         TaskSpec(
