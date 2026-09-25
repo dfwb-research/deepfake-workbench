@@ -23,11 +23,12 @@ from dfwb.data.dataset import ClipDataset, MultiSource
 from dfwb.data.index import VideoIndex
 from dfwb.data.paired import PairedClipDataset
 
-__all__ = ["PairGrouped", "SourceBalanced", "VideoGrouped", "VideoLabelBalanced"]
+__all__ = ["PairGrouped", "SourceBalanced", "VideoGrouped", "VideoLabelBalanced", "epoch_seed"]
 
 
-def _seed_for(seed: int, epoch: int) -> int:
-    """A 64-bit int, deterministic in ``(seed, epoch)``, for seeding one epoch's draws.
+def epoch_seed(seed: int, epoch: int) -> int:
+    """A 64-bit int, deterministic in ``(seed, epoch)``, for seeding one epoch's draws -- by every
+    sampler here, and by any other per-epoch shuffle that must agree with them.
 
     A plain ``hash()`` is not usable here: Python randomises string hashing per process unless
     ``PYTHONHASHSEED`` is pinned, so the same ``(seed, epoch)`` would draw differently run to run.
@@ -124,7 +125,7 @@ class VideoLabelBalanced(Sampler[int]):
         return len(self._labels)
 
     def __iter__(self) -> Iterator[int]:
-        generator = torch.Generator().manual_seed(_seed_for(self.seed, self._epoch))
+        generator = torch.Generator().manual_seed(epoch_seed(self.seed, self._epoch))
         draws = torch.multinomial(
             self._weights, len(self._labels), replacement=True, generator=generator
         )
@@ -156,7 +157,7 @@ class SourceBalanced(Sampler[int]):
 
     def __iter__(self) -> Iterator[int]:
         n = len(self.multi)
-        generator = torch.Generator().manual_seed(_seed_for(self.seed, self._epoch))
+        generator = torch.Generator().manual_seed(epoch_seed(self.seed, self._epoch))
         weights = torch.tensor(self.multi.weights, dtype=torch.double)
         source_draws = torch.multinomial(weights, n, replacement=True, generator=generator)
         lengths = torch.tensor(self._lengths)
@@ -242,7 +243,7 @@ class PairGrouped(Sampler[list[int]]):
         self._epoch = epoch
 
     def __iter__(self) -> Iterator[list[int]]:
-        generator = torch.Generator().manual_seed(_seed_for(self.seed, self._epoch))
+        generator = torch.Generator().manual_seed(epoch_seed(self.seed, self._epoch))
         order = torch.randperm(len(self._groups), generator=generator).tolist()
         return iter(_pack([self._groups[i] for i in order], self.batch_size))
 

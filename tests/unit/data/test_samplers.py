@@ -3,19 +3,27 @@ deterministic-per-epoch sampling over :mod:`dfwb.data` datasets."""
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
+import torch
 
 from dfwb.core.errors import ConfigError
 from dfwb.data.clips import ClipSpec, ClipsPerVideo
 from dfwb.data.dataset import ClipDataset, MultiSource
 from dfwb.data.index import VideoIndex, VideoItem
 from dfwb.data.paired import PairedClipDataset
-from dfwb.data.samplers import PairGrouped, SourceBalanced, VideoGrouped, VideoLabelBalanced
+from dfwb.data.samplers import (
+    PairGrouped,
+    SourceBalanced,
+    VideoGrouped,
+    VideoLabelBalanced,
+    epoch_seed,
+)
 
 
 def _bare_item(label: int, key: str) -> VideoItem:
@@ -446,3 +454,49 @@ def test_pair_grouped_refuses_unpaired_data_and_a_non_positive_batch_size(tmp_pa
         PairGrouped(MultiSource([plain], weights=[1.0]), batch_size=2, seed=0)
     with pytest.raises(ConfigError, match="positive"):
         PairGrouped(_bare_paired(1), batch_size=0, seed=0)
+
+
+def test_pair_grouped_never_splits_a_pair_over_random_shapes():
+    rng = random.Random(0)
+    for _ in range(60):
+        clips = rng.randint(1, 3)
+        sources = [_bare_paired_prefixed(rng.randint(1, 9), clips, f"s{j}") for j in range(3)]
+        sources = sources[: rng.randint(1, 3)]
+        multi = MultiSource(sources, weights=[1.0] * len(sources))
+        batch_size = rng.randint(1, 13)
+        sampler = PairGrouped(multi, batch_size, seed=rng.randint(0, 99))
+        groups: list[frozenset[int]] = []
+        offset = 0
+        for source in sources:
+            groups += [frozenset(i + offset for i in g) for g in source.pair_groups()]
+            offset += len(source)
+        for epoch in range(3):
+            sampler.set_epoch(epoch)
+            batches = list(sampler)
+            assert len(batches) == len(sampler)
+            assert sorted(i for b in batches for i in b) == list(range(len(multi)))
+            batch_of = {i: n for n, b in enumerate(batches) for i in b}
+            for group in groups:
+                assert len({batch_of[i] for i in group}) == 1
+            for batch in batches:
+                assert len(batch) <= batch_size or len(batch) == 2 * clips
+
+
+def _bare_paired_prefixed(n_pairs: int, clips_per_video: int, prefix: str) -> PairedClipDataset:
+    index, pairs = _pairs_index(n_pairs, prefix=prefix)
+    return PairedClipDataset(index, pairs, _spec(clips_per_video), train=True, seed=0)
+
+
+# ------------------------------------------------------------------------------- epoch_seed
+
+
+def test_epoch_seed_is_a_stable_64_bit_function_of_seed_and_epoch():
+    assert epoch_seed(3, 1) == epoch_seed(3, 1)
+    assert len({epoch_seed(3, 1), epoch_seed(3, 2), epoch_seed(4, 1)}) == 3
+    assert 0 <= epoch_seed(3, 1) < 2**64
+    # every seeded sampler draws from exactly this generator seed
+    sampler = PairGrouped(_bare_paired(4), batch_size=2, seed=3)
+    sampler.set_epoch(1)
+    order = torch.randperm(4, generator=torch.Generator().manual_seed(epoch_seed(3, 1))).tolist()
+    groups = _bare_paired(4).pair_groups()
+    assert list(sampler) == [groups[i] for i in order]

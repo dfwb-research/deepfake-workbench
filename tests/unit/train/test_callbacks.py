@@ -3,17 +3,23 @@ guard, the heartbeat file, and the LR monitor."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("lightning")
 
 import torch
-from tests.unit.train._toy import fit_toy, read_metrics_csv, toy_config
+from lightning.pytorch.callbacks import Callback
+from tests.unit.train._toy import fit_toy, make_parts, read_metrics_csv, toy_config
 
 from dfwb.core.errors import ContractError
 from dfwb.models import checkpoint
+from dfwb.train import callbacks as callbacks_module
 from dfwb.train.callbacks import (
     EarlyStop,
     Heartbeat,
@@ -68,6 +74,128 @@ def test_checkpoint_state_round_trips(tmp_path):
     saver = SafetensorsCheckpoint(tmp_path, toy_config().model)
     saver.load_state_dict({"monitor": "val/loss", "best_value": 0.25, "best_epoch": 3})
     assert saver.state_dict() == {"monitor": "val/loss", "best_value": 0.25, "best_epoch": 3}
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _hashes(directory: Path) -> dict[str, str]:
+    return {p.name: _sha(p) for p in directory.iterdir()}
+
+
+def test_best_is_rewritten_only_on_improvement_and_last_every_epoch(tmp_path, toy_work_root):
+    config = toy_config(train={"monitor": "val/loss", "mode": "min"})
+    _, _, module = make_parts(config, work_root=toy_work_root)
+    saver = SafetensorsCheckpoint(tmp_path / "ck", config.model)
+    saved: list[tuple[int, str]] = []
+    trainer = SimpleNamespace(sanity_checking=False, current_epoch=0)
+    saver._save = lambda name, pl_module: saved.append((trainer.current_epoch, name))  # type: ignore[method-assign]
+    for epoch, value in enumerate([0.5, 0.4, 0.45, 0.4, 0.3, float("nan"), 0.2]):
+        module.val_metrics = {"val/loss": value}
+        trainer.current_epoch = epoch
+        saver.on_validation_end(trainer, module)
+        saver.on_train_epoch_end(trainer, module)
+    assert [e for e, name in saved if name == "best"] == [0, 1, 4, 6]  # ties and NaN never win
+    assert [e for e, name in saved if name == "last"] == list(range(7))
+
+
+def test_a_run_rewrites_last_every_epoch_and_leaves_no_staging(tmp_path, toy_work_root):
+    checkpoints = tmp_path / "run" / "checkpoints"
+    seen: list[str] = []
+
+    class _LastHash(Callback):
+        def on_train_epoch_end(self, trainer, pl_module):
+            seen.append(_sha(checkpoints / "last" / "model.safetensors"))
+
+    fit_toy(
+        tmp_path / "run",
+        toy_config(train={"max_epochs": 3}),
+        work_root=toy_work_root,
+        callbacks=[_LastHash()],
+    )
+    assert len(set(seen)) == 3
+    assert not list(checkpoints.glob(".*"))
+
+
+def _crashing_save(directory, detector, model_cfg):
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    (Path(directory) / "model.safetensors").write_bytes(b"half written")
+    raise OSError("disk full")
+
+
+def test_a_failed_save_leaves_the_previous_checkpoint_in_place(
+    tmp_path, toy_work_root, monkeypatch
+):
+    config = toy_config()
+    _, _, module = make_parts(config, work_root=toy_work_root)
+    saver = SafetensorsCheckpoint(tmp_path / "ck", config.model)
+    saver._save("best", module)
+    before = _hashes(tmp_path / "ck" / "best")
+
+    with torch.no_grad():
+        for param in module.detector.parameters():
+            param.add_(1.0)
+    monkeypatch.setattr(callbacks_module.checkpoint, "save", _crashing_save)
+    with pytest.raises(OSError, match="disk full"):
+        saver._save("best", module)
+
+    assert _hashes(tmp_path / "ck" / "best") == before
+    checkpoint.load(tmp_path / "ck" / "best")
+    monkeypatch.undo()
+    saver._save("best", module)
+    assert _hashes(tmp_path / "ck" / "best") != before
+    assert not list((tmp_path / "ck").glob(".*"))
+
+
+def _interrupted_swap(tmp_path: Path, name: str, module, model_cfg) -> dict[str, str]:
+    """A checkpoint directory as a crash between the two renames of a swap leaves it: the
+    previous ``<name>`` moved aside to ``.<name>.old``, nothing at ``<name>`` yet."""
+    directory = tmp_path / "ck"
+    checkpoint.save(directory / f".{name}.old", module.detector, model_cfg)
+    return _hashes(directory / f".{name}.old")
+
+
+def test_setup_restores_a_checkpoint_left_aside_by_an_interrupted_swap(tmp_path, toy_work_root):
+    config = toy_config()
+    _, _, module = make_parts(config, work_root=toy_work_root)
+    old_best = _interrupted_swap(tmp_path, "best", module, config.model)
+    old_last = _interrupted_swap(tmp_path, "last", module, config.model)
+    saver = SafetensorsCheckpoint(tmp_path / "ck", config.model)
+
+    saver.setup(SimpleNamespace(callbacks=[saver]), module, "fit")
+
+    assert _hashes(tmp_path / "ck" / "best") == old_best
+    assert _hashes(tmp_path / "ck" / "last") == old_last
+    assert not list((tmp_path / "ck").glob(".*"))
+
+
+def test_a_save_first_restores_a_checkpoint_left_aside(tmp_path, toy_work_root, monkeypatch):
+    config = toy_config()
+    _, _, module = make_parts(config, work_root=toy_work_root)
+    old_best = _interrupted_swap(tmp_path, "best", module, config.model)
+    saver = SafetensorsCheckpoint(tmp_path / "ck", config.model)
+
+    monkeypatch.setattr(callbacks_module.checkpoint, "save", _crashing_save)
+    with pytest.raises(OSError, match="disk full"):
+        saver._save("best", module)
+
+    # the save failed, but the checkpoint it would have replaced is back in place.
+    assert _hashes(tmp_path / "ck" / "best") == old_best
+
+
+def test_setup_leaves_complete_checkpoints_alone(tmp_path, toy_work_root):
+    config = toy_config()
+    _, _, module = make_parts(config, work_root=toy_work_root)
+    saver = SafetensorsCheckpoint(tmp_path / "ck", config.model)
+    saver._save("best", module)
+    before = _hashes(tmp_path / "ck" / "best")
+    shutil.copytree(tmp_path / "ck" / "best", tmp_path / "ck" / ".best.old")  # a stale leftover
+
+    saver.setup(SimpleNamespace(callbacks=[saver]), module, "fit")
+
+    assert _hashes(tmp_path / "ck" / "best") == before
+    assert not (tmp_path / "ck" / ".best.old").exists()
 
 
 # ------------------------------------------------------------------------------ early stop
@@ -159,6 +287,27 @@ def test_nan_guard_tolerates_fewer_non_finite_steps_than_its_tolerance(tmp_path,
         module_hook=lambda module: setattr(module, "loss", _NonFiniteFor(2)),
     )
     assert run.trainer.current_epoch == 1
+
+
+def test_nan_guard_counts_only_consecutive_non_finite_losses(toy_work_root):
+    _, _, module = make_parts(toy_config(), work_root=toy_work_root)
+    trainer = SimpleNamespace(current_epoch=0, global_step=0)
+    guard = NonFiniteGuard(tolerance=3)
+    nan, inf, finite = torch.tensor(float("nan")), torch.tensor(float("inf")), torch.tensor(0.3)
+
+    # two in a row, then a finite loss resets the count -- never three in a row.
+    for i, loss in enumerate([nan, nan, finite, nan, nan, finite, inf, nan, finite]):
+        module.last_loss = loss
+        guard.on_train_batch_end(trainer, module, None, None, i)
+
+    for i, loss in enumerate([nan, torch.tensor(float("-inf"))]):
+        module.last_loss = loss
+        trainer.global_step = 40 + i
+        guard.on_train_batch_end(trainer, module, None, None, i)
+    module.last_loss = nan
+    trainer.global_step = 42
+    with pytest.raises(NonFiniteLoss, match="global step 42"):
+        guard.on_train_batch_end(trainer, module, None, None, 2)
 
 
 def test_nan_guard_tolerance_is_configurable(tmp_path):

@@ -54,6 +54,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 _CHECKPOINTS_DIR = "checkpoints"
+_CHECKPOINT_NAMES = ("best", "last")
 _SCORES_DIR = Path("scores") / "val"
 _HEARTBEAT_FILE = "heartbeat.json"
 _UNKNOWN_SOURCE = "unknown"
@@ -90,8 +91,11 @@ class SafetensorsCheckpoint(Callback):
     :func:`dfwb.models.checkpoint.save` directory (``model.safetensors`` + ``detector.json``).
 
     ``best`` is rewritten whenever the module's monitor improves after a validation; ``last`` at
-    the end of every training epoch. Each is written beside its target first and swapped in only
-    when complete, so an interrupted save never leaves a half-written checkpoint in place.
+    the end of every training epoch. Each is written beside its target first (``.<name>.tmp``)
+    and swapped in only when complete: the previous copy is moved aside to ``.<name>.old``, the
+    new one renamed into place, and the old one removed. So an interrupted save never leaves a
+    half-written checkpoint in place, and one interrupted between the two renames is undone --
+    the previous copy moved back -- at setup and before the next save.
 
     Raises:
         ContractError: At setup, when Lightning's own (pickling) checkpointing is also enabled.
@@ -115,11 +119,29 @@ class SafetensorsCheckpoint(Callback):
                 hint="build the Trainer with enable_checkpointing=False: best and last are "
                 "already saved as safetensors",
             )
+        for name in _CHECKPOINT_NAMES:
+            self._recover(name)
+            shutil.rmtree(self.directory / f".{name}.tmp", ignore_errors=True)
+
+    def _recover(self, name: str) -> None:
+        """Undo a swap interrupted between its two renames: when ``<name>`` is missing but its
+        previous copy is still at ``.<name>.old``, move it back. A leftover ``.<name>.old``
+        beside a complete ``<name>`` (interrupted after the new copy was in place) is removed."""
+        target = self.directory / name
+        retired = self.directory / f".{name}.old"
+        if not retired.exists():
+            return
+        if target.exists():
+            shutil.rmtree(retired)
+        else:
+            retired.rename(target)
+            _log.warning("%s: restored the previous checkpoint after an interrupted save", target)
 
     def _save(self, name: str, pl_module: L.LightningModule) -> None:
         module = _module(pl_module)
         if module is None:
             return
+        self._recover(name)
         target = self.directory / name
         staging = self.directory / f".{name}.tmp"
         retired = self.directory / f".{name}.old"

@@ -22,8 +22,14 @@ from dfwb.core.detector import InputSpec
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.data.dataset import ClipDataset, MultiSource
 from dfwb.data.paired import PairedClipDataset
-from dfwb.data.samplers import PairGrouped, SourceBalanced, VideoGrouped, VideoLabelBalanced
-from dfwb.train.datamodule import ProtocolDataModule
+from dfwb.data.samplers import (
+    PairGrouped,
+    SourceBalanced,
+    VideoGrouped,
+    VideoLabelBalanced,
+    epoch_seed,
+)
+from dfwb.train.datamodule import BALANCE_MODES, ProtocolDataModule
 
 TINY_INPUT = InputSpec(size=(64, 64), value_range=(0.0, 1.0), mean=None, std=None)
 
@@ -147,18 +153,19 @@ def test_transforms_apply_to_train_only(toy_work_root):
 
 
 @pytest.mark.parametrize(
-    ("balance", "expected"),
+    ("balance", "mode", "expected"),
     [
-        (None, "shuffle"),
-        ("none", "shuffle"),
-        ("label", VideoLabelBalanced),
-        ("video-label", VideoLabelBalanced),
-        ("source", SourceBalanced),
+        (None, "none", "shuffle"),
+        ("none", "none", "shuffle"),
+        ("video-label", "video-label", VideoLabelBalanced),
+        ("label", "video-label", VideoLabelBalanced),  # the short alias
+        ("source", "source", SourceBalanced),
     ],
 )
-def test_balance_chooses_the_train_sampler(toy_work_root, balance, expected):
+def test_balance_chooses_the_train_sampler(toy_work_root, balance, mode, expected):
     config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 0, "balance": balance}})
     datamodule = _datamodule(config, toy_work_root)
+    assert datamodule.balance == mode
     datamodule.setup("fit")
     sampler = datamodule.train_dataloader().sampler
     if expected == "shuffle":
@@ -168,10 +175,43 @@ def test_balance_chooses_the_train_sampler(toy_work_root, balance, expected):
         assert isinstance(sampler, expected)
 
 
-def test_an_unknown_balance_is_a_config_error_with_a_suggestion(toy_work_root):
-    config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 0, "balance": "labl"}})
-    with pytest.raises(ConfigError, match=r"data\.loader\.balance.*label"):
+def test_an_unknown_balance_is_a_config_error_naming_video_label(toy_work_root):
+    config = toy_config(
+        data={"loader": {"batch_size": 8, "num_workers": 0, "balance": "video-labl"}}
+    )
+    with pytest.raises(ConfigError, match=r"data\.loader\.balance") as caught:
         _datamodule(config, toy_work_root)
+    assert "did you mean 'video-label'" in caught.value.message
+    assert "video-label" in caught.value.hint
+    assert BALANCE_MODES == ("none", "video-label", "source")
+
+
+def test_the_plain_shuffle_is_seeded_by_seed_and_epoch(toy_work_root):
+    datamodule = _datamodule(toy_config(), toy_work_root)
+    datamodule.setup("fit")
+    sampler = datamodule.train_dataloader().sampler
+    datamodule.set_epoch(2)
+    n = len(datamodule.train_dataset)
+    expected = torch.randperm(n, generator=torch.Generator().manual_seed(epoch_seed(0, 2)))
+    assert list(sampler) == expected.tolist()
+
+
+def test_the_train_loader_drops_a_trailing_partial_batch(toy_work_root):
+    # 32 train clips at batch 31: the trailing batch of one is dropped, never trained on (a
+    # batch-norm head cannot train on a single sample).
+    config = toy_config(data={"loader": {"batch_size": 31, "num_workers": 0}})
+    datamodule = _datamodule(config, toy_work_root)
+    datamodule.setup("fit")
+    loader = datamodule.train_dataloader()
+    assert [len(batch.keys) for batch in loader] == [31]
+    assert len(loader) == 1
+
+
+def test_a_train_set_smaller_than_one_batch_is_a_config_error(toy_work_root):
+    config = toy_config(data={"loader": {"batch_size": 33, "num_workers": 0}})
+    datamodule = _datamodule(config, toy_work_root)
+    with pytest.raises(ConfigError, match=r"data\.loader\.batch_size.*32"):
+        datamodule.setup("fit")
 
 
 def test_val_loaders_group_each_video_without_shuffling(toy_work_root):
@@ -203,7 +243,9 @@ def test_workers_persist_when_there_are_workers(toy_work_root):
 
 
 def test_set_epoch_reaches_the_train_datasets_and_sampler(toy_work_root):
-    config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 0, "balance": "label"}})
+    config = toy_config(
+        data={"loader": {"batch_size": 8, "num_workers": 0, "balance": "video-label"}}
+    )
     datamodule = _datamodule(config, toy_work_root)
     datamodule.setup("fit")
     loader = datamodule.train_dataloader()
@@ -243,8 +285,27 @@ def test_pairs_build_paired_sources_and_keep_each_pair_in_one_batch(toy_work_roo
     assert seen == len(datamodule.train_dataset) == 8 * 2 * 2  # 8 pairs, 2 sides, 2 clips
 
 
+def test_pairs_keep_a_short_last_batch(toy_work_root):
+    # pair batches always hold a real and a fake row, so nothing needs dropping: 8 pairs of 4
+    # rows at batch 12 are three pairs, three pairs, then the last two.
+    config = toy_config(data={"loader": {"batch_size": 12, "num_workers": 0}})
+    datamodule = _datamodule(config, toy_work_root, pairs=True)
+    datamodule.setup("fit")
+    assert sorted(len(batch.keys) for batch in datamodule.train_dataloader()) == [8, 12, 12]
+
+
+def test_pairs_with_no_surviving_pair_are_a_config_error(toy_work_root):
+    # only reals in the training split: every pair loses its fake side.
+    config = toy_config(data={"train": [toy_source("train", task="REAL")]})
+    datamodule = _datamodule(config, toy_work_root, pairs=True)
+    with pytest.raises(ConfigError, match="pair"):
+        datamodule.setup("fit")
+
+
 def test_pairs_cannot_be_combined_with_balance(toy_work_root):
-    config = toy_config(data={"loader": {"batch_size": 4, "num_workers": 0, "balance": "label"}})
+    config = toy_config(
+        data={"loader": {"batch_size": 4, "num_workers": 0, "balance": "video-label"}}
+    )
     with pytest.raises(ConfigError, match="pairs"):
         _datamodule(config, toy_work_root, pairs=True)
 

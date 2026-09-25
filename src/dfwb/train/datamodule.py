@@ -15,7 +15,6 @@ at once, so re-running an epoch (after resuming, say) draws exactly the same bat
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 from collections.abc import Iterator, Sequence
@@ -37,7 +36,13 @@ from dfwb.data.collate import collate_clips
 from dfwb.data.dataset import ClipDataset, ClipSample, ClipTransform, MultiSource
 from dfwb.data.index import SourceSpec, VideoIndex
 from dfwb.data.paired import PairedClipDataset
-from dfwb.data.samplers import PairGrouped, SourceBalanced, VideoGrouped, VideoLabelBalanced
+from dfwb.data.samplers import (
+    PairGrouped,
+    SourceBalanced,
+    VideoGrouped,
+    VideoLabelBalanced,
+    epoch_seed,
+)
 from dfwb.data.transforms import build_transforms
 from dfwb.protocols.protocol import Protocol as LoadedProtocol
 from dfwb.protocols.protocol import load
@@ -46,14 +51,14 @@ __all__ = ["BALANCE_MODES", "ProtocolDataModule", "SourceData"]
 
 _log = logging.getLogger(__name__)
 
-#: ``data.loader.balance``: ``none`` (a plain seeded shuffle), ``label`` (real and fake equally
-#: likely, :class:`~dfwb.data.samplers.VideoLabelBalanced`) or ``source`` (each training source
-#: weighted equally, :class:`~dfwb.data.samplers.SourceBalanced`). Unset means ``none``.
-BALANCE_MODES = ("none", "label", "source")
+#: ``data.loader.balance``: ``none`` (a plain seeded shuffle), ``video-label`` (real and fake
+#: videos equally likely, :class:`~dfwb.data.samplers.VideoLabelBalanced`) or ``source`` (each
+#: training source weighted equally, :class:`~dfwb.data.samplers.SourceBalanced`). Unset means
+#: ``none``.
+BALANCE_MODES = ("none", "video-label", "source")
 
-# ``video-label`` is how the config reference and the shipped ``binary-frame`` template spell
-# label balancing, so it is accepted as the same mode.
-_BALANCE_ALIASES = {"video-label": "label"}
+# A shorter spelling of ``video-label``, accepted as the same mode.
+_BALANCE_ALIASES = {"label": "video-label"}
 
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._+-]+")
 
@@ -94,8 +99,7 @@ class _EpochShuffle(Sampler[int]):
         return self.length
 
     def __iter__(self) -> Iterator[int]:
-        digest = hashlib.sha256(f"{self.seed}:{self._epoch}".encode()).digest()
-        generator = torch.Generator().manual_seed(int.from_bytes(digest[:8], "big"))
+        generator = torch.Generator().manual_seed(epoch_seed(self.seed, self._epoch))
         return iter(torch.randperm(self.length, generator=generator).tolist())
 
 
@@ -105,7 +109,7 @@ def _balance_mode(value: str | None, *, pairs: bool) -> str:
         raise ConfigError(
             f"data.loader.balance: {value!r} is not one of {list(BALANCE_MODES)}"
             f"{did_you_mean(str(value), BALANCE_MODES)}",
-            hint="balance is none, label or source",
+            hint="balance is none, video-label or source",
         )
     if pairs and mode != "none":
         raise ConfigError(
@@ -198,8 +202,9 @@ class ProtocolDataModule(L.LightningDataModule):
         names ``normalize``, say) fails before any protocol or store is read.
 
         Raises:
-            ConfigError: A transform is unknown or not allowed, or a source's protocol, split or
-                processed store cannot be resolved.
+            ConfigError: A transform is unknown or not allowed; a source's protocol, split or
+                processed store cannot be resolved; or the training data cannot fill one batch
+                (one pair, when training on pairs).
             ContractError: A store has no readable ``profile.json``, or its profile cannot serve
                 the detector's input spec (see :func:`~dfwb.data.adapt.adapt`).
         """
@@ -215,7 +220,24 @@ class ProtocolDataModule(L.LightningDataModule):
             [source.dataset for source in self.train_sources],
             weights=[1.0] * len(self.train_sources),
         )
+        self._check_train_size(len(self.train_dataset))
         self._is_setup = True
+
+    def _check_train_size(self, n_clips: int) -> None:
+        """Unpaired training drops a trailing short batch, so it needs at least one full batch;
+        paired training needs at least one pair."""
+        batch_size = self.data.loader.batch_size
+        if self.pairs and n_clips == 0:
+            raise ConfigError(
+                "data.train: no real/fake pair has both of its videos in the joined split",
+                hint="check the training protocols' pairs and that both sides are processed",
+            )
+        if not self.pairs and n_clips < batch_size:
+            raise ConfigError(
+                f"data.loader.batch_size: {batch_size} is more than the {n_clips} training "
+                "clip(s) available, so not one full batch can be drawn",
+                hint="lower data.loader.batch_size, or add training data",
+            )
 
     def _build_sources(
         self,
@@ -316,15 +338,22 @@ class ProtocolDataModule(L.LightningDataModule):
             loader = DataLoader(multi, batch_sampler=batch_sampler, **self._loader_options())
         else:
             sampler: VideoLabelBalanced | SourceBalanced | _EpochShuffle
-            if self.balance == "label":
+            if self.balance == "video-label":
                 sampler = VideoLabelBalanced(multi, seed=self.seed)
             elif self.balance == "source":
                 sampler = SourceBalanced(multi, seed=self.seed)
             else:
                 sampler = _EpochShuffle(len(multi), seed=self.seed)
             self._train_samplers = [sampler]
+            # A trailing short batch is dropped: a batch of one cannot train a batch-norm layer,
+            # and the sampler's next epoch draws those clips again anyway. (Pair batches always
+            # hold at least one real and one fake row, so they keep theirs.)
             loader = DataLoader(
-                multi, batch_size=batch_size, sampler=sampler, **self._loader_options()
+                multi,
+                batch_size=batch_size,
+                sampler=sampler,
+                drop_last=True,
+                **self._loader_options(),
             )
         trainer = self.trainer
         self.set_epoch(trainer.current_epoch if trainer is not None else self._epoch)

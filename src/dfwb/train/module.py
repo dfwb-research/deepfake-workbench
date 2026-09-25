@@ -21,17 +21,23 @@ What gets logged at the end of each validation epoch:
   defined.
 - ``val/loss``: the mean loss over every validation clip.
 
-The checkpoint monitor is ``train.monitor``/``train.mode``. When it names a metric that no source
+The checkpoint monitor is ``train.monitor``/``train.mode``, checked against the validation
+sources' names when fitting starts, before any training. When it names a metric that no source
 defines, the module switches it, once and for the rest of the run, to ``val/loss`` (``min``), with
 a warning; the callbacks read :attr:`DetectorModule.monitor` rather than the config, so they
 follow the switch.
+
+**One process only.** Validation keeps every clip score in this process, and the score dump and
+the checkpoints are written from it, so a run spread over several processes (DDP) would compute
+each rank's metrics on its own share of the videos and write conflicting files. Fitting with more
+than one process is therefore refused at setup, rather than producing numbers that look right.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Hashable, Iterable
+from collections.abc import Hashable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -125,8 +131,9 @@ class DetectorModule(L.LightningModule):
         loss: ``loss:`` (a ``losses`` registry component).
         optim: ``optim:`` (see :func:`~dfwb.train.optim.build_optimizer`).
         schedule: ``schedule:`` (see :func:`~dfwb.train.schedules.build_schedule`); stepped once
-            per optimiser step, over ``train.max_epochs`` epochs.
-        train: ``train:``; ``monitor`` and ``mode`` choose the checkpoint monitor.
+            per optimiser step, over the epochs the trainer runs.
+        train: ``train:``; ``monitor`` and ``mode`` choose the checkpoint monitor (the trainer
+            itself is built from the rest of it).
         eval: ``eval:``; ``metrics`` and ``aggregate`` are exactly what validation computes.
 
     Raises:
@@ -149,7 +156,6 @@ class DetectorModule(L.LightningModule):
         self.loss = _build_loss(loss)
         self.optim_spec = optim
         self.schedule_spec = schedule
-        self.train_cfg = train
         self.eval_cfg = eval
         self.monitor = Monitor(train.monitor, train.mode)
         self._check_monitor()
@@ -164,6 +170,38 @@ class DetectorModule(L.LightningModule):
         self._loss_sum = 0.0
         self._loss_count = 0
         self._warned: set[str] = set()
+
+    def setup(self, stage: str) -> None:
+        """Refuse more than one process, and check the monitor against the validation sources'
+        names -- both before any training happens.
+
+        Raises:
+            ContractError: The trainer runs more than one process, or has no
+                ``ProtocolDataModule`` to name the validation sources.
+            ConfigError: ``train.monitor`` names no value validation will log.
+        """
+        if self.trainer.world_size > 1:
+            raise ContractError(
+                f"training runs in a single process only, but this trainer has "
+                f"{self.trainer.world_size}: validation scores, the score dump and the "
+                "checkpoints are all produced by one process",
+                hint="train with devices: 1 (one GPU, or the CPU)",
+            )
+        names = self._source_names()
+        known = self._metric_keys(names) | {_LOSS_KEY}
+        if self.monitor.key not in known:
+            raise ConfigError(
+                f"train.monitor: {self.monitor.key!r} is not a value validation logs"
+                f"{did_you_mean(self.monitor.key, known)}",
+                hint="validation logs: " + ", ".join(sorted(known)),
+            )
+
+    def _metric_keys(self, names: Sequence[str]) -> set[str]:
+        """Every metric key validation logs when every metric is defined on every source."""
+        metrics = self.eval_cfg.metrics
+        return {f"{_MEAN_PREFIX}{m}" for m in metrics} | {
+            f"{_VAL_PREFIX}{name}/{m}" for name in names for m in metrics
+        }
 
     def _check_monitor(self) -> None:
         key = self.monitor.key
@@ -213,14 +251,27 @@ class DetectorModule(L.LightningModule):
             datamodule.set_epoch(self.current_epoch)
 
     def configure_optimizers(self) -> Any:
+        """The optimiser, and its schedule stepped once per optimiser step.
+
+        The schedule's length comes from the trainer alone -- the epochs it will actually run and
+        the optimiser steps in each -- so it always ends exactly when training does.
+
+        Raises:
+            ConfigError: The trainer has no finite length (no epoch limit), so a schedule over it
+                cannot be laid out.
+        """
         optimizer = build_optimizer(self.optim_spec, self.detector)
-        total_steps = int(self.trainer.estimated_stepping_batches)
-        steps_per_epoch = max(1, math.ceil(total_steps / max(1, self.trainer.max_epochs or 1)))
+        total_steps = self.trainer.estimated_stepping_batches
+        epochs = self.trainer.max_epochs
+        if not math.isfinite(total_steps) or epochs is None or epochs < 1:
+            raise ConfigError(
+                "the learning-rate schedule needs a finite run, but the trainer has no epoch "
+                f"limit (max_epochs={epochs})",
+                hint="set train.max_epochs to a positive number of epochs",
+            )
+        steps_per_epoch = max(1, math.ceil(total_steps / epochs))
         scheduler = build_schedule(
-            self.schedule_spec,
-            optimizer,
-            steps_per_epoch=steps_per_epoch,
-            epochs=self.train_cfg.max_epochs,
+            self.schedule_spec, optimizer, steps_per_epoch=steps_per_epoch, epochs=epochs
         )
         return {
             "optimizer": optimizer,
@@ -317,26 +368,18 @@ class DetectorModule(L.LightningModule):
                 logged[f"{_MEAN_PREFIX}{metric}"] = sum(defined) / len(defined)
         logged[_LOSS_KEY] = self._loss_sum / self._loss_count if self._loss_count else math.nan
 
-        self._resolve_monitor(logged, names)
+        self._resolve_monitor(logged)
         for key, value in logged.items():
             self.log(key, value, prog_bar=key == self.monitor.key)
         self.val_results = results
         self.val_metrics = logged
 
-    def _resolve_monitor(self, logged: dict[str, float], names: list[str]) -> None:
+    def _resolve_monitor(self, logged: dict[str, float]) -> None:
+        """Fall back to ``val/loss`` when the monitored metric (already checked to be one that
+        validation logs, at setup) was not defined on any source this epoch."""
         key = self.monitor.key
         if key in logged or self.monitor.fallback:
             return
-        metric_keys = {f"{_MEAN_PREFIX}{m}" for m in self.eval_cfg.metrics} | {
-            f"{_VAL_PREFIX}{name}/{m}" for name in names for m in self.eval_cfg.metrics
-        }
-        if key not in metric_keys:
-            known = sorted(metric_keys | {_LOSS_KEY})
-            raise ConfigError(
-                f"train.monitor: {key!r} is not a logged validation value"
-                f"{did_you_mean(key, known)}",
-                hint="logged: " + ", ".join(known),
-            )
         _log.warning(
             "%s is not defined on any validation source; checkpoints and early stopping "
             "monitor %s (min) instead for the rest of this run",
