@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field, with_config
+from pydantic import ConfigDict, Field, model_validator, with_config
 
 from dfwb.core.errors import ContractError
 from dfwb.core.hashing import fingerprint
@@ -120,6 +120,10 @@ class BackendSpec(RecordModel):
 class TrackSpec(RecordModel):
     iou: float = Field(gt=0, le=1)
     strategy: str
+    # Smoothing of the raw box: ema*raw + (1-ema)*previous, reset after a gap. None means no
+    # smoothing (the right choice when frames are not temporally adjacent, as with uniform
+    # sampling); a first-consecutive profile typically sets this.
+    ema: float | None = Field(default=None, ge=0, le=1)
 
 
 class CropSpec(RecordModel):
@@ -132,17 +136,25 @@ class CropSpec(RecordModel):
 class SamplingSpec(RecordModel):
     mode: Literal["uniform", "stride", "first-consecutive", "all"]
     frames: int | None = Field(default=None, ge=1)
+    stride: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _stride_is_set_for_stride_mode(self) -> SamplingSpec:
+        if self.mode == "stride" and self.stride is None:
+            raise ValueError("sampling.stride is required when sampling.mode is 'stride'")
+        return self
 
 
 class DecodeSpec(RecordModel):
-    library: str
+    library: Literal["opencv", "pyav"]
     color: Literal["rgb", "bgr"]
 
 
 class ExtrasSpec(RecordModel):
     landmarks: bool
-    mesh: bool
-    masks: bool
+    # Reserved for later: exporting these is not implemented yet, so a profile cannot ask for them.
+    mesh: Literal[False]
+    masks: Literal[False]
 
 
 class ProcessingProfile(RecordModel):

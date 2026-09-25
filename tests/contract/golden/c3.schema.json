@@ -201,6 +201,10 @@
           "type": "string"
         },
         "library": {
+          "enum": [
+            "opencv",
+            "pyav"
+          ],
           "title": "Library",
           "type": "string"
         }
@@ -220,10 +224,12 @@
           "type": "boolean"
         },
         "masks": {
+          "const": false,
           "title": "Masks",
           "type": "boolean"
         },
         "mesh": {
+          "const": false,
           "title": "Mesh",
           "type": "boolean"
         }
@@ -864,6 +870,19 @@
           ],
           "title": "Mode",
           "type": "string"
+        },
+        "stride": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stride"
         }
       },
       "required": [
@@ -1083,6 +1102,20 @@
     "TrackSpec": {
       "additionalProperties": false,
       "properties": {
+        "ema": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ema"
+        },
         "iou": {
           "exclusiveMinimum": 0,
           "maximum": 1,

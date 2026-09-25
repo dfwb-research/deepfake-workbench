@@ -3,6 +3,7 @@ import time
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from dfwb.core.errors import ContractError
 from dfwb.core.records import (
@@ -115,3 +116,46 @@ def test_processing_profile_round_trips_through_yaml():
     again = ProcessingProfile.model_validate(yaml.safe_load(dumped))
     assert again == profile
     assert again.profile_id() == profile.profile_id()
+
+
+def _profile(**replacements: str) -> dict:
+    text = PROFILE
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return yaml.safe_load(text)
+
+
+def test_track_ema_defaults_to_none_and_accepts_a_smoothing_factor():
+    profile = ProcessingProfile.model_validate(yaml.safe_load(PROFILE))
+    assert profile.track.ema is None
+    smoothed = ProcessingProfile.model_validate(
+        _profile(**{"strategy: largest-then-iou}": "strategy: largest-then-iou, ema: 0.7}"})
+    )
+    assert smoothed.track.ema == 0.7
+
+
+def test_stride_mode_without_stride_is_invalid():
+    with pytest.raises(ValidationError, match="stride"):
+        ProcessingProfile.model_validate(_profile(**{"mode: uniform, frames: 32": "mode: stride"}))
+
+
+def test_stride_mode_with_stride_is_valid():
+    profile = ProcessingProfile.model_validate(
+        _profile(**{"mode: uniform, frames: 32": "mode: stride, stride: 5"})
+    )
+    assert profile.sampling.stride == 5
+
+
+def test_decode_library_rejects_unknown_values():
+    with pytest.raises(ValidationError, match="library"):
+        ProcessingProfile.model_validate(_profile(**{"library: pyav": "library: ffmpeg"}))
+
+
+def test_extras_mesh_true_is_invalid():
+    with pytest.raises(ValidationError, match="mesh"):
+        ProcessingProfile.model_validate(_profile(**{"mesh: false": "mesh: true"}))
+
+
+def test_extras_masks_true_is_invalid():
+    with pytest.raises(ValidationError, match="masks"):
+        ProcessingProfile.model_validate(_profile(**{"masks: false": "masks: true"}))

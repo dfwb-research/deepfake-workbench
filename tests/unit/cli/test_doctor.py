@@ -79,3 +79,23 @@ def test_doctor_datasets_is_empty_without_builders(run, monkeypatch):
     data = json.loads(run("doctor", "--json").out)
     assert data["datasets"] == []
     assert "no inventory builders are registered" in run("doctor").out
+
+
+def test_doctor_licences_section_is_empty_by_default(run):
+    data = json.loads(run("doctor", "--json").out)
+    assert data["licenses"] == {}
+    assert "no licences acknowledged yet" in run("doctor").out
+
+
+def test_doctor_licences_section_lists_accepted_licences(run, monkeypatch, tmp_path):
+    monkeypatch.setenv("DFWB_STATE_DIR", str(tmp_path / "state"))
+    from dfwb.core import licenses
+
+    licenses.accept("insightface-buffalo_l", license="non-commercial")
+    data = json.loads(run("doctor", "--json").out)
+    assert data["licenses"]["insightface-buffalo_l"]["license"] == "non-commercial"
+    assert data["licenses"]["insightface-buffalo_l"]["accepted_at"]
+
+    result = run("doctor")
+    assert "insightface-buffalo_l" in result.out
+    assert "non-commercial" in result.out

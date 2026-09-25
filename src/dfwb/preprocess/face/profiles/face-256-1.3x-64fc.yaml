@@ -1,0 +1,9 @@
+# 64 consecutive frames instead of uniform sampling, with EMA smoothing of the tracked box
+# (adjacent frames make smoothing meaningful, unlike uniform sampling's widely-spaced frames).
+id: face-256-1.3x-64fc
+backend: {name: insightface, model: buffalo_l, det_size: 256, min_score: 0.5}
+track: {iou: 0.3, strategy: largest-then-iou, ema: 0.7}
+crop: {scale: 1.3, size: 256, square: true, align: none}
+sampling: {mode: first-consecutive, frames: 64}
+decode: {library: pyav, color: rgb}
+extras: {landmarks: true, mesh: false, masks: false}
