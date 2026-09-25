@@ -86,9 +86,19 @@ def save(
         "meta": dataclasses.asdict(detector.meta),
         "model": section.model_dump(),
         "components": _components(section),
-        "backbone_state": detector.backbone.checkpoint_state(),
+        "backbone_state": _backbone_state(detector.backbone),
     }
     (out / _META_FILE).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", "utf-8")
+
+
+def _backbone_state(backbone: Any) -> dict[str, Any]:
+    """What a backbone records to rebuild itself offline; ``{}`` for one that says nothing.
+
+    A plugin backbone need not subclass :class:`~dfwb.models.backbone.Backbone`, so
+    ``checkpoint_state()`` is optional.
+    """
+    state_of = getattr(backbone, "checkpoint_state", None)
+    return dict(state_of()) if callable(state_of) else {}
 
 
 def _installed_version(provider: str) -> tuple[bool, str | None]:

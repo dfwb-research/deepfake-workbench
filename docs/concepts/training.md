@@ -69,10 +69,12 @@ the mean over the sources where that metric is defined.
 
 ## Precision: `train.precision`
 
-`auto` (the default, and the templates' value) picks per device: `bf16-mixed` on a CUDA GPU that
-supports bfloat16, `16-mixed` on any other CUDA GPU, and `32-true` on the CPU. `32-true`,
-`bf16-mixed` and `16-mixed` set it explicitly. `env.json` records what it resolved to
-(`"precision"`). Under either mixed precision the detector's head and the sigmoid still run in
+`auto` (the default, and the templates' value) picks per device: `bf16-mixed` on a CUDA GPU with
+native bfloat16 (compute capability 8.0 or later), `16-mixed` on any other CUDA GPU (older GPUs
+only emulate bfloat16, slowly), and `32-true` on the CPU. It judges the GPU `--device` chose.
+`32-true`, `bf16-mixed` and `16-mixed` set it explicitly. `env.json` records what it resolved to
+(`"precision"`), and a resumed run keeps that precision rather than resolving `auto` again on
+whatever machine it resumes on. Under either mixed precision the detector's head and the sigmoid still run in
 float32, so scores keep their full resolution: metrics, checkpoint selection and the validation
 score files never see half-precision rounding.
 

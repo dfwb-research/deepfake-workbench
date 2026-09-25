@@ -279,6 +279,30 @@ def test_the_loop_internals_resume_needs_are_there():
     resume_module.check_loop_internals(trainer)
 
 
+def test_a_resumed_auto_run_keeps_the_precision_it_started_with(
+    tmp_path, toy_work_root, monkeypatch
+):
+    # auto picks per device; a resume elsewhere must not switch precision mid-run (a bf16 run
+    # resumed where auto means 16-mixed would even fail to restore its scaler state)
+    config = toy_config(train={"max_epochs": 2, "precision": "auto"})
+    run_dir = _interrupted(tmp_path, toy_work_root, config, monkeypatch, _CrashAtEpochStart(1))
+    env_file = run_dir / "env.json"
+    env = json.loads(env_file.read_text("utf-8"))
+    assert env["precision"] == "32-true"
+    env["precision"] = "bf16-mixed"  # as if it had started on a bf16 GPU
+    env_file.write_text(json.dumps(env), "utf-8")
+    seen: dict[str, object] = {}
+
+    def fake_fit(plan, seed, **kwargs):
+        seen["precision"] = plan.precision
+        raise _Crash("stop here")
+
+    monkeypatch.setattr(run_module, "_fit", fake_fit)
+    with pytest.raises(_Crash):
+        resume_run(run_dir, work_root=toy_work_root, progress=False)
+    assert seen["precision"] == "bf16-mixed"
+
+
 def test_a_finished_run_has_nothing_to_resume(tmp_path, toy_work_root):
     result = _train(tmp_path, toy_work_root, toy_config())
     with pytest.raises(ConfigError, match="nothing to resume") as caught:

@@ -92,6 +92,8 @@ class _Plan:
     progress: bool
     argv: Sequence[str] | None
     shipped_profiles: Sequence[ProcessingProfile] = ()
+    # a resumed run keeps the precision it started in, rather than resolving ``auto`` again
+    precision: str | None = None
 
 
 # ------------------------------------------------------------------------------ checks
@@ -214,17 +216,34 @@ def _plugin_callbacks(config: TrainConfig) -> list[Callback]:
 
 def resolve_precision(precision: str, options: Mapping[str, Any]) -> str:
     """The Lightning precision a run trains in: ``precision`` itself, unless it is ``auto``,
-    which picks per device -- ``bf16-mixed`` on a CUDA GPU that supports bfloat16, ``16-mixed`` on
-    any other CUDA GPU, ``32-true`` everywhere else (the CPU included). ``options`` are the
+    which picks per device -- ``bf16-mixed`` on a CUDA GPU with native bfloat16 (compute
+    capability 8.0 or later), ``16-mixed`` on any other CUDA GPU (older GPUs only emulate
+    bfloat16, slowly), ``32-true`` everywhere else (the CPU included). ``options`` are the
     trainer options the device comes from (``accelerator``: ``auto`` means a GPU when there is
-    one)."""
+    one; ``devices: [i]`` names the GPU, otherwise the current one is judged)."""
     if precision != "auto":
         return precision
     accelerator = str(options.get("accelerator", "auto")).lower()
     cuda = accelerator in ("gpu", "cuda") or (accelerator == "auto" and torch.cuda.is_available())
     if not cuda:
         return "32-true"
-    return "bf16-mixed" if torch.cuda.is_bf16_supported() else "16-mixed"
+    devices = options.get("devices")
+    index = (
+        devices[0]
+        if isinstance(devices, (list, tuple)) and len(devices) == 1
+        else torch.cuda.current_device()
+    )
+    major, _minor = torch.cuda.get_device_capability(index)
+    return "bf16-mixed" if major >= 8 else "16-mixed"
+
+
+def _started_precision(run_dir: Path) -> str | None:
+    """The precision an interrupted run started in, as its ``env.json`` recorded it."""
+    try:
+        recorded = json.loads((run_dir / rundir.ENV_FILE).read_text("utf-8")).get("precision")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return recorded if isinstance(recorded, str) and recorded else None
 
 
 def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any) -> L.Trainer:
@@ -247,7 +266,7 @@ def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any
         options.update(enable_progress_bar=False, enable_model_summary=False)
     if plan.device is not None:
         options.update(device_options(plan.device))
-    options["precision"] = resolve_precision(train.precision, options)
+    options["precision"] = plan.precision or resolve_precision(train.precision, options)
     try:
         return L.Trainer(**options)
     except (MisconfigurationException, ValueError, TypeError) as exc:
@@ -751,7 +770,16 @@ def resume_run(
         device_options(device)
     work = _work_root(work_root)
     _check_monitor_sources(train_config, work)
+    started = _started_precision(run_dir) if train_config.train.precision == "auto" else None
     plan = _Plan(
-        loaded, train_config, work, run_dir.parent.parent, device, progress, argv, shipped_profiles
+        loaded,
+        train_config,
+        work,
+        run_dir.parent.parent,
+        device,
+        progress,
+        argv,
+        shipped_profiles,
+        precision=started,
     )
     return _fit(plan, int(saved.payload["seed"]), run_dir=run_dir, restore=saved)

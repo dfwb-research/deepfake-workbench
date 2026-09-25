@@ -494,9 +494,27 @@ def test_an_unknown_device_is_a_config_error():
 )
 def test_auto_precision_resolves_per_device(monkeypatch, accelerator, cuda, bf16, expected):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *args, **kwargs: bf16)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    capability = (8, 0) if bf16 else (7, 5)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
     options = {} if accelerator is None else {"accelerator": accelerator}
     assert run_module.resolve_precision("auto", options) == expected
+
+
+def test_auto_precision_counts_only_native_bfloat16_on_the_chosen_gpu(monkeypatch):
+    # a pre-Ampere GPU only emulates bfloat16, which trains slowly: auto picks 16-mixed there,
+    # judged on the GPU --device chose, not whichever one happens to be current
+    capabilities = {0: (8, 9), 1: (7, 5)}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *args, **kwargs: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_capability", lambda device=None: capabilities[device]
+    )
+    resolve = run_module.resolve_precision
+    assert resolve("auto", {"accelerator": "gpu", "devices": [0]}) == "bf16-mixed"
+    assert resolve("auto", {"accelerator": "gpu", "devices": [1]}) == "16-mixed"
+    assert resolve("auto", {"accelerator": "gpu", "devices": 1}) == "16-mixed"  # current: 1
 
 
 def test_an_explicit_precision_is_used_as_written(monkeypatch):

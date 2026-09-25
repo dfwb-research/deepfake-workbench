@@ -64,6 +64,21 @@ def test_checkpoint_directory_holds_only_safetensors_and_json(tmp_path):
     assert names == ["detector.json", "model.safetensors"]
 
 
+def test_a_backbone_without_checkpoint_state_still_saves(tmp_path):
+    # a plugin backbone need not subclass Backbone: one without checkpoint_state() has nothing
+    # extra to record, and saving must not fail after its first epoch
+    cfg = _model_cfg()
+    detector = build_detector(cfg)
+    assert hasattr(type(detector.backbone), "checkpoint_state")
+    plain = type("PlainBackbone", (torch.nn.Module,), {})()
+    for name in ("kind", "out_dim", "native_input"):
+        setattr(plain, name, getattr(detector.backbone, name))
+    detector.backbone = plain
+    checkpoint.save(tmp_path, detector, cfg)
+    payload = json.loads((tmp_path / "detector.json").read_text("utf-8"))
+    assert payload["backbone_state"] == {}
+
+
 def test_checkpoint_round_trip_gives_identical_outputs(tmp_path):
     torch.manual_seed(0)
     cfg = _model_cfg()
