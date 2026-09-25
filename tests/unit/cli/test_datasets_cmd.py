@@ -81,12 +81,43 @@ def test_info_shows_the_card_layout_folder_and_schemes(run, monkeypatch, tmp_pat
     assert data["location"] == {
         "path": str(raw / "Demo"),
         "source": "root 1",
-        "also_found": [str(second / "Demo")],
+        "copies": [
+            {"path": str(raw / "Demo"), "has_layout": True},
+            {"path": str(second / "Demo"), "has_layout": False},
+        ],
         "problem": None,
     }
     assert data["schemes"] == [
         {"pack": "demo-pack", "scheme": "official", "kind": "official", "default": True}
     ]
+
+
+def test_info_marks_the_copy_with_the_raw_layout(run, monkeypatch, tmp_path):
+    # root 1 has the folder but not the layout (e.g. a processed copy); root 2 has it.
+    raw, second = tmp_path / "raw", tmp_path / "second"
+    (raw / "Demo").mkdir(parents=True)
+    make_demo_tree(second / "Demo", compressions=("c23",))
+    install(monkeypatch)
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+
+    result = run("datasets", "info", "demo")
+    assert result.code == 0, result.err
+    assert (
+        f"folder: {second / 'Demo'}  (root 2 (raw layout; root 1 has the folder without it))"
+        in result.out
+    )
+    assert f"also found: {raw / 'Demo'}  (no raw layout)" in result.out
+
+    data = json.loads(run("datasets", "info", "demo", "--json").out)
+    assert data["location"] == {
+        "path": str(second / "Demo"),
+        "source": "root 2 (raw layout; root 1 has the folder without it)",
+        "copies": [
+            {"path": str(raw / "Demo"), "has_layout": False},
+            {"path": str(second / "Demo"), "has_layout": True},
+        ],
+        "problem": None,
+    }
 
 
 def test_info_when_the_folder_is_missing_and_no_pack_publishes_it(run, monkeypatch):

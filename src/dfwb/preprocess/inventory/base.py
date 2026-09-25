@@ -398,6 +398,31 @@ class BaseBuilder:
         """
         return self.record(task, path.stem, relpath, compression)
 
+    def layout_dirs(self) -> tuple[str, ...]:
+        """Every concrete task directory the default :meth:`layout_present` looks for.
+
+        ``{cX}`` is expanded over :attr:`known_compressions`; a ``video_dir`` without it is
+        listed as is. A builder that overrides :meth:`layout_present` with a check other than
+        "one of these directories exists" (e.g. a metadata file) should override this too, so a
+        caller can still describe what is missing.
+        """
+        return tuple(
+            _concrete_dir(task.video_dir, compression)
+            for task in self.tasks
+            for compression in expand_compressions(task.video_dir, self.known_compressions, None)
+        )
+
+    def layout_present(self, folder: Path) -> bool:
+        """Whether ``folder`` holds the builder's raw layout, not just its name.
+
+        A dataset can sit under the same folder name in several places on a real machine: one
+        copy of the raw release, and another of a processed copy (frames instead of videos, say)
+        left over from an earlier run. The default check is: at least one of :meth:`layout_dirs`
+        exists as a directory under ``folder``. A builder whose layout is not a set of video
+        directories overrides this, e.g. by checking for a metadata file instead.
+        """
+        return any((folder / d).is_dir() for d in self.layout_dirs())
+
     def record(
         self,
         task: TaskSpec,

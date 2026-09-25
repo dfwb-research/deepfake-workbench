@@ -13,7 +13,7 @@ from dfwb.cli._output import emit_json, json_option, table
 
 if TYPE_CHECKING:
     from dfwb.core.paths import ResolvedRoot, RootName
-    from dfwb.preprocess.inventory.runner import FolderStatus
+    from dfwb.preprocess.inventory.runner import FolderStatus, LayoutChoice
 
 _MISSING = "—"
 
@@ -58,6 +58,20 @@ def _location_json(status: FolderStatus) -> dict[str, Any]:
         "path": None if location is None else str(location.path),
         "source": status.source,
         "also_found": [] if location is None else [str(p) for p in location.also_found],
+    }
+
+
+def _layout_location_json(status: FolderStatus, layout: LayoutChoice | None) -> dict[str, Any]:
+    """Like :func:`_location_json`, but naming every copy found and which has the raw layout."""
+    if layout is None:
+        return {"path": None, "source": status.source, "copies": [], "problem": status.problem}
+    return {
+        "path": str(layout.path),
+        "source": layout.source,
+        "copies": [
+            {"path": str(copy.path), "has_layout": copy.has_layout} for copy in layout.copies
+        ],
+        "problem": None,
     }
 
 
@@ -192,12 +206,13 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
 def info(dataset: str, as_json: bool) -> None:
     """Show DATASET's details, its expected layout, its local folder and its schemes."""
     from dfwb.core.registry import catalogue_requirement
-    from dfwb.preprocess.inventory.runner import folder_status, get_builder
+    from dfwb.preprocess.inventory.runner import choose_layout, folder_status, get_builder
 
     builder = get_builder(dataset)
     dataset_id = builder.dataset_id
     roots, overrides = _locate_context()
     status = folder_status(dataset_id, builder.expected_folder, roots, overrides)
+    layout = None if status.location is None else choose_layout(builder, status.location, roots)
     schemes, problems = _pack_schemes(dataset_id)
     card = dict(builder.card_info)
 
@@ -208,7 +223,7 @@ def info(dataset: str, as_json: bool) -> None:
                 "builder": {"id": dataset_id, "version": builder.version},
                 "card": card,
                 "layout": builder.describe_layout(),
-                "location": {**_location_json(status), "problem": status.problem},
+                "location": _layout_location_json(status, layout),
                 "schemes": schemes,
                 "problems": problems,
             }
@@ -223,12 +238,14 @@ def info(dataset: str, as_json: bool) -> None:
     click.echo("")
     click.echo(builder.describe_layout())
     click.echo("")
-    if status.location is None:
+    if layout is None:
         click.echo(f"folder: not found ({status.problem})")
     else:
-        click.echo(f"folder: {status.location.path}  ({status.source})")
-        for path in status.location.also_found:
-            click.echo(f"also found: {path}")
+        click.echo(f"folder: {layout.path}  ({layout.source})")
+        for copy in layout.copies:
+            if copy.path != layout.path:
+                note = "raw layout" if copy.has_layout else "no raw layout"
+                click.echo(f"also found: {copy.path}  ({note})")
     click.echo("")
     if schemes:
         click.echo("schemes in installed protocol packs:")

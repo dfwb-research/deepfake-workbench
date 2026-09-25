@@ -143,6 +143,93 @@ def test_an_override_from_a_config_file_names_only_the_file(env, monkeypatch, tm
     assert str(tmp_path) not in meta
 
 
+def test_the_root_that_actually_has_the_layout_is_used(env, monkeypatch, tmp_path):
+    raw, _ = env
+    install(monkeypatch)
+    (raw / "Demo").mkdir()  # same folder name, but no raw layout (e.g. a processed copy)
+    second = tmp_path / "second"
+    make_demo_tree(second / "Demo", compressions=("c23",))
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+
+    result = build_inventory("demo")
+
+    assert result.dataset_dir == second / "Demo"
+    assert result.location_source == "root 2 (raw layout; root 1 has the folder without it)"
+    assert result.count == 4
+
+
+def test_falls_back_to_the_first_root_when_none_has_the_layout(env, monkeypatch, tmp_path, caplog):
+    raw, _ = env
+    install(monkeypatch)
+    (raw / "Demo").mkdir()
+    second = tmp_path / "second"
+    (second / "Demo").mkdir(parents=True)
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+
+    with caplog.at_level("WARNING", logger="dfwb.preprocess.inventory.runner"):
+        result = build_inventory("demo")
+
+    assert result.dataset_dir == raw / "Demo"
+    assert result.location_source == "root 1"
+    assert result.count == 0
+    assert "no copy of the dataset folder has the expected raw layout" in caplog.text
+    assert "root 1" in caplog.text
+    assert "root 2" in caplog.text
+
+
+def test_an_override_without_the_layout_is_used_with_a_warning(env, monkeypatch, tmp_path, caplog):
+    install(monkeypatch)
+    empty = tmp_path / "elsewhere"
+    empty.mkdir()
+    monkeypatch.setenv("DFWB_DATASET_DEMO", str(empty))
+
+    with caplog.at_level("WARNING", logger="dfwb.preprocess.inventory.runner"):
+        result = build_inventory("demo")
+
+    assert result.dataset_dir == empty
+    assert result.location_source == "override (env: DFWB_DATASET_DEMO)"
+    assert result.count == 0
+    assert "does not have the expected raw layout" in caplog.text
+    assert "originals" in caplog.text
+
+
+def test_root_flag_without_the_layout_is_used_with_a_warning(env, monkeypatch, tmp_path, caplog):
+    install(monkeypatch)
+    empty = tmp_path / "chosen"
+    empty.mkdir()
+
+    with caplog.at_level("WARNING", logger="dfwb.preprocess.inventory.runner"):
+        result = build_inventory("demo", root=empty)
+
+    assert result.dataset_dir == empty
+    assert result.location_source == "--root"
+    assert result.count == 0
+    assert "does not have the expected raw layout" in caplog.text
+    assert "originals" in caplog.text
+
+
+def test_a_real_builder_picks_the_root_with_the_raw_videos_over_frames(env, monkeypatch, tmp_path):
+    # No install(): the real, built-in ffpp builder is used, unlike every other test here.
+    raw, _ = env
+    processed = raw / "FaceForensics++" / "original_content" / "youtube" / "c23" / "frames"
+    processed.mkdir(parents=True)
+    (processed / "000_0001.png").touch()
+
+    second = tmp_path / "second"
+    real_dir = second / "FaceForensics++" / "original_content" / "YouTube" / "c23" / "videos"
+    real_dir.mkdir(parents=True)
+    for stem in ("000", "001"):
+        (real_dir / f"{stem}.mp4").touch()
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", f"{raw}:{second}")
+
+    result = build_inventory("ffpp", compressions=["c23"])
+
+    assert result.dataset_dir == second / "FaceForensics++"
+    assert result.location_source == "root 2 (raw layout; root 1 has the folder without it)"
+    assert result.count == 2
+    assert result.by_task["REAL"] == 2
+
+
 def test_root_wins_over_the_roots_search(env, monkeypatch, tmp_path):
     raw, _ = env
     install(monkeypatch)

@@ -303,6 +303,33 @@ def test_describe_layout_lists_every_task():
     assert text == DemoBuilder().describe_layout()
 
 
+def test_layout_dirs_expands_compressions_over_every_task():
+    assert DemoBuilder().layout_dirs() == (
+        "originals/c23",
+        "originals/c40",
+        "swapped/c23",
+        "swapped/c40",
+    )
+
+
+def test_layout_present_needs_only_one_task_directory(tmp_path):
+    builder = DemoBuilder()
+    assert not builder.layout_present(tmp_path)  # nothing at all
+    (tmp_path / "originals" / "c23").mkdir(parents=True)  # just one of the four
+    assert builder.layout_present(tmp_path)
+
+
+def test_layout_present_ignores_a_task_dir_that_is_actually_a_file(tmp_path):
+    class _FlatDemo(DemoBuilder):
+        tasks = (TaskSpec("REAL", "Originals", "real", "originals", "original"),)
+        known_compressions = ()
+
+    builder = _FlatDemo()
+    (tmp_path / "originals").touch()  # a file, not a directory
+    assert not builder.layout_present(tmp_path)
+    assert builder.layout_dirs() == ("originals",)
+
+
 def test_the_demo_builder_satisfies_the_protocol():
     builder = DemoBuilder()
     assert isinstance(builder, InventoryBuilder)

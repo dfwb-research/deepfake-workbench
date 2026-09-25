@@ -13,6 +13,7 @@ dataset is without importing its builder.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -37,9 +38,12 @@ from dfwb.preprocess.inventory.base import BaseBuilder, validate_compressions
 __all__ = [
     "INVENTORY_FILE",
     "META_FILE",
+    "DatasetCopy",
     "FolderStatus",
     "InventoryResult",
+    "LayoutChoice",
     "build_inventory",
+    "choose_layout",
     "collect_records",
     "describe_location",
     "folder_status",
@@ -47,6 +51,8 @@ __all__ = [
     "inventory_path",
     "read_inventory",
 ]
+
+_log = logging.getLogger(__name__)
 
 INVENTORY_FILE = "inventory.jsonl"
 META_FILE = "inventory.meta.json"
@@ -63,7 +69,7 @@ class InventoryResult:
     count: int
     by_task: dict[str, int]  # every task of the builder, in task-table order (0 if absent)
     dataset_dir: Path
-    location_source: str  # "--root", "root N" or "override (...)"
+    location_source: str  # "--root", "root N", "root N (raw layout; ...)" or "override (...)"
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,100 @@ def describe_location(location: DatasetLocation, roots: Mapping[RootName, Resolv
         if path == location.root:
             return f"root {index}"
     return "a datasets root"
+
+
+@dataclass(frozen=True)
+class DatasetCopy:
+    """One folder found for a dataset under a datasets root, and whether it has the raw layout."""
+
+    path: Path
+    root_index: int  # 1-based, matching describe_location's "root N"
+    has_layout: bool
+
+
+@dataclass(frozen=True)
+class LayoutChoice:
+    """The dataset folder :func:`choose_layout` picked, and every copy it considered.
+
+    ``copies`` is empty for an override: an override is used as given, never compared against
+    other roots.
+    """
+
+    path: Path
+    source: str
+    copies: tuple[DatasetCopy, ...]
+
+
+def _root_index(path: Path, expected_folder: str, roots: Mapping[RootName, ResolvedRoot]) -> int:
+    """The 1-based datasets-root index that ``path`` (``root / expected_folder``) came from."""
+    datasets = roots.get("datasets")
+    for index, root_path in enumerate(datasets.paths if datasets is not None else (), start=1):
+        if root_path / expected_folder == path:
+            return index
+    return 0  # unreachable: every candidate comes from locate_dataset's own search
+
+
+def _earlier_copies_text(copies: Sequence[DatasetCopy]) -> str:
+    names = [f"root {copy.root_index}" for copy in copies]
+    if len(names) == 1:
+        return f"{names[0]} has the folder without it"
+    return f"{', '.join(names[:-1])} and {names[-1]} have the folder without it"
+
+
+def _warn_missing_layout(builder: BaseBuilder, folder: Path, source: str) -> None:
+    missing = [d for d in builder.layout_dirs() if not (folder / d).is_dir()]
+    _log.warning(
+        "%s: %s (%s) does not have the expected raw layout; missing %s",
+        builder.dataset_id,
+        folder,
+        source,
+        ", ".join(missing) if missing else "its task directories",
+    )
+
+
+def choose_layout(
+    builder: BaseBuilder, location: DatasetLocation, roots: Mapping[RootName, ResolvedRoot]
+) -> LayoutChoice:
+    """Pick, among the copies ``location`` names, the one holding ``builder``'s raw layout.
+
+    ``location`` must come from :func:`~dfwb.core.paths.locate_dataset` for this builder's
+    dataset id and expected folder. An override (``location.root is None``) is used as given; if
+    its layout is absent, a warning names the missing directories. Otherwise, among
+    ``location.path`` and ``location.also_found``, in root order, the first whose folder passes
+    :meth:`~dfwb.preprocess.inventory.base.BaseBuilder.layout_present` wins. When none does, the
+    first folder found is used, with a warning naming every copy that was searched.
+    """
+    if location.root is None:
+        source = describe_location(location, roots)
+        if not builder.layout_present(location.path):
+            _warn_missing_layout(builder, location.path, source)
+        return LayoutChoice(location.path, source, ())
+
+    candidates = (location.path, *location.also_found)
+    copies = tuple(
+        DatasetCopy(
+            path, _root_index(path, builder.expected_folder, roots), builder.layout_present(path)
+        )
+        for path in candidates
+    )
+    with_layout = [copy for copy in copies if copy.has_layout]
+    if with_layout:
+        chosen = with_layout[0]
+        earlier = [copy for copy in copies if copy.root_index < chosen.root_index]
+        source = f"root {chosen.root_index}"
+        if earlier:
+            source += f" (raw layout; {_earlier_copies_text(earlier)})"
+    else:
+        chosen = copies[0]
+        source = f"root {chosen.root_index}"
+        _log.warning(
+            "%s: no copy of the dataset folder has the expected raw layout (searched %s); "
+            "using root %d",
+            builder.dataset_id,
+            ", ".join(f"root {copy.root_index} ({copy.path})" for copy in copies),
+            chosen.root_index,
+        )
+    return LayoutChoice(chosen.path, source, copies)
 
 
 def folder_status(
@@ -273,12 +373,15 @@ def build_inventory(
                 f"{dataset_id}: --root {dataset_dir} is not a directory",
                 hint=f"point --root at the dataset's {builder.expected_folder!r} folder",
             )
+        if not builder.layout_present(dataset_dir):
+            _warn_missing_layout(builder, dataset_dir, "--root")
         source = "--root"
     else:
         location = locate_dataset(
             dataset_id, builder.expected_folder, resolved, overrides=dataset_overrides()
         )
-        dataset_dir, source = location.path, describe_location(location, resolved)
+        choice = choose_layout(builder, location, resolved)
+        dataset_dir, source = choice.path, choice.source
 
     path = inventory_path(dataset_id, work_root)
     datasets = resolved.get("datasets")
