@@ -148,7 +148,7 @@ def test_pair_candidates_strip_the_fake_suffix(uadfv_root):
         task_rank=builder.task_rank(),
     )
     assert pairs == [
-        PairRecord(f"FS_FAKE/{n}_fake", f"REAL/{n}", "uadfv_strip_fake_suffix")
+        PairRecord(f"FS_FAKE/{n}_fake", f"REAL/{n}", "strip-fake-suffix")
         for n in ("0001", "0002", "0003")
     ]
 
@@ -171,7 +171,7 @@ def test_every_video_is_test_and_there_is_no_benchmark():
     assert builder.default_scheme == "all-test"
     assert {name: s.rule for name, s in builder.schemes.items()} == {"all-test": "all-test"}
     assert builder.benchmark is None
-    assert builder.pairing_rule == "uadfv_strip_fake_suffix"
+    assert builder.pairing_rule == "strip-fake-suffix"
     assert builder.pairing_fanout is None
 
 

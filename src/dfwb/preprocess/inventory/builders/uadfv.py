@@ -54,7 +54,7 @@ class UADFVBuilder(BaseBuilder):
         ),
     }
     default_scheme = "all-test"
-    pairing_rule = "uadfv_strip_fake_suffix"
+    pairing_rule = "strip-fake-suffix"
     card_info = {
         "name": "UADFV",
         "aliases": [],

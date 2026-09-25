@@ -217,7 +217,7 @@ def test_pair_candidates_name_the_actor_scene(dfd_root):
     # 03__kitchen_pan has no real, so that fake has no pair
     assert pairs == [
         PairRecord(
-            "FS_DFD/01_02__exit_phone_room__ABCDEF", "AR/01__exit_phone_room", "dfd_target_scene"
+            "FS_DFD/01_02__exit_phone_room__ABCDEF", "AR/01__exit_phone_room", "target-scene"
         )
     ]
 
@@ -244,7 +244,7 @@ def test_schemes_and_benchmark():
         "benchmark": "benchmark",
     }
     assert builder.benchmark == BenchmarkSpec(k_fake=100)
-    assert builder.pairing_rule == "dfd_target_scene"
+    assert builder.pairing_rule == "target-scene"
     assert builder.pairing_fanout is None
 
 

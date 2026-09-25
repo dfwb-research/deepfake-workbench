@@ -81,7 +81,7 @@ class DeepFakeDetectionBuilder(BaseBuilder):
     }
     default_scheme = "ident-72-14-14"
     benchmark = BenchmarkSpec(k_fake=100)
-    pairing_rule = "dfd_target_scene"
+    pairing_rule = "target-scene"
     card_info = {
         "name": "DeepFakeDetection",
         "aliases": ["DFD"],
