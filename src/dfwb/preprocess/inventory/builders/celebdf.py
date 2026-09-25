@@ -35,7 +35,7 @@ from typing import ClassVar, Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["CelebDFv1Builder", "CelebDFv2Builder", "CelebDFv3Builder"]
 
@@ -156,8 +156,15 @@ def _schemes(testing_list: str, benchmark_rationale: str) -> dict[str, SchemeSpe
 
 
 def _card(
-    name: str, aliases: list[str], release: str, homepage: str, key_rule: str
+    name: str,
+    aliases: list[str],
+    release: str,
+    homepage: str,
+    key_rule: str,
+    *,
+    project: str = "Celeb-DF",
 ) -> dict[str, object]:
+    """A release's card; ``project`` names whose repository and terms of use it comes under."""
     return {
         "name": name,
         "aliases": aliases,
@@ -165,11 +172,11 @@ def _card(
         "homepage": homepage,
         "license": {
             "spdx": None,
-            "summary": "the Celeb-DF terms of use: non-commercial research only",
+            "summary": f"the {project} terms of use: non-commercial research only",
             "url": None,
         },
         "access": "request the download from the authors through the form linked from the "
-        "Celeb-DF repository; dfwb never distributes media",
+        f"{project} repository; dfwb never distributes media",
         "modalities": ["video"],
         "compressions": None,
         "key_rule": key_rule,
@@ -184,7 +191,7 @@ _CELEB_SYNTHESIS: Final = _fake(
 _CELEB_SYNTHESIS_LABEL: Final = LabelSpec(binary=1, binary_av=1, multiclass=3, family="face-swap")
 _RANDOM_BENCHMARK: Final = (
     "a small, seeded evaluation set: up to 100 fakes drawn at random from the official test "
-    "list, balanced with as many reals"
+    f"list, {BENCHMARK_REALS}"
 )
 _V1_V2_KEY_RULE: Final = (
     "real: CR/<id>_<rec> or YTR/<n>; fake: FS_CS/<target>_<source>_<rec> (the file stem)"
@@ -354,7 +361,7 @@ class CelebDFv3Builder(_CelebDFBuilder):
     schemes = _schemes(
         testing_list,
         "a small, seeded evaluation set drawn from the official test list: up to 2 fakes per "
-        "identity and method, balanced with as many reals",
+        f"identity and method, {BENCHMARK_REALS}",
     )
     benchmark = BenchmarkSpec(k_fake=2, strata=("identity", "task"))
     card_info = _card(
@@ -367,6 +374,7 @@ class CelebDFv3Builder(_CelebDFBuilder):
         "real: CR/<id>_<rec> or YTR/<n>; face swap and reenactment: "
         "<task>/<target>_<source>_<rec>; talking face: <task>/<target>_<rec>_test_<ref> "
         "(the file stem)",
+        project="Celeb-DF++",
     )
     layout_notes = (
         "Fakes sit in one folder per method under manipulated_content/{FaceSwap,FaceReenact,"

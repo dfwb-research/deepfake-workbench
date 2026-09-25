@@ -1,4 +1,4 @@
-"""The benchmark rule: a seeded, stratified test subset with balanced reals.
+"""The benchmark rule: a seeded, stratified test subset, with up to as many reals as fakes.
 
 The rule assertions are ported from the reference benchmark selector's tests and those of its
 sampling helpers; the ones about its source files, output files and folders are not.
@@ -13,7 +13,13 @@ import pytest
 
 from dfwb.core.errors import ContractError
 from dfwb.core.records import BuilderRef, InventoryRecord, VideoRecord
-from dfwb.protocols.rules import BenchmarkSpec, assign_benchmark, local_key, task_of
+from dfwb.protocols.rules import (
+    BENCHMARK_REALS,
+    BenchmarkSpec,
+    assign_benchmark,
+    local_key,
+    task_of,
+)
 
 TASK_RANK = {"REAL": 0, "RVFA": 1, "FS_A": 2, "FS_B": 3, "FR_DAGAN": 4, "FS_SBI": 5}
 REAL_TASKS = frozenset({"REAL", "RVFA"})
@@ -224,6 +230,19 @@ def test_reals_are_subsampled_to_n_fakes():
     fakes = [rec(f"FS_A/f{i}") for i in range(3)]  # 3 <= k_fake: kept without a draw
     expected = random.Random(0).sample([f"REAL/r{i:02d}" for i in range(10)], 3)
     assert reals_of(run(reals + fakes, k_fake=3)) == sorted(expected)
+
+
+def test_the_reals_phrase_says_what_the_draw_does():
+    # A scheme's rationale quotes this phrase, so it must match the draw exactly: as many reals
+    # as fakes when there are more reals, and every real when there are fewer, so a benchmark is
+    # not class-balanced then.
+    assert BENCHMARK_REALS == "with as many reals as fakes, or every real when there are fewer"
+    fewer = run([rec("REAL/r1")] + [rec(f"FS_A/f{i}") for i in range(4)], k_fake=4)
+    assert (len(reals_of(fewer)), len(fakes_of(fewer))) == (1, 4)
+    more = run(
+        [rec(f"REAL/r{i}") for i in range(9)] + [rec(f"FS_A/f{i}") for i in range(4)], k_fake=4
+    )
+    assert (len(reals_of(more)), len(fakes_of(more))) == (4, 4)
 
 
 def test_real_cap_is_a_second_draw_on_the_balanced_sample():

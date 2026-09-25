@@ -32,7 +32,7 @@ from typing import Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["FaceForensicsBuilder"]
 
@@ -134,7 +134,7 @@ class FaceForensicsBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set at c23: 500 fakes drawn at random from the "
-            "official test split's c23 videos, balanced with as many reals",
+            f"official test split's c23 videos, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official"

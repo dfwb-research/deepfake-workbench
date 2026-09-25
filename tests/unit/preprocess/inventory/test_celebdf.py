@@ -511,6 +511,29 @@ def test_dataset_cards():
         assert card.paper is None
 
 
+def test_each_card_names_its_own_release_terms_and_repository():
+    for builder_class in (CelebDFv1Builder, CelebDFv2Builder):
+        card = builder_class().card_info
+        assert card["license"]["summary"] == (
+            "the Celeb-DF terms of use: non-commercial research only"
+        )
+        assert card["access"] == (
+            "request the download from the authors through the form linked from the "
+            "Celeb-DF repository; dfwb never distributes media"
+        )
+        assert card["homepage"] == "https://github.com/yuezunli/celeb-deepfakeforensics"
+    # Celeb-DF++ is its own release, with its own repository and its own terms of use.
+    card = CelebDFv3Builder().card_info
+    assert card["license"]["summary"] == (
+        "the Celeb-DF++ terms of use: non-commercial research only"
+    )
+    assert card["access"] == (
+        "request the download from the authors through the form linked from the "
+        "Celeb-DF++ repository; dfwb never distributes media"
+    )
+    assert card["homepage"] == "https://github.com/OUC-VAS/Celeb-DF-PP"
+
+
 def test_the_layout_names_the_testing_list():
     for builder_class, version in zip(BUILDERS, ("v1", "v2", "v3"), strict=True):
         text = builder_class().describe_layout()

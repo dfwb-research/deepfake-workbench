@@ -25,7 +25,7 @@ from typing import Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["DFDCBuilder"]
 
@@ -102,7 +102,7 @@ class DFDCBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 1,000 fakes drawn at random from "
-            "the official test, balanced with as many reals",
+            f"the official test, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official"

@@ -51,7 +51,7 @@ from dfwb.preprocess.inventory.base import (
     has_videos,
     validate_compressions,
 )
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key, task_of
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key, task_of
 
 __all__ = ["TalkingHeadBenchBuilder"]
 
@@ -213,7 +213,7 @@ class TalkingHeadBenchBuilder(BaseBuilder):
             "subset",
             rationale="a small, seeded evaluation set drawn from the official test: up to 100 "
             "fakes per generator (the fakes' portraits are not recorded, so the generator is the "
-            "only stratum), balanced with as many reals",
+            f"only stratum), {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official"

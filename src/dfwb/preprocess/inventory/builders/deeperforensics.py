@@ -44,7 +44,7 @@ from typing import Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key, task_of
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key, task_of
 
 __all__ = ["DeeperForensicsBuilder"]
 
@@ -174,7 +174,7 @@ class DeeperForensicsBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set drawn from the official test: up to 100 "
-            "fakes per version, balanced with as many reals",
+            f"fakes per version, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official"

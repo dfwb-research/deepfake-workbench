@@ -21,12 +21,13 @@ import hashlib
 import random
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Final, Literal, Protocol
 
 from dfwb.core.errors import ContractError
 from dfwb.core.records import PairRecord
 
 __all__ = [
+    "BENCHMARK_REALS",
     "Assignment",
     "BenchmarkSpec",
     "RuleRecord",
@@ -207,9 +208,15 @@ def assign_official_plus_80_20(
 # ---------------------------------------------------------------------------------------------
 
 
+#: How a benchmark draws its reals (step 5 of :func:`assign_benchmark`, without ``k_real_cap``), in
+#: the words a benchmark scheme's rationale uses. Reals come from the same pool as the fakes; a
+#: pool with fewer reals than fakes drawn keeps every one, so the subset is not class-balanced.
+BENCHMARK_REALS: Final = "with as many reals as fakes, or every real when there are fewer"
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkSpec:
-    """A benchmark subset: ``k_fake`` fakes (per stratum, or in total), then balanced reals.
+    """A benchmark subset: ``k_fake`` fakes (per stratum, or in total), then up to as many reals.
 
     Attributes:
         k_fake: Fakes drawn per stratum when ``strata`` is set, otherwise in total.
@@ -298,7 +305,7 @@ def assign_benchmark[R: RuleRecord](
     task_rank: Mapping[str, int],
     pool_keys: Collection[str] | None,
 ) -> Assignment:
-    """A seeded test subset: stratified fakes, then as many reals as fakes.
+    """A seeded test subset: stratified fakes, then as many reals, or every real if fewer.
 
     The steps, in this exact order, share one ``random.Random(spec.seed)``:
 

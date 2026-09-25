@@ -33,7 +33,7 @@ from typing import Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["DFDCPreviewBuilder"]
 
@@ -163,7 +163,7 @@ class DFDCPreviewBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set drawn from the official test: up to 5 "
-            "fakes per target identity and method, balanced with as many reals",
+            f"fakes per target identity and method, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official+ident-80-20"

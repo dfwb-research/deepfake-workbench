@@ -32,7 +32,7 @@ from pathlib import Path
 
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, local_key
 
 __all__ = ["DFDMBuilder"]
 
@@ -91,7 +91,7 @@ class DFDMBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 50 fakes per model, drawn from the "
-            "whole dataset across its compressions and balanced with as many reals",
+            f"whole dataset across its compressions, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "ident-72-14-14"

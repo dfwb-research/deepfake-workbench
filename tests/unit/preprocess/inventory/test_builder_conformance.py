@@ -20,6 +20,7 @@ from dfwb.preprocess.inventory.base import (
     InventoryBuilder,
 )
 from dfwb.preprocess.inventory.runner import collect_records, get_builder
+from dfwb.protocols.rules import BENCHMARK_REALS
 
 BUILDERS = plugins.get_registry("inventory_builders").keys()
 
@@ -53,6 +54,19 @@ def check_conformance(dataset_id: str, empty_dir: Path) -> None:
 @pytest.mark.parametrize("dataset_id", BUILDERS)
 def test_registered_builder_conforms(dataset_id, tmp_path):
     check_conformance(dataset_id, tmp_path)
+
+
+@pytest.mark.parametrize("dataset_id", BUILDERS)
+def test_a_benchmark_rationale_says_how_its_reals_are_drawn(dataset_id):
+    builder = get_builder(dataset_id)
+    for name, scheme in builder.schemes.items():
+        if scheme.rule != "benchmark":
+            continue
+        assert builder.benchmark is not None
+        assert builder.benchmark.k_real_cap is None, "the phrase says nothing of a cap on reals"
+        assert scheme.rationale is not None
+        assert BENCHMARK_REALS in scheme.rationale, f"{dataset_id}/{name}: {scheme.rationale!r}"
+        assert "balanced" not in scheme.rationale, f"{dataset_id}/{name}: {scheme.rationale!r}"
 
 
 def test_the_checks_pass_for_the_demo_builder(monkeypatch, tmp_path):
