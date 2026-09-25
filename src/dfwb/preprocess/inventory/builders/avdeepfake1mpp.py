@@ -298,7 +298,7 @@ class AVDeepfake1MPPBuilder(BaseBuilder):
         "The release's val archive unpacks to vox_celeb_2/, lrs3/ and silent_videos/, which may "
         "stay in the dataset folder or move together under val/ or raw_content/ (keeping them "
         "apart from anything later written into the dataset folder); the content folder is "
-        "looked for in every copy of the dataset folder."
+        "looked for in every copy of the dataset folder, and every copy must use the same one."
     )
 
     _rows: list[dict[str, Any]] | None = None

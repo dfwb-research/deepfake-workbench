@@ -225,8 +225,8 @@ class TalkingHeadBenchBuilder(BaseBuilder):
         "release": "the Hugging Face release: 2,994 talking-head fakes, each an FFHQ portrait "
         "animated by a CelebV-HQ driving clip, from six generators (LivePortrait 529, "
         "AniPortraitAudio 542, AniPortraitVideo 422, Hallo 420, Hallo2 432, EmoPortrait 573) and "
-        "two held out for testing (MAGI-1 66, Hallo3 10), with the lists splitting 1,000 "
-        "FaceForensics++ and 1,608 CelebV-HQ real videos, which the release does not include",
+        "two held out for testing (MAGI-1 66, Hallo3 10), with the official split list covering "
+        "1,000 FaceForensics++ and 1,608 CelebV-HQ real videos, which the release does not include",
         "homepage": "https://huggingface.co/datasets/luchaoqi/TalkingHeadBench",
         "paper": {
             "title": "TalkingHeadBench: A Multi-Modal Benchmark & Analysis of Talking-Head "
@@ -256,7 +256,7 @@ class TalkingHeadBenchBuilder(BaseBuilder):
         "relative to that folder.\n"
         "The release unpacks to fake/<generator>/{train,val,test}/<stem>.mp4 for the six core "
         "generators, fake/additional_dataset/{MAGI-1,Hallo3}/<stem>.mp4 for the held-out two, "
-        "real/ for the split lists and audio/: move every fake of a generator into "
+        "real/ for the official real split list and audio/: move every fake of a generator into "
         "manipulated_content/<generator>/videos/ (the folder names stay), and "
         "real/real_dataset_split_official_ff++.json into .official_files/. The release's "
         "train/val/test folders of fakes are not read: a fake's split follows its driver.\n"
