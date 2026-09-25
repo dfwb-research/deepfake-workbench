@@ -1,4 +1,4 @@
-"""Tests for ``dfwb.protocols.verify``: coverage reports."""
+"""Tests for ``dfwb.protocols.verification``: coverage reports."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from dfwb.core.errors import ConfigError
 from dfwb.core.records import BuilderRef, InventoryRecord, VideoRecord, read_jsonl, write_jsonl
-from dfwb.protocols.verify import CoverageReport, verify, write_report
+from dfwb.protocols.verification import CoverageReport, verify, write_report
 
 
 def _inventory_record(

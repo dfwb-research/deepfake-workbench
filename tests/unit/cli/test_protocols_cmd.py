@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import yaml
+from tests.unit.preprocess.test_packbuild import setup_packdemo
 from tests.unit.protocols.conftest import (
     make_pack,
     register_packs,
@@ -23,6 +24,7 @@ from dfwb.core.records import (
     write_jsonl,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+from dfwb.protocols._yaml import read_card
 from dfwb.protocols.writer import scheme_card_for, write_dataset_files
 
 
@@ -496,3 +498,188 @@ def test_new_pack_cli_rejects_a_bad_author_with_exit_2(run, tmp_path):
     assert result.code == 2
     assert "hint: " in result.err
     assert not (tmp_path / "my-pack").exists()
+
+
+# -------------------------------------------------------------------------------------------
+# `dfwb protocols build` and `dfwb protocols materialize`, on the synthetic packdemo dataset.
+# -------------------------------------------------------------------------------------------
+
+
+def test_build_cli_json_updates_pack_yaml_and_lints_clean(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+
+    result = run(
+        "protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml", "--json"
+    )
+
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert data["dataset_id"] == "packdemo"
+    assert data["out"] == str(out)
+    assert (data["n_videos"], data["n_pairs"]) == (30, 20)
+    assert sorted(data["schemes"]) == ["all-test", "benchmark", "ident-72-14-14", "official"]
+    assert data["schemes"]["official"]["counts"] == {"test": 6, "train": 18, "val": 6}
+    assert data["schemes"]["official"]["sha256"] == read_card(out).schemes["official"].sha256
+    assert data["pack_yaml"] == {"path": str(paths["pack"] / "pack.yaml"), "added": True}
+    assert yaml.safe_load((paths["pack"] / "pack.yaml").read_text("utf-8"))["datasets"] == [
+        "packdemo"
+    ]
+    lint = run("protocols", "lint", str(paths["pack"]))
+    assert lint.code == 0
+    assert "error:" not in lint.out
+
+    again = run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml")
+    assert again.code == 0
+    assert "already lists packdemo" in again.out
+
+
+def test_build_cli_human_output_and_scheme_selection(run, monkeypatch, tmp_path):
+    setup_packdemo(monkeypatch, tmp_path)
+    out = tmp_path / "somewhere" / "packdemo"
+
+    result = run(
+        "protocols",
+        "build",
+        "packdemo",
+        "--out",
+        str(out),
+        "--scheme",
+        "official",
+        "--scheme",
+        "all-test",
+    )
+
+    assert result.code == 0, result.err
+    assert f"wrote packdemo to {out}: 30 videos, 20 pairs" in result.out
+    assert "official" in result.out
+    assert "all-test" in result.out
+    assert "benchmark" not in result.out
+    assert sorted(p.name for p in (out / "splits").iterdir()) == [
+        "all-test.tsv.gz",
+        "official.tsv.gz",
+    ]
+
+
+def test_build_cli_update_pack_yaml_needs_an_out_named_after_the_dataset(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+
+    result = run(
+        "protocols", "build", "packdemo", "--out", str(paths["pack"] / "demo"), "--update-pack-yaml"
+    )
+
+    assert result.code == 2
+    assert "hint: " in result.err
+    assert not (paths["pack"] / "demo").exists()
+
+
+def test_build_cli_update_pack_yaml_with_out_dot_inside_the_dataset_folder(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    out.mkdir()
+    monkeypatch.chdir(out)
+
+    result = run("protocols", "build", "packdemo", "--out", ".", "--update-pack-yaml", "--json")
+
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert data["out"] == str(out)
+    assert data["pack_yaml"] == {"path": str(paths["pack"] / "pack.yaml"), "added": True}
+    assert (out / "dataset.yaml").is_file()
+
+
+def test_build_cli_without_an_inventory_hints_inventory_build(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    paths["inventory"].unlink()
+
+    result = run("protocols", "build", "packdemo", "--out", str(paths["pack"] / "packdemo"))
+
+    assert result.code == 2
+    assert "hint: run: dfwb inventory build packdemo" in result.err
+
+
+def test_build_cli_with_an_explicit_inventory(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    moved = tmp_path / "moved.jsonl"
+    paths["inventory"].rename(moved)
+
+    result = run(
+        "protocols",
+        "build",
+        "packdemo",
+        "--out",
+        str(paths["pack"] / "packdemo"),
+        "--inventory",
+        str(moved),
+        "--json",
+    )
+
+    assert result.code == 0, result.err
+    assert json.loads(result.out)["pack_yaml"] is None
+
+
+def test_materialize_cli_exit_codes(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    for scheme in ("official", "ident-72-14-14"):
+        (out / "splits" / f"{scheme}.tsv.gz").unlink()
+
+    # The official rule needs the publisher's split: the command reads it through the builder.
+    result = run("protocols", "materialize", "packdemo/official", "--json")
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert data == {
+        "ref": "packdemo/official",
+        "path": str(paths["work"] / "packdemo" / "materialized" / "splits" / "official.tsv.gz"),
+        "sha256": read_card(out).schemes["official"].sha256,
+        "matched": True,
+    }
+
+    result = run("protocols", "materialize", "packdemo/ident-72-14-14")
+    assert result.code == 0, result.err
+    assert "matches the published hash" in result.out
+    assert run("protocols", "info", "packdemo/ident-72-14-14").code == 0
+
+    # A local copy that differs from the release the pack describes: exit 4.
+    short = tmp_path / "short.jsonl"
+    write_jsonl(short, read_jsonl(paths["inventory"], InventoryRecord)[1:])
+    result = run("protocols", "materialize", "packdemo/ident-72-14-14", "--inventory", str(short))
+    assert result.code == 4
+    assert "materialized hash" in result.err
+    assert (
+        "hint: your local copy differs from the release the pack describes; "
+        "run dfwb protocols verify"
+    ) in result.err
+
+    # An unknown dataset is a usage error.
+    assert run("protocols", "materialize", "nope/official").code == 2
+
+
+def test_materialize_cli_without_the_dataset_folder_hints_location(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    (out / "splits" / "official.tsv.gz").unlink()
+    (paths["raw"] / "PackDemo").rename(paths["raw"] / "Elsewhere")
+
+    result = run("protocols", "materialize", "packdemo/official")
+
+    assert result.code == 2
+    assert "hint: locate the dataset folder (see dfwb datasets info packdemo)" in result.err
+
+
+def test_materialize_cli_without_an_inventory_hints_inventory_build(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    paths["inventory"].unlink()
+
+    result = run("protocols", "materialize", "packdemo/all-test")
+
+    assert result.code == 2
+    assert "hint: run: dfwb inventory build packdemo" in result.err
