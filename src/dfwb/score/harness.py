@@ -3,7 +3,15 @@ file: resolve the detector, choose a processing profile, adapt stored clips to i
 every clip, aggregate clip -> video, and write ``<name>.scores.{csv,meta.json}``.
 
 Every video the split names gets a row: ``ok`` (scored), ``missing`` (no usable processed clip) or
-``error`` (the detector raised while scoring it). Nothing is silently dropped.
+``error`` (the detector raised while scoring it, or returned an output that fails validation).
+Nothing is silently dropped.
+
+A detector source may set two plain attributes on the ``Detector`` it returns, beyond contract C4
+(``meta``, ``to()``, ``predict()``): ``checkpoint_sha256`` (the sha256 of the exact weights file
+scored) and ``training_seed`` (the seed it was trained with). Neither is required -- read with
+``getattr(detector, "checkpoint_sha256", None)`` -- but when present they sharpen the C5 meta and
+the cache key beyond what ``meta.source`` alone can (:mod:`dfwb.models.source`'s ``run:`` sets
+both).
 """
 
 from __future__ import annotations
@@ -16,11 +24,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from dfwb.core.detector import InputSpec
-from dfwb.core.errors import ConfigError, ContractError
+from dfwb.core.errors import ConfigError, ContractError, did_you_mean
 from dfwb.core.hashing import fingerprint
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.core.records import ScoreRow, read_scores, write_scores
-from dfwb.core.records.scores import meta_path_for
+from dfwb.core.records.scores import ScoreMeta, meta_path_for
 from dfwb.data.index import SourceSpec, VideoIndex
 from dfwb.eval.aggregate import aggregate as aggregate_scores
 from dfwb.protocols.protocol import Protocol
@@ -29,6 +37,8 @@ from dfwb.score.sources import resolve_detector
 from dfwb.score.writer import assemble_meta
 
 if TYPE_CHECKING:
+    from torch import Tensor
+
     from dfwb.core.records.local import ProcessingProfile
     from dfwb.data.adapt import AdaptResult
 
@@ -40,6 +50,8 @@ VideoKey = tuple[str, str, str | None]  # (dataset, key, compression)
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 _SCORES_SUBDIR = "scores"
+_PRECISIONS = ("fp16", "bf16", "fp32")
+_AGGREGATE_MODES = ("mean-prob", "mean-logit", "max", "median")
 
 
 @dataclass(frozen=True)
@@ -56,21 +68,19 @@ def _slug(text: str) -> str:
     return _SLUG.sub("-", text.strip().lower()).strip("-") or "x"
 
 
+def _check_choice(value: str, allowed: Sequence[str], *, name: str) -> None:
+    if value not in allowed:
+        raise ConfigError(
+            f"{name}: {value!r} is not one of {list(allowed)}{did_you_mean(value, allowed)}",
+            hint=f"{name} accepts: " + ", ".join(allowed),
+        )
+
+
 # --------------------------------------------------------------------------------- profile choice
-
-
-def _crop_kind(profile: ProcessingProfile) -> str:
-    return "full-frame" if profile.backend.name == "center" else "face"
 
 
 def _profile_matches(profile: ProcessingProfile, token: str) -> bool:
     return token in (profile.id, profile.profile_id())
-
-
-def _is_compatible(spec: InputSpec, profile: ProcessingProfile) -> bool:
-    if _crop_kind(profile) != spec.crop:
-        return False
-    return spec.crop_scale is None or profile.crop.scale >= spec.crop_scale
 
 
 def _candidate_text(candidates: Sequence[ProcessingProfile]) -> str:
@@ -85,14 +95,18 @@ def _choose_profile(
     candidates: Sequence[ProcessingProfile],
 ) -> ProcessingProfile:
     """Pick one local processing profile: ``requested``, else ``spec.preferred_profile`` if it is
-    processed locally, else the only local profile compatible with ``spec``, else the only local
-    profile at all (deferring the actual pass/refuse decision to :func:`~dfwb.data.adapt.adapt`),
-    else an error listing every local candidate.
+    processed locally, else the only local profile compatible with ``spec``
+    (:func:`~dfwb.data.adapt.compatible_profiles`), else the only local profile at all
+    (deferring the actual pass/refuse decision to :func:`~dfwb.data.adapt.adapt`), else an error.
 
     Raises:
         ConfigError: ``requested`` is not a locally processed profile, no profile has been
-            processed locally at all, or more than one candidate is left after every rule above.
+            processed locally at all, or more than one candidate is left after every rule above
+            (the message lists only the tied candidates: every compatible one when there is more
+            than one, otherwise every local one).
     """
+    from dfwb.data.adapt import compatible_profiles
+
     if requested is not None:
         matches = [p for p in candidates if _profile_matches(p, requested)]
         if len(matches) == 1:
@@ -110,15 +124,22 @@ def _choose_profile(
         preferred = [p for p in candidates if _profile_matches(p, spec.preferred_profile)]
         if len(preferred) == 1:
             return preferred[0]
-    compatible = [p for p in candidates if _is_compatible(spec, p)]
+    compatible = compatible_profiles(spec, candidates)
     if len(compatible) == 1:
         return compatible[0]
-    if not compatible and len(candidates) == 1:
+    if compatible:
+        raise ConfigError(
+            f"{len(compatible)} local processing profiles are compatible with this detector's "
+            f"input for {dataset!r}: {_candidate_text(compatible)}",
+            hint="pass profile=<id> to choose one explicitly",
+        )
+    if len(candidates) == 1:
         return candidates[0]
     raise ConfigError(
-        f"no single local processing profile can serve this detector's input for {dataset!r} "
+        f"no local processing profile can serve this detector's input for {dataset!r} "
         f"(available: {_candidate_text(candidates)})",
-        hint="pass profile=<id> to choose one explicitly",
+        hint="pass profile=<id> to choose one explicitly, or process this dataset with a "
+        "compatible profile",
     )
 
 
@@ -142,6 +163,33 @@ def _clip_spec(spec: InputSpec, clips_per_video: int) -> Any:
 # -------------------------------------------------------------------------------- scoring the run
 
 
+def _validated_scores(output: Any, batch_size: int) -> Tensor:
+    """``output.score``, checked against what C4 promises: one finite value in ``[0, 1]`` per
+    clip. A ``[B, 1]`` score is squeezed (a common, harmless shape slip); anything else that is
+    not already ``[B]`` is rejected, as is a non-finite or out-of-range value.
+
+    Raises:
+        ValueError: the score is not a tensor, is not (after squeezing) exactly ``[batch_size]``,
+            or holds a non-finite value or one outside ``[0, 1]``.
+    """
+    import torch
+
+    score = output.score
+    if not isinstance(score, torch.Tensor):
+        raise ValueError(f"predict() returned score of type {type(score).__name__}, not a Tensor")
+    if score.ndim == 2 and score.shape[1] == 1:
+        score = score.squeeze(-1)
+    if score.ndim != 1 or score.shape[0] != batch_size:
+        raise ValueError(
+            f"predict() returned score of shape {tuple(score.shape)}, expected ({batch_size},)"
+        )
+    if not bool(torch.isfinite(score).all()):
+        raise ValueError("predict() returned a non-finite score")
+    if bool((score < 0.0).any()) or bool((score > 1.0).any()):
+        raise ValueError("predict() returned a score outside [0, 1]")
+    return score
+
+
 def _score_videos(
     detector: Any,
     dataset: Any,
@@ -155,7 +203,8 @@ def _score_videos(
     Returns ``(clip_scores, errored)``: ``clip_scores`` maps a video key to its clip scores
     (``ok``); ``errored`` maps a video key to why its batch failed. A video's clips never split
     across two batches (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one
-    of the two.
+    of the two. ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to
+    training and validation batches only, never a scoring one.
     """
     import torch
     from torch.utils.data import DataLoader
@@ -171,8 +220,8 @@ def _score_videos(
         collate_fn=collate_clips,
         num_workers=0,
     )
-    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
-    autocast_dtype = dtypes.get(precision) if precision else None
+    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16}  # fp32 (or None): no autocast
+    autocast_dtype = dtypes.get(precision or "")
 
     clip_scores: dict[VideoKey, list[float]] = {}
     errored: dict[VideoKey, str] = {}
@@ -182,6 +231,7 @@ def _score_videos(
             for i in range(len(batch.keys))
         ]
         try:
+            batch.labels = None
             batch.clips = batch.clips.to(torch_device)
             with torch.inference_mode():
                 if autocast_dtype is not None:
@@ -189,7 +239,8 @@ def _score_videos(
                         output = detector.predict(batch)
                 else:
                     output = detector.predict(batch)
-            scores = output.score.detach().float().cpu().tolist()
+                validated = _validated_scores(output, len(keys))
+            scores = validated.detach().float().cpu().tolist()
         except Exception as exc:  # a detector may fail for any reason; scoring continues
             reason = f"{type(exc).__name__}: {exc}"
             unique = sorted(set(keys))
@@ -288,24 +339,51 @@ def _missing_rows(
     return rows
 
 
-# -------------------------------------------------------------------------------------- output path
+# ------------------------------------------------------------------------------- detector identity
 
 
-def _detector_fingerprint(detector: Any, checkpoint_sha256: str | None) -> dict[str, Any]:
+@dataclass(frozen=True)
+class _DetectorIdentity:
+    """What names a detector's exact weights, read duck-typed off whatever
+    :func:`~dfwb.score.sources.resolve_detector` returned (see the module docstring)."""
+
+    source: str | None
+    checkpoint_sha256: str | None
+    training_seed: int | None
+
+    @classmethod
+    def of(cls, detector: Any) -> _DetectorIdentity:
+        return cls(
+            source=detector.meta.source,
+            checkpoint_sha256=getattr(detector, "checkpoint_sha256", None),
+            training_seed=getattr(detector, "training_seed", None),
+        )
+
+    def effective_seed(self, requested_seed: int) -> int:
+        """The seed C5 records: the detector's own training seed when it has one, else whatever
+        :func:`score` was called with."""
+        return self.training_seed if self.training_seed is not None else requested_seed
+
+
+def _fingerprint_payload(detector: Any, identity: _DetectorIdentity) -> dict[str, Any]:
     meta = detector.meta
     return {
         "name": meta.name,
         "version": meta.version,
-        "source": meta.source,
+        "source": identity.source,
         "contract_version": list(meta.contract_version),
-        "checkpoint_sha256": checkpoint_sha256,
+        "checkpoint_sha256": identity.checkpoint_sha256,
     }
+
+
+# -------------------------------------------------------------------------------------- output path
 
 
 def _cache_key(
     *,
     detector: Any,
-    checkpoint_sha256: str | None,
+    identity: _DetectorIdentity,
+    effective_seed: int,
     scheme_sha256: str,
     split: str,
     where: Mapping[str, Any] | None,
@@ -315,7 +393,8 @@ def _cache_key(
     labels: str,
 ) -> str:
     payload = {
-        "detector": _detector_fingerprint(detector, checkpoint_sha256),
+        "detector": _fingerprint_payload(detector, identity),
+        "seed": effective_seed,
         "scheme_sha256": scheme_sha256,
         "split": split,
         "where": dict(where or {}),
@@ -333,12 +412,36 @@ def _score_path(
     return out_root / _slug(detector_name) / _slug(protocol_ref) / f"{split}-{key[:8]}.scores.csv"
 
 
-def _cached_result(target: Path) -> ScoreResult | None:
+def _cache_matches(
+    meta: ScoreMeta,
+    *,
+    identity: _DetectorIdentity,
+    scheme_sha256: str,
+    split: str,
+    profile_sha256: str,
+    aggregate_mode: str,
+) -> bool:
+    """Whether a cached file's meta actually matches this request -- the cache path is already
+    the request's own hash, so a mismatch would mean a hash collision or a stale/foreign file left
+    at that path by hand; either way, the honest thing is to recompute rather than trust it."""
+    return (
+        meta.detector.source == (identity.source or "unknown")
+        and meta.detector.checkpoint_sha256 == identity.checkpoint_sha256
+        and meta.protocol.scheme_sha256 == scheme_sha256
+        and meta.protocol.split == split
+        and meta.processing_profile is not None
+        and meta.processing_profile.sha256 == profile_sha256
+        and meta.aggregation is not None
+        and meta.aggregation.clip_to_video == aggregate_mode
+    )
+
+
+def _cached_result(target: Path, **expected: Any) -> ScoreResult | None:
     try:
         existing = read_scores(target)
     except (ContractError, OSError):
         return None
-    if existing.meta is None:
+    if existing.meta is None or not _cache_matches(existing.meta, **expected):
         return None
     coverage = dict(existing.meta.coverage.model_dump())
     return ScoreResult(target, meta_path_for(target), coverage, True)
@@ -368,24 +471,31 @@ def score(
     """Score every video of ``protocol``'s ``split`` with the detector named by ``detector_uri``.
 
     Resolves the detector (:func:`~dfwb.score.sources.resolve_detector`), chooses a processing
-    profile and adapts stored clips to the detector's input, scores every clip under
-    ``torch.inference_mode()``, aggregates clip scores to one score per video, and writes a C5
-    score file. Every video of the split gets a row: ``ok``, ``missing`` (no usable processed
-    clip), or ``error`` (the detector raised while scoring it).
+    profile and adapts stored clips to the detector's input, then -- unless an identical, still
+    valid score file already exists at the cache path and ``force`` is ``False`` -- scores every
+    clip under ``torch.inference_mode()``, aggregates clip scores to one score per video, and
+    writes a C5 score file. Every video of the split gets a row: ``ok``, ``missing`` (no usable
+    processed clip), or ``error`` (the detector raised while scoring it, or returned an output
+    that fails validation).
 
     Raises:
-        ConfigError: no local processing profile can serve the detector's input (see
-            :func:`_choose_profile`).
+        ConfigError: ``precision``/``aggregate`` is not one of the values below, or no local
+            processing profile can serve the detector's input (see :func:`_choose_profile`).
         ContractError: the detector's input cannot be adapted from the chosen profile and
             ``allow_input_mismatch`` is ``False`` (see :func:`~dfwb.data.adapt.adapt`).
     """
+    if precision is not None:
+        _check_choice(precision, _PRECISIONS, name="precision")
+    _check_choice(aggregate, _AGGREGATE_MODES, name="aggregate")
+
     from dfwb.data.adapt import adapt as adapt_input
     from dfwb.data.adapt import available_profiles
     from dfwb.data.dataset import ClipDataset
 
     detector = resolve_detector(detector_uri)
     spec: InputSpec = detector.meta.input
-    checkpoint_sha256: str | None = None
+    identity = _DetectorIdentity.of(detector)
+    effective_seed = identity.effective_seed(seed)
 
     roots = resolve_roots()
     work_root = require_root("work", roots)
@@ -398,6 +508,43 @@ def score(
     adaptation: AdaptResult = adapt_input(
         spec, chosen_profile, allow_mismatch=allow_input_mismatch, candidates=candidates
     )
+    if adaptation.mismatch:
+        _log.warning("%s: input mismatch allowed: %s", loaded_protocol.ref, adaptation.reason)
+
+    # Everything the cache key needs is known now; check before doing any of the actual scoring
+    # work (joining the split with the store, building a dataset, running the detector).
+    out_root = Path(out) if out is not None else require_root("runs", roots) / _SCORES_SUBDIR
+    profile_sha256 = chosen_profile.sha256()
+    key = _cache_key(
+        detector=detector,
+        identity=identity,
+        effective_seed=effective_seed,
+        scheme_sha256=loaded_protocol.sha256,
+        split=split,
+        where=where,
+        profile_sha256=profile_sha256,
+        aggregate_mode=aggregate,
+        clips_per_video=clips_per_video,
+        labels=labels,
+    )
+    target = _score_path(
+        out_root,
+        detector_name=detector.meta.name,
+        protocol_ref=loaded_protocol.ref,
+        split=split,
+        key=key,
+    )
+    if not force and target.is_file():
+        cached = _cached_result(
+            target,
+            identity=identity,
+            scheme_sha256=loaded_protocol.sha256,
+            split=split,
+            profile_sha256=profile_sha256,
+            aggregate_mode=aggregate,
+        )
+        if cached is not None:
+            return cached
 
     index = VideoIndex.build(
         [SourceSpec(protocol, split, where)],
@@ -426,7 +573,7 @@ def score(
 
     meta = assemble_meta(
         detector_meta=detector.meta,
-        checkpoint_sha256=checkpoint_sha256,
+        checkpoint_sha256=identity.checkpoint_sha256,
         protocol=loaded_protocol,
         split=split,
         where=where,
@@ -436,33 +583,9 @@ def score(
         aggregate_mode=aggregate,
         clips_per_video=clips_per_video,
         rows=rows,
-        seed=seed,
+        seed=effective_seed,
+        device=device,
     )
-
-    out_root = Path(out) if out is not None else require_root("runs", roots) / _SCORES_SUBDIR
-    key = _cache_key(
-        detector=detector,
-        checkpoint_sha256=checkpoint_sha256,
-        scheme_sha256=loaded_protocol.sha256,
-        split=split,
-        where=where,
-        profile_sha256=chosen_profile.sha256(),
-        aggregate_mode=aggregate,
-        clips_per_video=clips_per_video,
-        labels=labels,
-    )
-    target = _score_path(
-        out_root,
-        detector_name=detector.meta.name,
-        protocol_ref=loaded_protocol.ref,
-        split=split,
-        key=key,
-    )
-
-    if not force and target.is_file():
-        cached = _cached_result(target)
-        if cached is not None:
-            return cached
 
     target.parent.mkdir(parents=True, exist_ok=True)
     csv_path, meta_path = write_scores(target, rows, meta)

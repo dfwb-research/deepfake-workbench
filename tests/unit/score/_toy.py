@@ -193,11 +193,35 @@ def write_toy_store(
     return store_dir
 
 
+#: ``{spy_id: predict() call count}`` and ``{spy_id: [torch.is_inference_mode_enabled(), ...]}``,
+#: so a test can watch a ``fake:spy=<id>`` detector's ``predict()`` calls across two separate
+#: ``score()`` calls (each resolves a fresh ``FakeDetector`` instance, so a plain instance
+#: attribute could not be read back afterwards). Tests own their ``spy_id`` (a fresh one each,
+#: e.g. ``str(uuid.uuid4())``) rather than clearing these dicts.
+SPY_CALLS: dict[str, int] = {}
+SPY_INFERENCE_MODE: dict[str, list[bool]] = {}
+
+
 class FakeDetector:
     """An in-memory C4 detector: scores a clip by its mean pixel value (already in ``[0, 1]``
-    once adapted), and can be told to raise for a chosen set of video keys."""
+    once adapted), and can be told to raise for a chosen set of video keys, or to return a bad
+    output (``bad_output``: ``"nan"``, ``"length"`` or ``"shape"``) to exercise the harness's own
+    output validation.
 
-    def __init__(self, spec: InputSpec, *, raise_for: frozenset[str] = frozenset()) -> None:
+    Asserts ``batch.labels is None`` on every call: contract C4 gives labels to training and
+    validation batches only, never a scoring one, so the harness must clear them first. Also
+    records, in :attr:`saw_inference_mode`, whether ``torch.is_inference_mode_enabled()`` was true
+    on each call.
+    """
+
+    def __init__(
+        self,
+        spec: InputSpec,
+        *,
+        raise_for: frozenset[str] = frozenset(),
+        bad_output: str | None = None,
+        spy_id: str | None = None,
+    ) -> None:
         self.meta = DetectorMeta(
             name="fake-detector",
             version="0",
@@ -209,22 +233,50 @@ class FakeDetector:
             source="fake:test",
         )
         self._raise_for = raise_for
+        self._bad_output = bad_output
+        self._spy_id = spy_id
+        self.saw_inference_mode: list[bool] = []
 
     def to(self, device: Any) -> FakeDetector:
         return self
 
     def predict(self, batch: Any) -> DetectorOutput:
+        import torch
+
+        assert batch.labels is None, "predict() must never see labels while scoring (C4)"
+        self.saw_inference_mode.append(torch.is_inference_mode_enabled())
+        if self._spy_id is not None:
+            SPY_CALLS[self._spy_id] = SPY_CALLS.get(self._spy_id, 0) + 1
+            SPY_INFERENCE_MODE.setdefault(self._spy_id, []).append(
+                torch.is_inference_mode_enabled()
+            )
         if self._raise_for.intersection(batch.keys):
             raise RuntimeError("fake detector: configured to fail on this batch")
-        score = batch.clips.mean(dim=tuple(range(1, batch.clips.ndim))).clamp(0.0, 1.0)
+        n = len(batch.keys)
+        mean = batch.clips.mean(dim=tuple(range(1, batch.clips.ndim))).clamp(0.0, 1.0)
+        if self._bad_output == "nan":
+            score: Any = torch.full((n,), float("nan"))
+        elif self._bad_output == "length":
+            score = torch.zeros(max(n - 1, 0))
+        elif self._bad_output == "shape":
+            score = torch.zeros(n, 2)
+        elif self._bad_output == "nontensor":
+            score = mean.tolist()  # a plain list, not a Tensor
+        elif self._bad_output == "squeeze":
+            score = mean.unsqueeze(-1)  # [B, 1]: a harmless shape slip the harness squeezes
+        elif self._bad_output == "range":
+            score = mean + 1.5  # pushes every value past 1.0
+        else:
+            score = mean
         return DetectorOutput(score=score)
 
 
 def load_fake(ref: str) -> FakeDetector:
     """The ``fake:`` detector source: ``fake:key=value&key=value...`` configures the returned
     :class:`FakeDetector` -- ``crop`` (default ``face``), ``scale`` (default ``1.3``), ``size``
-    (default ``32``), ``preferred`` (``InputSpec.preferred_profile``), and ``raise`` (a
-    comma-separated list of video keys :meth:`FakeDetector.predict` raises for)."""
+    (default ``32``), ``preferred`` (``InputSpec.preferred_profile``), ``raise`` (a
+    comma-separated list of video keys :meth:`FakeDetector.predict` raises for), ``bad`` (see
+    ``bad_output`` above) and ``spy`` (see :data:`SPY_CALLS` above)."""
     options: dict[str, str] = {}
     for part in ref.split("&"):
         if not part:
@@ -243,4 +295,47 @@ def load_fake(ref: str) -> FakeDetector:
         frames=1,
         preferred_profile=preferred,
     )
-    return FakeDetector(spec, raise_for=raise_for)
+    return FakeDetector(
+        spec, raise_for=raise_for, bad_output=options.get("bad"), spy_id=options.get("spy")
+    )
+
+
+def toy_run_profile() -> ProcessingProfile:
+    """A processing profile compatible with ``tiny-cnn``'s native input (face, scale 1.3, 64px),
+    for the ``run:`` end-to-end tests (which score a real, trained-shape ``AssembledDetector``,
+    not the pixel-mean :class:`FakeDetector`)."""
+    return toy_profile("toy-run-face", scale=1.3, size=64)
+
+
+def write_toy_run(
+    runs_root: Path,
+    *,
+    name: str,
+    seed: int | None,
+    fingerprint: str,
+    tags: Iterable[str] = ("best",),
+) -> Path:
+    """Build a real run directory by hand, the same way ``tests/unit/models/test_source.py``
+    does: ``<runs_root>/<name>/<stamp>-s<seed or 0>/checkpoints/<tag>/`` for each of ``tags``,
+    each holding its own freshly (and separately) initialised ``tiny-cnn`` detector -- so two
+    tags' ``model.safetensors`` never hash the same, exactly like two real checkpoints -- sharing
+    ``source=f"run:{fingerprint}"``. An ``env.json`` records ``seed`` (omitted when ``seed`` is
+    ``None``, so :func:`dfwb.models.source.load_run`'s ``training_seed`` falls back to ``None``).
+    Returns the run directory.
+    """
+    from dfwb.core.config.schema import ComponentSpec, ModelSection
+    from dfwb.models import checkpoint as checkpoint_module
+    from dfwb.models.detector import build_detector
+
+    model_cfg = ModelSection(
+        backbone=ComponentSpec(name="tiny-cnn"),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="linear"),
+    )
+    run_dir = runs_root / name / f"20260101-000000-s{seed if seed is not None else 0}"
+    for tag in tags:
+        detector = build_detector(model_cfg, source=f"run:{fingerprint}")
+        checkpoint_module.save(run_dir / "checkpoints" / tag, detector, model_cfg)
+    if seed is not None:
+        (run_dir / "env.json").write_text(json.dumps({"seed": seed}), encoding="utf-8")
+    return run_dir

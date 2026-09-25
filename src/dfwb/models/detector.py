@@ -35,6 +35,13 @@ _FRAMEWORK_DISTRIBUTION = "deepfake-workbench"
 class AssembledDetector(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without torch
     """backbone -> (stem ->) (pool ->) head. Implements the ``Detector`` contract: ``meta`` plus
     ``predict``, and ``.to()`` inherited from :class:`torch.nn.Module`.
+
+    ``checkpoint_sha256`` and ``training_seed`` are not part of contract C4 (every ``Detector``
+    still needs only ``meta``, ``to()`` and ``predict()``); they are set by the ``run:`` detector
+    source (:func:`dfwb.models.source.load_run`) once it has loaded a checkpoint, so a caller that
+    knows to look (:mod:`dfwb.score.harness`, via ``getattr(detector, "checkpoint_sha256",
+    None)``) can name the exact weights file and training seed a score file came from. ``None``
+    until a source sets them.
     """
 
     def __init__(
@@ -52,6 +59,8 @@ class AssembledDetector(nn.Module):  # type: ignore[misc, unused-ignore]  # Any 
         self.pool = pool
         self.head = head
         self.meta = meta
+        self.checkpoint_sha256: str | None = None
+        self.training_seed: int | None = None
 
     def _pooled_and_per_frame(self, batch: ClipBatch) -> tuple[Tensor, Tensor | None]:
         """``(pooled [B,D], per_frame [B,T,D] or None)``; ``per_frame`` is ``None`` for a

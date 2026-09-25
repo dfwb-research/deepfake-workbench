@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dfwb.core.records import ScoreMeta, ScoreRow
+from dfwb.core.records.scores import coverage_counts
 
 if TYPE_CHECKING:
     from dfwb.core.detector import DetectorMeta
@@ -21,16 +22,6 @@ if TYPE_CHECKING:
     from dfwb.protocols.protocol import Protocol
 
 __all__ = ["assemble_meta"]
-
-
-def _coverage(rows: Sequence[ScoreRow]) -> dict[str, int]:
-    statuses = [row.status for row in rows]
-    return {
-        "expected": len(rows),
-        "ok": statuses.count("ok"),
-        "missing": statuses.count("missing"),
-        "error": statuses.count("error"),
-    }
 
 
 def _git_payload(cwd: Path) -> dict[str, Any] | None:
@@ -54,15 +45,23 @@ def assemble_meta(
     clips_per_video: int,
     rows: Sequence[ScoreRow],
     seed: int,
+    device: str,
     command: str | None = None,
 ) -> ScoreMeta:
     """Build the C5 meta for one scoring run.
 
     ``coverage`` is always recomputed from ``rows`` (never taken on faith), so it can never drift
-    from what :func:`~dfwb.core.records.scores.write_scores` will itself check.
+    from what :func:`~dfwb.core.records.scores.write_scores` will itself check. ``seed`` is
+    whatever the caller decides is the scoring run's seed (the harness records the detector's own
+    ``training_seed`` when it has one, else the ``seed`` argument it was called with); ``device``
+    is the device the run actually scored on, recorded verbatim rather than
+    :func:`~dfwb.core.runmeta.capture_env`'s own guess (which reports a CUDA device whenever one
+    happens to be available on the machine, whether or not this run used it).
     """
     from dfwb.core.runmeta import capture_env, utc_now
 
+    env = capture_env()
+    env["device"] = device
     return ScoreMeta.model_validate(
         {
             "detector": {
@@ -93,9 +92,9 @@ def assemble_meta(
                 "clip_to_video": aggregate_mode,
                 "clips_per_video": clips_per_video,
             },
-            "coverage": _coverage(rows),
+            "coverage": coverage_counts(list(rows)),
             "seed": seed,
-            "env": capture_env(),
+            "env": env,
             "git": _git_payload(Path.cwd()),
             "command": command,
             "created": utc_now(),

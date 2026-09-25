@@ -28,7 +28,7 @@ from dfwb.core.records.local import ProcessingProfile
 from dfwb.data.dataset import ClipTransform
 from dfwb.data.transforms import CenterCrop, Normalize, Resize
 
-__all__ = ["AdaptResult", "adapt", "available_profiles"]
+__all__ = ["AdaptResult", "adapt", "available_profiles", "compatible_profiles", "crop_kind"]
 
 _log = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class AdaptResult:
     reason: str | None = None
 
 
-def _crop_kind(profile: ProcessingProfile) -> Literal["face", "full-frame"]:
+def crop_kind(profile: ProcessingProfile) -> Literal["face", "full-frame"]:
     """A profile is ``full-frame`` when its backend is ``center`` (no face detection at all),
     ``face`` otherwise."""
     return "full-frame" if profile.backend.name == "center" else "face"
@@ -61,18 +61,29 @@ def _requirement_text(spec: InputSpec) -> str:
     return f"a {spec.crop} crop{scale_part}, size {spec.size}"
 
 
+def compatible_profiles(
+    spec: InputSpec, candidates: Iterable[ProcessingProfile]
+) -> list[ProcessingProfile]:
+    """Every one of ``candidates`` that could actually serve ``spec``: same crop kind, and (when
+    ``spec.crop_scale`` is set) at least that scale. Used both by :func:`adapt` (to name a
+    compatible profile when it must refuse) and by callers choosing a profile before ``adapt`` is
+    even called (:mod:`dfwb.score.harness`), so the one rule of what "compatible" means lives
+    here rather than being copied."""
+    return [
+        candidate
+        for candidate in candidates
+        if crop_kind(candidate) == spec.crop
+        and (spec.crop_scale is None or candidate.crop.scale >= spec.crop_scale)
+    ]
+
+
 def _find_compatible(
     spec: InputSpec, candidates: Sequence[ProcessingProfile]
 ) -> ProcessingProfile | None:
-    """The best of ``candidates`` that could actually serve ``spec``: same crop kind, and (when
-    ``spec.crop_scale`` is set) at least that scale. Ties broken by the smallest sufficient scale,
-    then by profile id, so the choice is deterministic."""
-    matches = [
-        candidate
-        for candidate in candidates
-        if _crop_kind(candidate) == spec.crop
-        and (spec.crop_scale is None or candidate.crop.scale >= spec.crop_scale)
-    ]
+    """The best of ``candidates`` that could actually serve ``spec`` (see
+    :func:`compatible_profiles`). Ties broken by the smallest sufficient scale, then by profile
+    id, so the choice is deterministic."""
+    matches = compatible_profiles(spec, candidates)
     if not matches:
         return None
     return min(matches, key=lambda candidate: (candidate.crop.scale, candidate.profile_id()))
@@ -172,7 +183,7 @@ def adapt(
             ``allow_mismatch`` is ``False``.
     """
     candidate_list = list(candidates)
-    store_kind = _crop_kind(profile)
+    store_kind = crop_kind(profile)
 
     mismatch = False
     reason: str | None = None

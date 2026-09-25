@@ -30,6 +30,7 @@ __all__ = [
     "ScoreFile",
     "ScoreMeta",
     "ScoreRow",
+    "coverage_counts",
     "meta_path_for",
     "read_scores",
     "score_row_json_schema",
@@ -198,7 +199,14 @@ def _check_name(path: Path) -> None:
         )
 
 
-def _coverage(rows: list[ScoreRow]) -> dict[str, int]:
+def coverage_counts(rows: list[ScoreRow]) -> dict[str, int]:
+    """``{expected, ok, missing, error}`` counts of ``rows``, by status.
+
+    The one place this is computed: :func:`write_scores` and :func:`read_scores` check a file's
+    ``meta.coverage`` against it, and a caller assembling a meta before writing (e.g.
+    :func:`dfwb.score.writer.assemble_meta`) uses it too, so ``coverage`` can never silently drift
+    from what the rows actually say.
+    """
     counts = Counter(row.status for row in rows)
     return {
         "expected": len(rows),
@@ -222,7 +230,7 @@ def _check_rows(rows: list[ScoreRow], where: str) -> None:
 
 
 def _check_coverage(rows: list[ScoreRow], meta: ScoreMeta, where: str) -> None:
-    actual = _coverage(rows)
+    actual = coverage_counts(rows)
     recorded = meta.coverage.model_dump()
     if actual != recorded:
         raise ContractError(

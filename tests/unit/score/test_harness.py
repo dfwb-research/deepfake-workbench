@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 pytest.importorskip("torch")
 
+from tests.unit.score import _toy
 from tests.unit.score._toy import PROTOCOL, toy_profile, write_toy_store
 
 from dfwb.core.errors import ConfigError, ContractError
@@ -58,6 +61,17 @@ def test_precision_runs_prediction_under_autocast(score_roots, tmp_path):
 
     scored = read_scores(result.csv_path)
     assert {row.status for row in scored.rows} == {"ok"}
+
+
+def test_predict_runs_under_torch_inference_mode(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+
+    _score(tmp_path, f"fake:spy={spy_id}")
+
+    seen = _toy.SPY_INFERENCE_MODE[spy_id]
+    assert seen  # at least one batch was scored
+    assert all(seen)
 
 
 # --------------------------------------------------------------------------------- missing videos
@@ -116,6 +130,108 @@ def test_every_video_erroring_leaves_nothing_to_aggregate(score_roots, tmp_path)
     assert result.coverage == {"expected": 8, "ok": 0, "missing": 0, "error": 8}
 
 
+def test_a_failing_batch_holding_several_videos_marks_exactly_those(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    # batch_size=8 (2 videos' worth of clips at clips_per_video=4): VideoGrouped packs greedily
+    # in index order (FAKE/* sorts before REAL/*), so FAKE/f00 and FAKE/f01 share the first
+    # batch; raising for both fails exactly that batch, and no other.
+    result = _score(tmp_path, "fake:raise=FAKE/f00,FAKE/f01", batch_size=8)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row.status for row in scored.rows}
+    assert by_key["FAKE/f00"] == "error"
+    assert by_key["FAKE/f01"] == "error"
+    others = {key: status for key, status in by_key.items() if key not in ("FAKE/f00", "FAKE/f01")}
+    assert set(others.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 6, "missing": 0, "error": 2}
+
+
+# ------------------------------------------------------------------------------ output validation
+
+
+def test_a_nan_output_marks_its_videos_error_and_scoring_continues(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=nan", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"error"}
+    assert result.coverage == {"expected": 8, "ok": 0, "missing": 0, "error": 8}
+
+
+def test_a_wrong_length_output_marks_its_videos_error(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=length", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"error"}
+
+
+def test_a_wrong_shape_output_marks_its_videos_error(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=shape", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"error"}
+
+
+def test_a_non_tensor_output_marks_its_videos_error(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=nontensor", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"error"}
+
+
+def test_an_out_of_range_output_marks_its_videos_error(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=range", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"error"}
+
+
+def test_a_b1_shaped_score_is_squeezed_and_accepted(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=squeeze", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"ok"}
+    for row in scored.rows:
+        assert 0.0 <= row.score <= 1.0
+
+
+# ------------------------------------------------------------------------- pre-flight validation
+
+
+def test_unknown_precision_is_refused_with_a_did_you_mean(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    with pytest.raises(ConfigError) as info:
+        _score(tmp_path, precision="fp61")
+    assert "fp61" in info.value.message
+    assert "fp16" in info.value.hint
+
+
+def test_unknown_aggregate_is_refused_with_a_did_you_mean(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    with pytest.raises(ConfigError) as info:
+        _score(tmp_path, aggregate="mean-probs")
+    assert "mean-probs" in info.value.message
+    assert "mean-prob" in info.value.hint
+
+
+def test_aggregate_only_accepts_the_four_documented_modes(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    with pytest.raises(ConfigError):
+        # dfwb.eval.aggregate itself accepts "vote"; score restricts to the four documented modes.
+        _score(tmp_path, aggregate="vote")
+
+
 # --------------------------------------------------------------------------------- profile choice
 
 
@@ -156,6 +272,22 @@ def test_profile_choice_is_ambiguous_without_a_preference(score_roots, tmp_path)
     assert profile_b.profile_id() in info.value.message
 
 
+def test_ambiguity_error_lists_only_the_tied_compatible_profiles(score_roots, tmp_path):
+    profile_a = toy_profile("toy-a", scale=1.3)
+    profile_b = toy_profile("toy-b", scale=1.6)
+    profile_full = toy_profile("toy-full", backend="center", scale=1.0)  # incompatible: full-frame
+    write_toy_store(score_roots, profile_a)
+    write_toy_store(score_roots, profile_b)
+    write_toy_store(score_roots, profile_full)
+
+    with pytest.raises(ConfigError) as info:
+        _score(tmp_path, "fake:scale=1.3")  # face crop: both a and b compatible, full is not
+
+    assert profile_a.profile_id() in info.value.message
+    assert profile_b.profile_id() in info.value.message
+    assert profile_full.profile_id() not in info.value.message
+
+
 def test_explicit_profile_overrides_the_automatic_choice(score_roots, tmp_path):
     profile_a = toy_profile("toy-a", scale=1.3)
     profile_b = toy_profile("toy-b", scale=1.6)
@@ -179,6 +311,16 @@ def test_unknown_explicit_profile_is_refused(score_roots, tmp_path):
 def test_no_local_store_at_all_is_refused(score_roots, tmp_path):
     with pytest.raises(ConfigError) as info:
         _score(tmp_path)
+    assert "scoretoy" in info.value.message
+
+
+def test_several_local_profiles_none_compatible_is_refused(score_roots, tmp_path):
+    # Two local stores, neither a face crop: no single one to defer the mismatch decision to.
+    write_toy_store(score_roots, toy_profile("toy-full-a", backend="center", scale=1.0))
+    write_toy_store(score_roots, toy_profile("toy-full-b", backend="center", scale=1.2))
+
+    with pytest.raises(ConfigError) as info:
+        _score(tmp_path)  # default fake: crop="face"
     assert "scoretoy" in info.value.message
 
 
@@ -243,6 +385,36 @@ def test_rerunning_with_an_identical_config_is_cached(score_roots, tmp_path):
     assert second.csv_path == first.csv_path
 
 
+def test_the_cache_is_checked_before_any_detector_call(score_roots, tmp_path):
+    """Everything the cache key needs is known before a single clip is scored, so a cache hit
+    makes zero ``predict()`` calls -- not "runs and discards the result"."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+
+    first = _score(tmp_path, f"fake:spy={spy_id}")
+    assert first.cached is False
+    calls_after_first = _toy.SPY_CALLS[spy_id]
+    assert calls_after_first > 0
+
+    second = _score(tmp_path, f"fake:spy={spy_id}")
+
+    assert second.cached is True
+    assert _toy.SPY_CALLS[spy_id] == calls_after_first  # not one more call
+
+
+def test_force_recomputes_and_calls_predict_again(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+
+    _score(tmp_path, f"fake:spy={spy_id}")
+    calls_after_first = _toy.SPY_CALLS[spy_id]
+
+    result = _score(tmp_path, f"fake:spy={spy_id}", force=True)
+
+    assert result.cached is False
+    assert _toy.SPY_CALLS[spy_id] > calls_after_first
+
+
 def test_force_recomputes_even_when_a_cached_file_exists(score_roots, tmp_path):
     write_toy_store(score_roots, toy_profile("toy-face"))
 
@@ -277,3 +449,23 @@ def test_a_csv_with_no_meta_file_at_the_cache_path_is_recomputed(score_roots, tm
 
     assert second.cached is False
     assert second.meta_path.is_file()
+
+
+def test_a_valid_but_mismatched_meta_at_the_cache_path_is_recomputed(score_roots, tmp_path):
+    """A readable, otherwise-valid meta at the cache path whose fields do not actually match this
+    request (a stale file left by hand, or a hash collision) is recomputed, not trusted -- the
+    cache path alone is not proof enough."""
+    import json
+
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    first = _score(tmp_path)
+    payload = json.loads(first.meta_path.read_text("utf-8"))
+    payload["processing_profile"]["sha256"] = "0" * 64  # no longer this request's profile
+    first.meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    second = _score(tmp_path)
+
+    assert second.cached is False
+    payload_after = json.loads(second.meta_path.read_text("utf-8"))
+    assert payload_after["processing_profile"]["sha256"] != "0" * 64

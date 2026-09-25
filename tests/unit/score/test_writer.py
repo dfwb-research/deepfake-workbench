@@ -41,6 +41,7 @@ def test_every_c5_meta_field_is_present(scoretoy_pack, tmp_path):
         clips_per_video=4,
         rows=_rows(),
         seed=7,
+        device="cpu",
     )
 
     payload = meta.model_dump(mode="json", by_alias=True)
@@ -66,9 +67,38 @@ def test_every_c5_meta_field_is_present(scoretoy_pack, tmp_path):
     assert payload["seed"] == 7
     assert payload["env"]["dfwb"]
     assert payload["env"]["python"]
-    assert "git" in payload  # present (null outside a git checkout is still valid C5)
-    assert "command" in payload
+    assert payload["env"]["device"] == "cpu"
+    git = payload["git"]  # null outside a git checkout is still valid C5
+    assert git is None or (isinstance(git, dict) and set(git) == {"commit", "dirty"})
+    assert payload["command"] is None  # assemble_meta is never given one in this task
     assert payload["created"].endswith("Z") or "+" in payload["created"]
+
+
+def test_env_device_is_what_was_actually_used_not_capture_envs_own_guess(scoretoy_pack, tmp_path):
+    """``capture_env()`` reports a CUDA device name whenever one happens to be available on the
+    machine, regardless of what this run scored on; ``assemble_meta`` must override it with the
+    device it was actually told, even one that does not exist (nothing here touches torch.cuda)."""
+    protocol = load_protocol(PROTOCOL, work_root=tmp_path)
+    profile = toy_profile("toy-face")
+    detector = load_fake("")
+    adaptation = AdaptResult(chain=lambda clip: clip, derived_crop=False, mismatch=False)
+
+    meta = assemble_meta(
+        detector_meta=detector.meta,
+        checkpoint_sha256=None,
+        protocol=protocol,
+        split="test",
+        where=None,
+        labels="binary",
+        processing_profile=profile,
+        adaptation=adaptation,
+        aggregate_mode="mean-prob",
+        clips_per_video=4,
+        rows=_rows(),
+        seed=0,
+        device="cuda:3",
+    )
+    assert meta.env["device"] == "cuda:3"
 
 
 def test_coverage_is_recomputed_from_rows_not_trusted(scoretoy_pack, tmp_path):
@@ -91,6 +121,7 @@ def test_coverage_is_recomputed_from_rows_not_trusted(scoretoy_pack, tmp_path):
         clips_per_video=4,
         rows=rows,
         seed=0,
+        device="cpu",
     )
     assert meta.coverage.expected == 1
     assert meta.coverage.ok == 1

@@ -5,6 +5,13 @@ A scheme is a registry key (``run``, later ``zoo``, ``py``, ``hf``); ``<rest>`` 
 to whatever that scheme's loader expects. This module never imports a source's own package
 (``dfwb.models`` for ``run:``, and so on) -- the registry loads it lazily, by import path, exactly
 as it does for any other pluggable component.
+
+A loader may set two plain attributes on the ``Detector`` it returns, beyond contract C4: a
+``checkpoint_sha256`` (``str``, the sha256 of the exact weights file scored) and a
+``training_seed`` (``int``, the seed it was trained with) -- ``dfwb.models.source.load_run`` sets
+both, from the checkpoint it loads. Neither is required; :mod:`dfwb.score.harness` reads them
+duck-typed (``getattr(detector, "checkpoint_sha256", None)``), so a source that has nothing to say
+about them simply leaves them unset.
 """
 
 from __future__ import annotations
