@@ -6,24 +6,32 @@ A store is one directory per hashed profile, holding:
   produced its faces;
 - ``index.jsonl``, one line appended per processed video, so a run that stops partway through and
   resumes later only has to redo the videos whose last row is not ``ok``;
+- ``index.shard-<i>-of-<n>.jsonl``, the same, for one shard of a sharded run (see ``shard=`` on
+  :class:`Store`); :func:`~dfwb.preprocess.face.shard.merge` folds every one of these, and any
+  ``index.jsonl``, back into a single ``index.jsonl``;
+- ``index.shard-<i>-of-<n>.jsonl.running``, present only while that shard's run may still be
+  appending to its file (see :meth:`Store.running`); ``merge`` refuses to run while one exists;
 - one output directory per video, ``<key>/<compression or "_">/`` (keys carry a ``/``, so this
   nests one directory per task inside one per dataset), holding its frames and ``clip.json``.
 
 Nothing here decodes a video or writes a frame -- that is :mod:`dfwb.preprocess.face.process`.
-This module only owns the directory layout and the two files that describe it, and the rule that
+This module only owns the directory layout and the files that describe it, and the rule that
 nothing is ever written under a datasets root: raw data is read-only.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import datetime
 import json
 import logging
 import os
 import re
 import shutil
-from collections.abc import Mapping, Sequence
-from pathlib import Path
+import socket
+from collections.abc import Iterator, Mapping, Sequence
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dfwb.core.errors import ConfigError, ContractError
@@ -32,16 +40,73 @@ from dfwb.core.paths import ResolvedRoot, RootName, resolve_roots
 from dfwb.core.records.io import read_jsonl
 from dfwb.core.records.local import ProcessedRecord, ProcessingProfile
 
-__all__ = ["Store", "recover_video_dir", "video_relpath"]
+__all__ = [
+    "INDEX_FILE",
+    "Store",
+    "parse_shard_filename",
+    "portable_reason",
+    "read_running_marker",
+    "recover_video_dir",
+    "running_markers",
+    "shard_index_filename",
+    "shard_running_filename",
+    "video_relpath",
+]
 
 _log = logging.getLogger(__name__)
 
-_INDEX_FILE = "index.jsonl"
+INDEX_FILE = "index.jsonl"
 _PROFILE_FILE = "profile.json"
 _TMP_SUFFIX = re.compile(r"\.tmp-\d+$")
 _OLD_SUFFIX = re.compile(r"\.old-\d+$")
+_SHARD_FILE = re.compile(r"^index\.shard-(\d+)-of-(\d+)\.jsonl$")
+_RUNNING_SUFFIX = ".running"
+# An absolute path inside free text, found the way the records' no-absolute-paths rule finds one:
+# "/x", "~/x" or "file:///x" at the start or after a separator (a space, "=", ":", ",", ";", a
+# quote or an opening bracket), running up to the next space, quote or closing bracket.
+_ABSOLUTE_IN_TEXT = re.compile(
+    r"""(^|[\s=:,;"'(]|(?=file:///))((?:file://)?(?:~/|/(?![/\s]))[^\s"')\]]*)"""
+)
 
 Key = tuple[str, str | None]
+
+
+def shard_index_filename(index: int, count: int) -> str:
+    """The file a sharded run (``shard=(index, count)``) appends to instead of
+    :data:`INDEX_FILE`: ``index.shard-<index>-of-<count>.jsonl``."""
+    return f"index.shard-{index}-of-{count}.jsonl"
+
+
+def parse_shard_filename(name: str) -> tuple[int, int] | None:
+    """``(index, count)`` from a shard index file's name, or ``None`` if ``name`` is not one."""
+    match = _SHARD_FILE.match(name)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def shard_running_filename(index: int, count: int) -> str:
+    """The marker :meth:`Store.running` writes while shard ``index`` of ``count`` may still be
+    appending to its own file: ``index.shard-<index>-of-<count>.jsonl.running``."""
+    return f"{shard_index_filename(index, count)}{_RUNNING_SUFFIX}"
+
+
+def running_markers(store_root: Path) -> list[Path]:
+    """Every live-shard-run marker under ``store_root`` (see :meth:`Store.running`), sorted;
+    empty when ``store_root`` does not exist or nothing is running."""
+    if not store_root.is_dir():
+        return []
+    return sorted(store_root.glob(f"index.shard-*-of-*.jsonl{_RUNNING_SUFFIX}"))
+
+
+def read_running_marker(path: Path) -> Mapping[str, Any]:
+    """The ``{"host", "pid", "started_at"}`` a live shard run's marker holds, or ``{}`` if it
+    cannot be read (already removed by the run finishing, or corrupt)."""
+    try:
+        data: Any = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def video_relpath(key: str, compression: str | None) -> str:
@@ -53,6 +118,20 @@ def video_relpath(key: str, compression: str | None) -> str:
     :class:`Store` of its own to ask.
     """
     return f"{key}/{compression or '_'}"
+
+
+def portable_reason(text: str) -> str:
+    """``text`` with every absolute path in it cut down to its last part: ``/data/ffpp/000.mp4``
+    becomes ``000.mp4``.
+
+    A row's ``reason`` often quotes an error message, and error messages name files by where they
+    sit on this machine. Keeping only the file's name makes the row read the same on every machine
+    (so the rows of two shards run on different machines can be compared and merged), and keeps it
+    clear of the rule that records never hold an absolute path.
+    """
+    return _ABSOLUTE_IN_TEXT.sub(
+        lambda match: match.group(1) + PurePosixPath(match.group(2)).name, text
+    )
 
 
 def _stray_siblings(out_dir: Path) -> tuple[list[Path], list[Path]]:
@@ -133,6 +212,12 @@ class Store:
         roots: Resolved roots to check ``root`` against (default:
             :func:`~dfwb.core.paths.resolve_roots`). Passing this in lets a caller check a store
             root without touching the real environment or config files.
+        shard: ``(index, count)`` when this store belongs to one shard of a sharded run: it then
+            appends to its own :func:`shard_index_filename` instead of :data:`INDEX_FILE`, and
+            :meth:`records`/:meth:`done_keys` read the union of that file and any ``index.jsonl``
+            (the last-merged state), the latest row per video winning -- never another shard's
+            file, which a concurrent machine may still be writing. ``None`` (the default) is an
+            ordinary, unsharded store.
 
     Raises:
         ConfigError: ``root`` is inside a datasets root.
@@ -144,17 +229,56 @@ class Store:
         profile: ProcessingProfile,
         *,
         roots: Mapping[RootName, ResolvedRoot] | None = None,
+        shard: tuple[int, int] | None = None,
     ) -> None:
         resolved = resolve_roots() if roots is None else roots
         datasets = resolved.get("datasets")
         _check_outside_datasets_roots(root, datasets.paths if datasets is not None else ())
         self.root = root
         self.profile = profile
+        self.shard = shard
 
     @property
     def index_path(self) -> Path:
-        """``<root>/index.jsonl``."""
-        return self.root / _INDEX_FILE
+        """The file this store appends to: ``<root>/index.jsonl``, or, when sharded,
+        ``<root>/index.shard-<index>-of-<count>.jsonl``."""
+        if self.shard is None:
+            return self.root / INDEX_FILE
+        index, count = self.shard
+        return self.root / shard_index_filename(index, count)
+
+    def _read_paths(self) -> tuple[Path, ...]:
+        """Every index file :meth:`records` combines: the merged index, plus, when sharded, this
+        shard's own file (never another shard's)."""
+        merged = self.root / INDEX_FILE
+        return (merged, self.index_path) if self.shard is not None else (merged,)
+
+    @contextlib.contextmanager
+    def running(self) -> Iterator[None]:
+        """Mark this shard as live for as long as the ``with`` block runs: a no-op for an
+        unsharded store.
+
+        Writes :func:`shard_running_filename`, holding this host's name, this process's id and
+        the current time, so :func:`~dfwb.preprocess.face.shard.merge` can refuse to run while
+        this shard's file might still gain rows. The marker is removed in a ``finally``, so it is
+        gone once the block exits, however it exits (normally, or by raising).
+        """
+        if self.shard is None:
+            yield
+            return
+        index, count = self.shard
+        path = self.root / shard_running_filename(index, count)
+        self.root.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "started_at": datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat(),
+        }
+        _write_json_atomic(path, payload)
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
 
     def video_dir(self, record: ProcessedRecord) -> Path:
         """``<root>/<key>/<compression or "_">/``, the directory ``record`` is (or would be)
@@ -162,7 +286,8 @@ class Store:
         return self.root / video_relpath(record.key, record.compression)
 
     def append(self, record: ProcessedRecord) -> None:
-        """Append ``record`` to ``index.jsonl`` as one canonical JSON line, then flush and fsync.
+        """Append ``record`` to :attr:`index_path` as one canonical JSON line, then flush and
+        fsync.
 
         Every outcome is appended, not only ``ok`` ones, so the index always says what happened to
         every video that was attempted.
@@ -179,15 +304,18 @@ class Store:
             os.fsync(handle.fileno())
 
     def records(self) -> list[ProcessedRecord]:
-        """The latest row per ``(key, compression)``, sorted by ``(key, compression)``.
+        """The latest row per ``(key, compression)``, sorted by ``(key, compression)``, from
+        :meth:`_read_paths` (``index.jsonl`` alone, or, when sharded, unioned with this shard's
+        own file).
 
         Empty when nothing has been appended yet.
         """
-        if not self.index_path.is_file():
-            return []
         latest: dict[Key, ProcessedRecord] = {}
-        for record in read_jsonl(self.index_path, ProcessedRecord):
-            latest[(record.key, record.compression)] = record
+        for path in self._read_paths():
+            if not path.is_file():
+                continue
+            for record in read_jsonl(path, ProcessedRecord):
+                latest[(record.key, record.compression)] = record
         return [latest[key] for key in sorted(latest, key=lambda k: (k[0], k[1] or ""))]
 
     def done_keys(self) -> set[Key]:
@@ -232,22 +360,3 @@ class Store:
                 existing.get("backend"),
                 payload["backend"],
             )
-
-    def cleanup_partial(self) -> None:
-        """Repair or clean up every video directory under this store left mid-swap by a crash.
-
-        Every distinct ``.tmp-<pid>``/``.old-<pid>`` sibling found is resolved with
-        :func:`recover_video_dir`: a video whose last good directory is stranded in ``.old-*``
-        gets it restored, and every other stray tmp or old directory is simply removed.
-        """
-        if not self.root.is_dir():
-            return
-        slots: set[Path] = set()
-        for path in self.root.rglob("*"):
-            if not path.is_dir():
-                continue
-            match = _TMP_SUFFIX.search(path.name) or _OLD_SUFFIX.search(path.name)
-            if match:
-                slots.add(path.with_name(path.name[: match.start()]))
-        for out_dir in slots:
-            recover_video_dir(out_dir)

@@ -146,9 +146,37 @@ def test_stride_mode_with_stride_is_valid():
     assert profile.sampling.stride == 5
 
 
+@pytest.mark.parametrize("mode", ["uniform", "first-consecutive"])
+def test_a_mode_that_counts_frames_without_frames_is_invalid(mode):
+    with pytest.raises(ValidationError, match=f"sampling.frames is required.*'{mode}'"):
+        ProcessingProfile.model_validate(_profile(**{"mode: uniform, frames: 32": f"mode: {mode}"}))
+
+
+def test_all_mode_needs_neither_frames_nor_stride():
+    profile = ProcessingProfile.model_validate(
+        _profile(**{"mode: uniform, frames: 32": "mode: all"})
+    )
+    assert (profile.sampling.frames, profile.sampling.stride) == (None, None)
+
+
 def test_decode_library_rejects_unknown_values():
     with pytest.raises(ValidationError, match="library"):
         ProcessingProfile.model_validate(_profile(**{"library: pyav": "library: ffmpeg"}))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "field"),
+    [
+        # Every frame is decoded and written as RGB; nothing reads another order.
+        ("color: rgb", "color: bgr", "color"),
+        # Crops are always square and never aligned; nothing else is implemented.
+        ("square: true", "square: false", "square"),
+        ("align: none", "align: similarity", "align"),
+    ],
+)
+def test_a_setting_the_pipeline_does_not_implement_is_invalid(old, new, field):
+    with pytest.raises(ValidationError, match=field):
+        ProcessingProfile.model_validate(_profile(**{old: new}))
 
 
 def test_extras_mesh_true_is_invalid():

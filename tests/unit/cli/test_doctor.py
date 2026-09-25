@@ -2,11 +2,13 @@ import json
 
 from tests.unit.preprocess.inventory._demo import install, make_demo_tree
 
+import dfwb
+
 
 def test_doctor_human(run):
     result = run("doctor")
     assert result.code == 0
-    assert result.out.startswith("dfwb      0.1.0a1\n")
+    assert result.out.startswith(f"dfwb      {dfwb.__version__}\n")
     assert "datasets  (unset)" in result.out
     assert "note: DFWB_DATASETS_ROOT is unset" in result.err
     assert "PLUGIN" in result.out
@@ -27,6 +29,7 @@ def test_doctor_json_reports_roots_and_sources(run, monkeypatch, tmp_path):
     assert "DFWB_WORK_ROOT is not set" in data["roots"]["work"]["warning"]
     assert data["torch"]["installed"] in (True, False)
     assert "rich" in data["extras"]
+    assert "preprocess" in data["extras"]
     assert {"name": "dfwb", "provider": "dfwb"}.items() <= data["plugins"][0].items()
 
 
@@ -87,17 +90,28 @@ def test_doctor_licences_section_is_empty_by_default(run):
     assert "no licences acknowledged yet" in run("doctor").out
 
 
-def test_doctor_exits_4_on_a_corrupt_licence_store(run, monkeypatch, tmp_path):
+def test_doctor_reports_a_corrupt_licence_store_and_carries_on(run, monkeypatch, tmp_path):
     state = tmp_path / "state"
     state.mkdir()
     monkeypatch.setenv("DFWB_STATE_DIR", str(state))
     (state / "licenses.json").write_text("{not json")
+    hint = "fix or delete the file; accept the licence again with --accept-license"
+
     result = run("doctor")
-    assert result.code == 4
-    assert "licence store is corrupt" in result.err
-    assert "hint: fix or delete the file; accept the licence again with --accept-license" in (
-        result.err
-    )
+    assert result.code == 0, result.err
+    licences = result.out.split("LICENCES\n", 1)[1]
+    assert "licence store is corrupt" in licences
+    assert f"hint: {hint}" in licences
+    assert "PLUGIN" in result.out  # everything else is still reported
+
+    data = json.loads(run("doctor", "--json").out)
+    assert data["licenses"] == {}
+    assert "licence store is corrupt" in data["licenses_error"]["message"]
+    assert data["licenses_error"]["hint"] == hint
+
+
+def test_doctor_json_has_no_licence_error_when_the_store_reads_cleanly(run):
+    assert json.loads(run("doctor", "--json").out)["licenses_error"] is None
 
 
 def test_doctor_licences_section_lists_accepted_licences(run, monkeypatch, tmp_path):

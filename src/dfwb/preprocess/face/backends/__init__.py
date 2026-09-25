@@ -38,14 +38,22 @@ class FaceBackend(Protocol):
         meta: Whatever else a store should record about how its faces were found: model files
             and their sha256s, thresholds, the execution providers used, the weights' licence.
 
-    Two members are optional, and a caller checks for them with ``getattr``:
+    Other members are optional, and a caller checks for them with ``getattr``:
 
     - ``embed(frame, face) -> np.ndarray``: the identity embedding of ``face`` in the ``[H, W,
       3]`` RGB ``frame``, scaled to unit length (see ``Face.embedding``). Identity-guided subject
       selection needs it.
     - ``has_pose: bool``: whether ``detect`` fills in ``Face.yaw``. Missing means ``False``.
+    - ``prepare()``: fetch and verify whatever files the backend needs (model weights, say),
+      without loading them. A caller about to spread work over several processes calls it once
+      first, so that none of them downloads anything. Missing means there is nothing to fetch.
     - ``close()``: release what the backend holds open (a native detector, say) once the caller
       is done with it. Missing means there is nothing to release.
+    - ``license_gate: str | None`` and ``license_terms: str | None``, class attributes: the name a
+      licence acknowledgement is recorded under (see :mod:`dfwb.core.licenses`) when the
+      backend's weights need one before first use, and those terms in a few words. A caller can
+      read them off the class and record the acknowledgement before building the backend, whose
+      constructor refuses without it. Missing or ``None`` means no acknowledgement is needed.
     """
 
     name: str

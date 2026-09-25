@@ -1,0 +1,39 @@
+{
+  "builder": {
+    "id": "toyfake",
+    "version": "1"
+  },
+  "dfwb": "0.1.0a3",
+  "rules": {
+    "all-test": {
+      "params": {},
+      "rule": "all-test"
+    },
+    "benchmark": {
+      "params": {
+        "compressions": null,
+        "exclude_tasks": [],
+        "k_fake": 20,
+        "k_real_cap": null,
+        "pool": "official-test",
+        "seed": 0,
+        "strata": [],
+        "task_order": [
+          "REAL",
+          "BLEND_A",
+          "BLEND_B"
+        ]
+      },
+      "rule": "benchmark"
+    },
+    "ident-72-14-14": {
+      "params": {},
+      "rule": "ident-72-14-14"
+    },
+    "official": {
+      "params": {},
+      "rule": "official"
+    }
+  },
+  "source_listing_sha256": "b6bd4d9325fed569987db0c8a6dbecd16912c7a86b0f7fa2025678dea1d45b2d"
+}

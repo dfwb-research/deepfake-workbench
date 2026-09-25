@@ -12,8 +12,10 @@ change which faces it groups together.
 
 The code is MIT-licensed, but the ``buffalo_l`` weights are for non-commercial research use only.
 The backend therefore refuses to be built, and :func:`model_file` refuses to find or fetch a
-model, until that licence has been acknowledged once on the machine (``--accept-license``). Only
-then, on the backend's first ``detect``, are the models looked for:
+model, until that licence has been acknowledged once on the machine (``--accept-license``); the
+class names that acknowledgement in ``license_gate`` and its terms in ``license_terms``, so a
+caller can record it before building. Only then, on the backend's first ``detect`` (or earlier,
+through :meth:`InsightFaceBackend.prepare`), are the models looked for:
 first in ``<cache root>/models/buffalo_l/``, then in ``~/.insightface/models/buffalo_l/``, where
 insightface itself keeps them. If neither has them, it downloads the ``buffalo_l`` release archive
 into ``<cache root>/models/`` under a name private to the process (so that parallel workers
@@ -38,7 +40,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from dfwb.core.errors import ConfigError, ContractError, InstallationError
-from dfwb.core.fetch import fetch
+from dfwb.core.fetch import OFFLINE_ENV, fetch
 from dfwb.preprocess.face.backends._common import (
     cache_models_dir,
     check_frame,
@@ -129,7 +131,17 @@ def _download_pack(target: Path) -> None:
     """
     archive_path = target.parent / f".{PACK}.{os.getpid()}.zip"
     _log.info("downloading the insightface %s models (289 MB) from %s", PACK, PACK_URL)
-    fetch(PACK_URL, PACK_SHA256, archive_path)
+    try:
+        fetch(PACK_URL, PACK_SHA256, archive_path)
+    except InstallationError as exc:
+        # fetch's own hint names the download's private file, which is no use to anyone placing
+        # the models by hand: name the two model files and where they are looked for instead.
+        directories = " or ".join(str(directory) for directory in model_dirs())
+        raise InstallationError(
+            exc.message,
+            hint=f"put {DETECTOR} and {RECOGNIZER} from {PACK_URL} in {directories} yourself; "
+            f"otherwise check your network connection and that {OFFLINE_ENV} is unset",
+        ) from None
     try:
         with zipfile.ZipFile(archive_path) as archive:
             for name, sha256 in MODEL_FILES.items():
@@ -218,7 +230,8 @@ class InsightFaceBackend:
     version = "1"
     license = "MIT"
     has_pose = False
-    license_gate = GATE
+    license_gate: str | None = GATE
+    license_terms: str | None = WEIGHTS_LICENSE
 
     def __init__(
         self,
@@ -285,6 +298,21 @@ class InsightFaceBackend:
                 "upstream": UPSTREAM,
             }
         )
+
+    def prepare(self) -> None:
+        """Find, or download, and verify both model files, without loading either.
+
+        Meant to be called once, before work is spread over several processes: each process
+        still finds and checks the models when it first detects, but none of them then has to
+        download anything. The licence acknowledgement is checked again first.
+
+        Raises:
+            InstallationError: The ``buffalo_l`` licence has not been acknowledged, or a model is
+                on disk nowhere and cannot be downloaded.
+            ContractError: A download does not hash as expected.
+        """
+        for name in MODEL_FILES:
+            model_file(name)
 
     def detect(self, frames: npt.NDArray[np.uint8]) -> list[list[Face]]:
         """The faces on each RGB frame, best score first, each with its five landmarks (eyes,

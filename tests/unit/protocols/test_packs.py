@@ -1,5 +1,5 @@
 import pytest
-from tests.unit.protocols.conftest import make_pack, register_provider_packs
+from tests.unit.protocols.conftest import make_pack, register_packs, register_provider_packs
 
 from dfwb.core.errors import AmbiguousKeyError, ContractError, UnknownKeyError
 from dfwb.core.records import PackCard
@@ -47,6 +47,32 @@ def test_a_broken_pack_does_not_hide_the_others(fixture_packs, tmp_path):
         find_dataset("toytwo", pack="broken")
 
 
+def test_a_pack_whose_folder_cannot_be_located_is_broken_not_fatal(tmp_path, monkeypatch):
+    alpha = make_pack(tmp_path, "alpha", {"toyone": {}})
+    ghost = tmp_path / "dfwb_no_such_pack_package" / "pack"  # never written: nothing to locate
+    register_packs(monkeypatch, {"alpha": alpha, "ghost": ghost})
+
+    packs = {p.name: p for p in installed_packs()}
+
+    assert packs["alpha"].error is None
+    assert packs["ghost"].card is None
+    assert packs["ghost"].root is None
+    assert "dfwb_no_such_pack_package" in (packs["ghost"].error or "")
+    assert find_dataset("toyone").name == "alpha"
+    with pytest.raises(ContractError, match="broken"):
+        find_dataset("toyone", pack="ghost")
+    with pytest.raises(ContractError, match="broken"):
+        packs["ghost"].dataset_dir("toyone")
+
+
+def test_an_unknown_dataset_hint_names_the_broken_packs(fixture_packs):
+    root = fixture_packs({"alpha": {"toyone": {}}, "broken": {"toytwo": {}}})
+    (root["broken"] / "pack.yaml").write_text("schema_version: 99\n")
+    with pytest.raises(UnknownKeyError) as info:
+        find_dataset("toytwo")
+    assert "'broken'" in info.value.hint
+
+
 # The tests above cover the documented interface's primary example flow, verbatim. The rest pin
 # the remaining documented interface (Pack.version, read_card/read_labels, and find_dataset's
 # other error branches) that is specified elsewhere but not exercised by that flow.
@@ -68,8 +94,11 @@ def test_find_dataset_rejects_unknown_pack_name(fixture_packs):
 
 def test_find_dataset_named_pack_without_the_dataset(fixture_packs):
     fixture_packs({"alpha": {"toyone": {}}, "beta": {"toytwo": {}}})
-    with pytest.raises(UnknownKeyError, match="'beta' does not publish dataset 'toyone'"):
+    with pytest.raises(UnknownKeyError, match="'beta' does not publish dataset 'toyone'") as info:
         find_dataset("toyone", pack="beta")
+    # The hint names a command that exists: `dfwb protocols list` has no --pack option.
+    assert "--pack" not in info.value.hint
+    assert "dfwb protocols list" in info.value.hint
 
 
 def test_read_card_and_labels(fixture_packs):

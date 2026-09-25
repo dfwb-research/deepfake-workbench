@@ -7,8 +7,10 @@ The supported grammar is a small, well-defined subset of a shell environment fil
 - An unquoted value is trimmed, and an inline `` #`` starts a comment.
 - A ``'single'``-quoted value is literal.
 - A ``"double"``-quoted value supports the escapes ``\\n``, ``\\"`` and ``\\\\``.
-- ``${NAME}`` inside an unquoted or double-quoted value expands, first from keys earlier in the
-  same file and then from the process environment. An unknown name is a :class:`ConfigError`.
+- ``${NAME}`` inside an unquoted or double-quoted value expands, first from the process
+  environment and then from keys earlier in the same file: a key the shell sets wins over the
+  file's value, both for itself and in every expansion. An unknown name is a
+  :class:`ConfigError`.
 
 Every other line is a :class:`ConfigError`. This module is stdlib-only.
 """
@@ -77,20 +79,22 @@ def _unquote_double(path: Path, lineno: int, text: str) -> str:
     raise _fail(path, lineno, "unterminated quote", hint='add the closing "')
 
 
-def _expand(path: Path, lineno: int, text: str, so_far: Mapping[str, str]) -> str:
+def _expand(
+    path: Path, lineno: int, text: str, so_far: Mapping[str, str], environ: Mapping[str, str]
+) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
+        if name in environ:
+            return environ[name]
         if name in so_far:
             return so_far[name]
-        if name in os.environ:
-            return os.environ[name]
         raise _fail(path, lineno, f"unknown variable {name!r}", hint=f"define {name} first")
 
     return _EXPAND_RE.sub(replace, text)
 
 
 def _parse_line(
-    path: Path, lineno: int, line: str, so_far: Mapping[str, str]
+    path: Path, lineno: int, line: str, so_far: Mapping[str, str], environ: Mapping[str, str]
 ) -> tuple[str, str] | None:
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
@@ -109,19 +113,23 @@ def _parse_line(
     if lead.startswith("'"):
         value = _unquote_single(path, lineno, lead)
     elif lead.startswith('"'):
-        value = _expand(path, lineno, _unquote_double(path, lineno, lead), so_far)
+        value = _expand(path, lineno, _unquote_double(path, lineno, lead), so_far, environ)
     else:
         comment_at = lead.find(" #")
         raw = lead if comment_at == -1 else lead[:comment_at]
-        value = _expand(path, lineno, raw.strip(), so_far)
+        value = _expand(path, lineno, raw.strip(), so_far, environ)
     return key, value
 
 
-def parse_env_file(path: Path) -> dict[str, str]:
-    """Parse ``path`` per the supported grammar (see module docstring)."""
+def parse_env_file(path: Path, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Parse ``path`` per the supported grammar (see module docstring).
+
+    ``${NAME}`` expands from ``environ`` (default: the process environment) first.
+    """
+    environ = os.environ if environ is None else environ
     values: dict[str, str] = {}
     for lineno, line in enumerate(path.read_text("utf-8").splitlines(), start=1):
-        parsed = _parse_line(path, lineno, line, values)
+        parsed = _parse_line(path, lineno, line, values, environ)
         if parsed is not None:
             key, value = parsed
             values[key] = value
@@ -132,7 +140,7 @@ def apply_env_file(path: Path, environ: MutableMapping[str, str]) -> AppliedEnv:
     """Apply ``path``'s keys to ``environ``: a key already in ``environ`` is left untouched."""
     applied: list[str] = []
     skipped: list[str] = []
-    for key, value in parse_env_file(path).items():
+    for key, value in parse_env_file(path, environ).items():
         if key in environ:
             skipped.append(key)
         else:

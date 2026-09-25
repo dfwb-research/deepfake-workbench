@@ -133,12 +133,13 @@ class FaceForensicsBuilder(BaseBuilder):
         "benchmark": SchemeSpec(
             "benchmark",
             "subset",
-            rationale="a small, seeded evaluation set: 500 fakes drawn at random from the "
-            "official test split, balanced with as many reals",
+            rationale="a small, seeded evaluation set at c23: 500 fakes drawn at random from the "
+            "official test split's c23 videos, balanced with as many reals",
         ),
     }
     default_scheme = "official"
-    benchmark = BenchmarkSpec(k_fake=500)
+    # Defined at c23, so the subset is the same whichever other compressions a copy holds.
+    benchmark = BenchmarkSpec(k_fake=500, compressions=("c23",))
     pairing_rule = "target-id"
     card_info = {
         "name": "FaceForensics++",

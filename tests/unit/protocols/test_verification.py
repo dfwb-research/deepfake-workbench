@@ -1,4 +1,4 @@
-"""Tests for ``dfwb.protocols.verify``: coverage reports."""
+"""Tests for ``dfwb.protocols.verification``: coverage reports."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from dfwb.core.errors import ConfigError
 from dfwb.core.records import BuilderRef, InventoryRecord, VideoRecord, read_jsonl, write_jsonl
-from dfwb.protocols.verify import CoverageReport, verify, write_report
+from dfwb.protocols.verification import CoverageReport, verify, write_report
 
 
 def _inventory_record(
@@ -185,3 +185,24 @@ def test_report_written_atomically_and_sorted(toyone_pack, tmp_path):
     data = json.loads(text)
     assert data == report.to_json()
     assert json.dumps(data, indent=2, sort_keys=True) + "\n" == text
+
+
+def test_a_report_is_never_written_under_a_datasets_root(toyone_pack, tmp_path, monkeypatch):
+    videos = read_jsonl(toyone_pack / "videos.jsonl.gz", VideoRecord)
+    inventory = _write_inventory(
+        tmp_path / "inventory.jsonl", [_inventory_record(v) for v in videos]
+    )
+    datasets = tmp_path / "datasets"
+    work_root = datasets / "dfwb-work"  # a work root set inside the raw data
+    report = verify("toyone/official", inventory=inventory, work_root=work_root)
+
+    with pytest.raises(ConfigError) as info:
+        write_report(report, work_root, datasets_roots=[tmp_path / "elsewhere", datasets])
+    assert str(datasets) in info.value.message
+    assert "DFWB_WORK_ROOT" in info.value.hint
+
+    # By default the datasets roots are the resolved ones.
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", str(datasets))
+    with pytest.raises(ConfigError):
+        write_report(report, work_root)
+    assert not work_root.exists()

@@ -32,6 +32,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     ),
     "inventory": ("dfwb.cli.inventory:inventory", "Build and summarise dataset inventories."),
     "plugins": ("dfwb.cli.plugins:plugins", "List and inspect plugins and their components."),
+    "preprocess": (
+        "dfwb.cli.preprocess:preprocess",
+        "Run the face pipeline, check its progress, and merge sharded runs.",
+    ),
     "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
     "runs": ("dfwb.cli.runs:runs", "List and show training runs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),
@@ -142,7 +146,18 @@ def _load_env_file(env_file: Path | None, no_env_file: bool) -> None:
         envfile._remember(None)
         return
 
-    envfile._remember(envfile.apply_env_file(path, os.environ))
+    from dfwb.core.errors import ConfigError
+
+    try:
+        applied = envfile.apply_env_file(path, os.environ)
+    except ConfigError as exc:
+        # Another tool's .env (docker-compose, say) may sit where dfwb looks for its own.
+        raise ConfigError(
+            exc.message,
+            hint=f"{exc.hint}; if {path} is not meant for dfwb, run dfwb --no-env-file ..., or "
+            f"point {envfile.ENV_FILE_VAR} at a dfwb .env",
+        ) from None
+    envfile._remember(applied)
 
 
 def _debug_requested(args: Sequence[str]) -> bool:

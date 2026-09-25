@@ -56,6 +56,31 @@ def test_parity_profile_has_exactly_the_expected_values():
     assert profile.extras.masks is False
 
 
+@pytest.mark.parametrize(
+    "name", ["face-256-1.3x-32f", "face-256-1.3x-64fc", "face-256-1.3x-32f-mp"]
+)
+def test_every_detector_profile_gives_up_on_the_previous_face_at_the_parity_overlap(name):
+    # The same fallback as the parity profile, so the detector profiles differ only in what their
+    # names say (backend, frame count, sampling), never in how a face is followed.
+    assert load_profile(name).track.iou == load_profile("face-256-1.3x-64f").track.iou == 0.3
+
+
+@pytest.mark.parametrize(
+    ("name", "profile_id"),
+    [
+        ("face-256-1.3x-64f", "face-256-1.3x-64f-ff819b72"),
+        ("face-256-1.3x-32f", "face-256-1.3x-32f-068c5a21"),
+        ("face-256-1.3x-64fc", "face-256-1.3x-64fc-50a205ed"),
+        ("face-256-1.3x-32f-mp", "face-256-1.3x-32f-mp-22ba1046"),
+        ("toy-64-center-8f", "toy-64-center-8f-28b2d3ca"),
+    ],
+)
+def test_the_shipped_profile_ids_do_not_drift(name, profile_id):
+    # A profile id names a store on disk: any change to what a shipped profile dumps to (a new
+    # default, a renamed field) would orphan every store built with it.
+    assert load_profile(name).profile_id() == profile_id
+
+
 def test_profile_hash_does_not_depend_on_yaml_key_order():
     profile = load_profile("face-256-1.3x-64f")
     reordered = dict(reversed(list(profile.model_dump(mode="json").items())))

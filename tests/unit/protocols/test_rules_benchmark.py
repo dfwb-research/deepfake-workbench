@@ -319,6 +319,37 @@ def test_pool_keys_restrict_the_pool_to_every_compression_of_those_keys():
     ]
 
 
+def _three_compressions() -> list[VideoRecord]:
+    return [
+        rec(f"{task}/{prefix}{i:02d}", compression=compression)
+        for task, prefix, n in (("FS_A", "f", 12), ("REAL", "r", 12))
+        for i in range(n)
+        for compression in ("raw", "c23", "c40")
+    ]
+
+
+def test_compressions_restrict_the_pool_before_the_draw():
+    # A benchmark defined at one compression draws exactly what an inventory holding only that
+    # compression draws, whatever other compressions are on disk.
+    records = _three_compressions()
+    only_c23 = [r for r in records if r.compression == "c23"]
+
+    chosen = run(records, k_fake=4, compressions=("c23",))
+
+    assert chosen == run(only_c23, k_fake=4)
+    assert {compression for _, compression in chosen} == {"c23"}
+    assert len(chosen) == 8
+    # Without the restriction, the other compressions change the draw.
+    assert run(records, k_fake=4) != chosen
+
+
+def test_compressions_keep_every_listed_compression_and_drop_unlabelled_records():
+    records = [*_three_compressions(), rec("FS_A/none"), rec("REAL/none")]
+    chosen = run(records, k_fake=100, compressions=("raw", "c40"))
+    assert {compression for _, compression in chosen} == {"raw", "c40"}
+    assert len(chosen) == 48
+
+
 @pytest.mark.parametrize("pool_keys", [None, set(), []])
 def test_no_official_test_means_every_record(pool_keys):
     # None, or an empty official test (a dataset whose official scheme publishes no test), means
@@ -361,6 +392,12 @@ def test_benchmark_spec_defaults():
     assert spec.k_real_cap is None
     assert spec.exclude_tasks == ()
     assert spec.seed == 0
+    assert spec.compressions is None
+
+
+def test_benchmark_spec_rejects_an_empty_compression_list():
+    with pytest.raises(ContractError, match="compressions"):
+        BenchmarkSpec(k_fake=2, compressions=())
 
 
 def test_benchmark_spec_rejects_an_unknown_stratum():

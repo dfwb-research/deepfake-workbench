@@ -12,8 +12,9 @@ whole clip. One :class:`~dfwb.preprocess.face.track.Tracker` is driven across ev
 turn, so a face is followed exactly as it would be if the whole clip had been decoded at once.
 
 Output never appears half-written: every frame is written straight into a private ``.tmp-<pid>``
-sibling of the final directory, and a video whose result is not ``ok`` has that sibling removed
-rather than kept or renamed. A successful result replaces any previous ``out_dir`` through
+sibling of the final directory, and a video whose result is not ``ok``, or whose processing raises
+(an interrupt included), has that sibling removed rather than kept or renamed. A successful result
+replaces any previous ``out_dir`` through
 :func:`~dfwb.preprocess.face.store.recover_video_dir`'s two-step swap (the previous directory is
 renamed aside before the new one takes its place, and only deleted once that has succeeded), so a
 process killed mid-swap never leaves ``out_dir`` missing -- the next call for the same video
@@ -40,18 +41,18 @@ from dfwb.core.hashing import canonical_json
 from dfwb.core.records.local import InventoryRecord, ProcessedRecord, ProcessingProfile, TrackStats
 from dfwb.preprocess.face.backends import FaceBackend
 from dfwb.preprocess.face.crop import crop_face, map_landmarks
-from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source
+from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source, require_library
 from dfwb.preprocess.face.identity import cluster_subject
 from dfwb.preprocess.face.sampling import sample_indices
-from dfwb.preprocess.face.store import recover_video_dir, video_relpath
-from dfwb.preprocess.face.track import Tracker
+from dfwb.preprocess.face.store import portable_reason, recover_video_dir, video_relpath
+from dfwb.preprocess.face.track import Tracker, check_strategy
 from dfwb.preprocess.face.types import Face
 
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-__all__ = ["process_video"]
+__all__ = ["check_backend", "check_profile", "process_video"]
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ _FailureStatus = Literal["no_face", "decode_error", "too_short"]
 
 
 def _failure(record: InventoryRecord, *, status: _FailureStatus, reason: str) -> ProcessedRecord:
+    """A failed video's row. ``reason`` often quotes a decoder's message, which names the file by
+    where it sits on this machine; only the file's name is kept (see
+    :func:`~dfwb.preprocess.face.store.portable_reason`)."""
     return ProcessedRecord(
         key=record.key,
         compression=record.compression,
@@ -92,7 +96,7 @@ def _failure(record: InventoryRecord, *, status: _FailureStatus, reason: str) ->
         frame_indices=[],
         relpath=video_relpath(record.key, record.compression),
         track=None,
-        reason=reason,
+        reason=portable_reason(reason),
     )
 
 
@@ -159,6 +163,42 @@ def _embed_all(
     return embedded
 
 
+def check_backend(profile: ProcessingProfile, backend: FaceBackend) -> None:
+    """Refuse a ``profile`` that needs something ``backend`` does not provide.
+
+    :func:`process_video` checks this itself before decoding anything; a caller about to process
+    many videos checks it once, first, so that a mismatch stops everything before any work
+    rather than failing every video in turn.
+
+    Raises:
+        ConfigError: the profile's track strategy is ``"identity-cluster"`` but ``backend`` has no
+            ``embed`` method.
+    """
+    if profile.track.strategy == "identity-cluster" and getattr(backend, "embed", None) is None:
+        raise ConfigError(
+            f"track strategy 'identity-cluster' needs face embeddings, but backend "
+            f"{backend.name!r} does not provide embed()",
+            hint="use a backend that implements embed(), or choose track strategy "
+            "'largest-then-iou'",
+        )
+
+
+def check_profile(profile: ProcessingProfile) -> None:
+    """Refuse a ``profile`` this release or this installation cannot run, whatever the backend.
+
+    Every video would fail the same way, so a caller about to process many videos checks this
+    once, first (with :func:`check_backend`), rather than recording the same failure for each.
+
+    Raises:
+        ConfigError: the profile's track strategy is not one this release implements.
+        InstallationError: the profile's decode library is not installed, or OpenCV (which
+            writes every frame, whichever library decodes it) is not.
+    """
+    check_strategy(profile.track.strategy)
+    require_library(profile.decode.library)
+    _require_cv2()
+
+
 def process_video(
     source_path: Path,
     record: InventoryRecord,
@@ -171,9 +211,10 @@ def process_video(
     Writes every kept frame straight into ``out_dir``'s private ``.tmp-<pid>`` sibling as it is
     produced, at most :data:`_WINDOW` decoded frames held in memory at a time, and only swaps that
     sibling into ``out_dir``'s place once the whole clip has been processed and the result is
-    ``ok``; for any other result the sibling is removed and ``out_dir`` is left untouched. Any
-    ``.tmp-*``/``.old-*`` sibling a previous, interrupted attempt at this same video left behind
-    is resolved first (see :func:`~dfwb.preprocess.face.store.recover_video_dir`).
+    ``ok``; for any other result, and when anything raises along the way, the sibling is removed
+    and ``out_dir`` is left untouched. Any ``.tmp-*``/``.old-*`` sibling a previous attempt at
+    this same video left behind (one killed outright, with no chance to clean up) is resolved
+    first (see :func:`~dfwb.preprocess.face.store.recover_video_dir`).
 
     Args:
         source_path: The video file, or a directory of already-extracted frame images.
@@ -186,25 +227,21 @@ def process_video(
     Returns:
         A :class:`ProcessedRecord` describing the outcome: ``status`` is ``"too_short"`` when the
         source reports no frames at all, ``"decode_error"`` when it cannot be opened or read (at
-        open, or partway through decoding), ``"no_face"`` when frames were decoded but none
-        produced a usable, croppable face, and ``"ok"`` otherwise (with ``reason`` set to
-        ``"short: N of M"`` when fewer frames were written than the profile asked for).
+        open, partway through decoding, or not one frame of those it claims), ``"no_face"`` when
+        frames were decoded but none produced a usable, croppable face, and ``"ok"`` otherwise
+        (with ``reason`` set to ``"short: N of M"`` when fewer frames were written than the
+        profile asked for).
 
     Raises:
         ConfigError: the profile's track strategy is ``"identity-cluster"`` but ``backend`` has no
             ``embed`` method. Raised before any decoding happens.
+        OSError: a frame could not be written (a full or read-only disk, say); nothing is kept.
     """
     recover_video_dir(out_dir)
 
+    check_backend(profile, backend)
     identity_cluster = profile.track.strategy == "identity-cluster"
     embed = getattr(backend, "embed", None)
-    if identity_cluster and embed is None:
-        raise ConfigError(
-            f"track strategy 'identity-cluster' needs face embeddings, but backend "
-            f"{backend.name!r} does not provide embed()",
-            hint="use a backend that implements embed(), or choose track strategy "
-            "'largest-then-iou'",
-        )
 
     try:
         source = open_source(source_path, library=profile.decode.library)
@@ -246,9 +283,14 @@ def process_video(
 
     frames_meta: list[dict[str, Any]] = []
     failed_frames: list[dict[str, Any]] = []
+    n_decoded = 0
     cv2 = None
+    # Whatever ends this block -- a result other than ok, or an exception of any kind, an
+    # interrupt included -- the private directory goes with it; once the swap below has moved it
+    # into out_dir's place there is nothing left to remove.
     try:
         for window in _windows(source.read(requested), _WINDOW):
+            n_decoded += len(window)
             per_frame = _batch_detect(backend, window)
             if identity_cluster:
                 per_frame = _embed_all(embed, window, per_frame)
@@ -274,51 +316,59 @@ def process_video(
                     ]
                 cv2 = cv2 or _require_cv2()
                 bgr = cv2.cvtColor(crop_result.image, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(
-                    str(tmp_dir / f"frame_{index:06d}.png"), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6]
-                )
+                name = f"frame_{index:06d}.png"
+                if not cv2.imwrite(str(tmp_dir / name), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6]):
+                    raise OSError(f"OpenCV could not write {name} (is the disk full or read-only?)")
                 frames_meta.append(
                     {
                         "index": index,
                         "bbox": list(crop_result.box),
+                        "face_bbox": [float(value) for value in face.bbox],
                         "score": float(face.score),
                         "landmarks5": landmarks,
                     }
                 )
+
+        if n_decoded == 0:
+            # The container opened and claimed frames, yet not one of them decoded.
+            return _failure(
+                record,
+                status="decode_error",
+                reason=f"no frame decoded (container claims {total_frames})",
+            )
+        if not frames_meta:
+            return _failure(record, status="no_face", reason="no frame produced a usable face")
+
+        decoder = "frames" if Path(source_path).is_dir() else profile.decode.library
+        clip = {
+            "key": record.key,
+            "compression": record.compression,
+            "source": {
+                "total_frames": total_frames,
+                "fps": source.fps,
+                "width": source.width,
+                "height": source.height,
+                "decoder": decoder,
+            },
+            "frames": frames_meta,
+            "failed_frames": failed_frames,
+            "track": {
+                "strategy": profile.track.strategy,
+                "identity_switch": tracker.identity_switch,
+            },
+        }
+        (tmp_dir / "clip.json").write_text(canonical_json(clip) + "\n", encoding="utf-8")
+
+        old_dir = out_dir.with_name(f"{out_dir.name}.old-{os.getpid()}")
+        if out_dir.exists():
+            out_dir.rename(old_dir)
+        tmp_dir.rename(out_dir)
+        if old_dir.exists():
+            shutil.rmtree(old_dir, ignore_errors=True)
     except DecodeError as exc:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         return _failure(record, status="decode_error", reason=str(exc))
-
-    if not frames_meta:
+    finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        return _failure(record, status="no_face", reason="no frame produced a usable face")
-
-    decoder = "frames" if Path(source_path).is_dir() else profile.decode.library
-    clip = {
-        "key": record.key,
-        "compression": record.compression,
-        "source": {
-            "total_frames": total_frames,
-            "fps": source.fps,
-            "width": source.width,
-            "height": source.height,
-            "decoder": decoder,
-        },
-        "frames": frames_meta,
-        "failed_frames": failed_frames,
-        "track": {
-            "strategy": profile.track.strategy,
-            "identity_switch": tracker.identity_switch,
-        },
-    }
-    (tmp_dir / "clip.json").write_text(canonical_json(clip) + "\n", encoding="utf-8")
-
-    old_dir = out_dir.with_name(f"{out_dir.name}.old-{os.getpid()}")
-    if out_dir.exists():
-        out_dir.rename(old_dir)
-    tmp_dir.rename(out_dir)
-    if old_dir.exists():
-        shutil.rmtree(old_dir, ignore_errors=True)
 
     n_written = len(frames_meta)
     total_requested = (

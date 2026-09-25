@@ -50,13 +50,17 @@ def list_(as_json: bool) -> None:
         train, val, test = (counts.get(s, "-") for s in ("train", "val", "test"))
         table_rows.append([name, r.pack, r.version, r.kind, train, val, test])
     for r in broken:
-        table_rows.append([f"({r.pack})", r.pack, "-", "BROKEN", "-", "-", "-"])
+        name = r.dataset_id or f"({r.pack})"
+        table_rows.append([name, r.pack, r.version or "-", "BROKEN", "-", "-", "-"])
     if table_rows:
         click.echo(table(headers, table_rows))
     else:
         click.echo("no protocol packs installed")
     for r in broken:
-        click.echo(f"warning: pack {r.pack!r} is broken: {r.broken}", err=True)
+        what = (
+            f"dataset {r.dataset_id!r} of pack {r.pack!r}" if r.dataset_id else f"pack {r.pack!r}"
+        )
+        click.echo(f"warning: {what} is broken: {r.broken}", err=True)
 
 
 @protocols.command("info")
@@ -125,12 +129,13 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
     relabelled. A missing inventory is a usage error (exit 2).
     """
     from dfwb.core.paths import require_root, resolve_roots
-    from dfwb.protocols.verify import verify as run_verify
-    from dfwb.protocols.verify import write_report
+    from dfwb.protocols.verification import verify as run_verify
+    from dfwb.protocols.verification import write_report
 
-    work_root = require_root("work", resolve_roots())
+    roots = resolve_roots()
+    work_root = require_root("work", roots)
     report = run_verify(ref, inventory=inventory, splits=splits or None, work_root=work_root)
-    report_path = write_report(report, work_root)
+    report_path = write_report(report, work_root, datasets_roots=roots["datasets"].paths)
 
     if as_json:
         emit_json({**report.to_json(), "report_path": str(report_path)})
@@ -146,6 +151,148 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
         click.echo(f"warning: {warning}")
     click.echo(f"report written to {report_path}")
     return report.exit_code
+
+
+@protocols.command("build")
+@click.argument("dataset")
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="The dataset's folder in the pack, normally <pack root>/DATASET.",
+)
+@click.option(
+    "--inventory",
+    "inventory",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Inventory to build from (default: <work root>/<dataset>/inventory.jsonl).",
+)
+@click.option(
+    "--scheme",
+    "schemes",
+    multiple=True,
+    help="A scheme to build (repeatable); default: every scheme of the dataset. The default "
+    "scheme must be among them.",
+)
+@click.option(
+    "--update-pack-yaml",
+    is_flag=True,
+    help="Also list DATASET in the pack.yaml next to --out (OUT/../pack.yaml) if it is absent.",
+)
+@json_option
+def build(
+    dataset: str,
+    out: Path,
+    inventory: Path | None,
+    schemes: tuple[str, ...],
+    update_pack_yaml: bool,
+    as_json: bool,
+) -> None:
+    """Build DATASET's protocol-pack files from its local inventory.
+
+    Writes the videos, one split file per scheme, the pairs, the labels, the dataset card, the
+    NOTICE and PROVENANCE.json into --out. Rebuilding from the same inventory gives the same bytes.
+    """
+    from dfwb.core.errors import ConfigError
+    from dfwb.core.paths import absolute
+    from dfwb.preprocess.packbuild import PACK_YAML, add_to_pack_yaml, build_dataset
+
+    if update_pack_yaml and absolute(out).name != dataset:
+        raise ConfigError(
+            f"--update-pack-yaml lists {dataset!r} in the pack, but --out {absolute(out)} is not "
+            f"named {dataset!r}",
+            hint=f"build into <pack root>/{dataset}",
+        )
+    result = build_dataset(dataset, out=out, inventory=inventory, schemes=schemes or None)
+    pack_yaml: dict[str, Any] | None = None
+    if update_pack_yaml:
+        added = add_to_pack_yaml(result.out.parent, dataset)
+        pack_yaml = {"path": str(result.out.parent / PACK_YAML), "added": added}
+
+    if as_json:
+        emit_json(
+            {
+                "dataset_id": dataset,
+                "out": str(result.out),
+                "n_videos": result.n_videos,
+                "n_pairs": result.n_pairs,
+                "schemes": {
+                    name: card.model_dump(mode="json") for name, card in result.schemes.items()
+                },
+                "pack_yaml": pack_yaml,
+            }
+        )
+        return
+
+    click.echo(f"wrote {dataset} to {result.out}: {result.n_videos} videos, {result.n_pairs} pairs")
+    rows = []
+    for name, card in result.schemes.items():
+        counts = card.counts or {}
+        train, val, test = (counts.get(s, "-") for s in ("train", "val", "test"))
+        rows.append([name, card.rule, train, val, test, card.sha256[:12]])
+    click.echo(table(["SCHEME", "RULE", "TRAIN", "VAL", "TEST", "SHA256"], rows))
+    if pack_yaml is not None:
+        verb = "now lists" if pack_yaml["added"] else "already lists"
+        click.echo(f"{pack_yaml['path']} {verb} {dataset}")
+
+
+@protocols.command("materialize")
+@click.argument("ref")
+@click.option(
+    "--inventory",
+    "inventory",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Inventory to recompute from (default: <work root>/<dataset>/inventory.jsonl).",
+)
+@json_option
+def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
+    """Recompute a recipe scheme from the local inventory and check its published hash.
+
+    A pack may publish a scheme as a rule, its parameters and a hash, with no key list. This
+    rebuilds the split from your own inventory and, only if it hashes to the published value,
+    writes it to the dataset's materialized folder under the work root, where every command that
+    loads the protocol finds it. A mismatch exits 4 and writes nothing.
+    """
+    from dfwb.core.paths import require_root, resolve_roots
+    from dfwb.core.records import InventoryRecord, read_jsonl
+    from dfwb.preprocess.inventory.runner import get_builder, inventory_path
+    from dfwb.preprocess.packbuild import locate_metadata_root
+    from dfwb.protocols.materialization import materialize as run_materialize
+    from dfwb.protocols.materialization import needs_official
+    from dfwb.protocols.refs import parse_ref
+
+    roots = resolve_roots()
+    work_root = require_root("work", roots)
+    parsed = parse_ref(ref)
+    source = inventory if inventory is not None else inventory_path(parsed.dataset, work_root)
+    official = None
+    if needs_official(parsed) and source.is_file():
+        # The publisher's split is dataset knowledge: read it with the dataset's own builder.
+        builder = get_builder(parsed.dataset)
+        records = read_jsonl(source, InventoryRecord)
+        official = builder.official_splits(locate_metadata_root(builder, roots), records)
+    result = run_materialize(
+        parsed,
+        inventory=source,
+        official=official,
+        work_root=work_root,
+        datasets_roots=roots["datasets"].paths,
+    )
+
+    if as_json:
+        emit_json(
+            {
+                "ref": result.ref,
+                "path": str(result.path),
+                "sha256": result.sha256,
+                "matched": result.matched,
+            }
+        )
+        return
+    click.echo(f"{result.ref}: sha256 {result.sha256} matches the published hash")
+    click.echo(f"wrote {result.path}")
 
 
 def _lint_issue_row(issue: Any) -> dict[str, Any]:
@@ -215,25 +362,30 @@ def _scheme_diff_row(scheme_diff: Any) -> dict[str, Any]:
     }
 
 
+# How many relabelled videos a diff names (the count is always given in full).
+_RELABELLED_SHOWN = 20
+
+
 @protocols.command("diff")
 @click.argument("old", type=click.Path(path_type=Path, file_okay=False, exists=True))
 @click.argument("new", type=click.Path(path_type=Path, file_okay=False, exists=True))
 @click.option(
     "--expect-bump",
     "expect_bump",
-    type=click.Choice(["major", "minor", "patch"]),
+    type=click.Choice(["major", "minor", "patch", "none"]),
     default=None,
-    help="Fail unless the version change between the two pack.yaml files is at least the bump "
-    "these changes require.",
+    help="The bump you claim for this release. Fails unless it is at least the bump these "
+    "changes require ('none' when nothing but the version changed).",
 )
 @json_option
 def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
     """Compare two protocol pack directories and report the SemVer bump the changes require.
 
-    With ``--expect-bump``, also compares that requirement against the actual version change
-    between ``OLD/pack.yaml`` and ``NEW/pack.yaml`` (a plain SemVer component comparison, nothing
-    to do with the value passed to the option itself) and exits 4 when the actual change is
-    smaller than what the changes require -- the check a release pipeline runs before publishing.
+    With ``--expect-bump``, the value is the bump the pack author claims for the release: the
+    command exits 4, naming both, when that claim is smaller than the bump the changes require --
+    the check a release pipeline runs before publishing. An unchanged pack requires ``none``,
+    which any claim covers. It also reads both ``pack.yaml`` versions and reports their change;
+    a malformed version, or one that goes down, exits 4.
     """
     from dfwb.core.records import PackCard
     from dfwb.protocols._yaml import read_model
@@ -247,17 +399,21 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         old_card = read_model(old / "pack.yaml", PackCard)
         new_card = read_model(new / "pack.yaml", PackCard)
         actual_bump = version_bump(old_card.version, new_card.version)
-        if bump_rank(actual_bump) < bump_rank(result.required_bump):
+        if bump_rank(expect_bump) < bump_rank(result.required_bump):
             exit_code = 4
 
+    relabelled = result.relabelled[:_RELABELLED_SHOWN]
     if as_json:
         payload: dict[str, Any] = {
             "schemes": [_scheme_diff_row(s) for s in result.schemes],
             "labels_changed": result.labels_changed,
             "labels_added": result.labels_added,
+            "relabelled": relabelled,
+            "relabelled_count": len(result.relabelled),
             "required_bump": result.required_bump,
         }
-        if actual_bump is not None:
+        if expect_bump is not None:
+            payload["expected_bump"] = expect_bump
             payload["actual_bump"] = actual_bump
         emit_json(payload)
         return exit_code
@@ -268,12 +424,18 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         click.echo("labels changed: " + ", ".join(result.labels_changed))
     if result.labels_added:
         click.echo("labels added: " + ", ".join(result.labels_added))
+    if result.relabelled:
+        shown = "" if len(relabelled) == len(result.relabelled) else f" (first {len(relabelled)})"
+        click.echo(f"videos relabelled: {len(result.relabelled)}{shown}")
+        for key in relabelled:
+            click.echo(f"  {key}")
     click.echo(f"required bump: {result.required_bump}")
-    if actual_bump is not None:
-        click.echo(f"actual bump (pack.yaml version change): {actual_bump}")
+    if expect_bump is not None:
+        click.echo(f"expected bump: {expect_bump}")
+        click.echo(f"pack.yaml version change: {actual_bump}")
         if exit_code:
             click.echo(
-                f"error: the version change is only a {actual_bump!r} bump, but these changes "
+                f"error: --expect-bump {expect_bump!r} does not cover these changes, which "
                 f"require {result.required_bump!r}",
                 err=True,
             )

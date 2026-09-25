@@ -9,9 +9,11 @@ than an exception, so one author can see everything wrong in a single run.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -68,6 +70,26 @@ def _leak_issue(value: Any, where: str) -> LintIssue | None:
             f"{match.group()!r} looks like a local path or hostname, never publish it",
         )
     return None
+
+
+def _row_leaks(rows: Sequence[Any], noun: str, where: str) -> LintIssue | None:
+    """One issue covering every row of a record file that leaks a local path, naming the first."""
+    first: tuple[str, LintIssue] | None = None
+    count = 0
+    for row in rows:
+        leak = _leak_issue(dataclasses.asdict(row), where)
+        if leak is not None:
+            count += 1
+            if first is None:
+                first = (str(getattr(row, "key", None) or getattr(row, "fake_key", "")), leak)
+    if first is None:
+        return None
+    key, leak = first
+    return LintIssue(
+        "error",
+        where,
+        f"{count} {noun} row(s) hold a local path or hostname; the first, {key!r}: {leak.message}",
+    )
 
 
 def _read_or_issue[M: BaseModel](
@@ -152,6 +174,9 @@ def _lint_videos(
                     "labels.yaml",
                 )
             )
+    leak = _row_leaks(videos, "video", where)
+    if leak is not None:
+        issues.append(leak)
     return videos
 
 
@@ -196,6 +221,20 @@ def _lint_schemes(
                     )
                 )
 
+        repeated = Counter((row.key, row.compression) for row in rows)
+        for (key, compression), times in sorted(
+            repeated.items(), key=lambda item: (item[0][0], item[0][1] or "")
+        ):
+            if times > 1:
+                issues.append(
+                    LintIssue(
+                        "error",
+                        where,
+                        f"split row {key!r} (compression {compression!r}) is listed more than "
+                        f"once ({times} times)",
+                    )
+                )
+
         for row in rows:
             if (row.key, row.compression) not in video_keys:
                 issues.append(
@@ -220,6 +259,9 @@ def _lint_pairs(
     except ContractError as exc:
         issues.append(LintIssue("error", where, exc.message))
         return
+    leak = _row_leaks(pairs, "pair", where)
+    if leak is not None:
+        issues.append(leak)
     for pair in pairs:
         for key, role in ((pair.fake_key, "fake"), (pair.real_key, "real")):
             if key not in video_keys:
@@ -232,7 +274,9 @@ def _lint_pairs(
                 )
 
 
-def _lint_dataset(root: Path, dataset_id: str, *, release: bool, issues: list[LintIssue]) -> None:
+def _lint_dataset(
+    root: Path, dataset_id: str, *, release: bool, withheld: bool, issues: list[LintIssue]
+) -> None:
     dataset_dir = root / dataset_id
     card = _read_or_issue(
         dataset_dir / "dataset.yaml", DatasetCard, f"{dataset_id}/dataset.yaml", issues
@@ -246,7 +290,8 @@ def _lint_dataset(root: Path, dataset_id: str, *, release: bool, issues: list[Li
         leak = _leak_issue(card.model_dump(mode="json", by_alias=True), card_where)
         if leak is not None:
             issues.append(leak)
-        if card.distribution == "undecided":
+        # A withheld dataset is not published, which is what an undecided one needs.
+        if card.distribution == "undecided" and not withheld:
             issues.append(
                 LintIssue(
                     "error" if release else "warning", card_where, "distribution is undecided"
@@ -292,11 +337,13 @@ def lint_pack(root: Path, *, release: bool = False) -> list[LintIssue]:
 
     Reads ``root/pack.yaml`` and every ``<dataset_id>/`` directory it (or a directory actually
     present) names, re-deriving each fact a card claims -- a scheme's ``sha256`` and ``counts``,
-    that every split row and pair endpoint names a real video, that every video's ``label_key`` is
-    in its ``labels.yaml`` -- and reports a mismatch as an error rather than raising. A dataset
-    card left ``distribution: undecided`` is a warning normally, and an error when ``release`` is
-    set (the check a release build runs, since an undecided dataset must not ship). Nothing is
-    written.
+    that every split row and pair endpoint names a real video, that no video or split row is
+    listed twice, that every video's ``label_key`` is in its ``labels.yaml``, and that no card,
+    notice, video or pair holds a local path -- and reports a mismatch as an error rather than
+    raising. A published dataset whose card is left ``distribution: undecided`` is a warning
+    normally, and an error when ``release`` is set (the check a release build runs, since an
+    undecided dataset must not ship); a dataset listed under ``withheld`` is not published, so
+    being undecided is no issue there. Nothing is written.
     """
     issues: list[LintIssue] = []
     pack_card = _lint_pack_card(root, issues)
@@ -305,7 +352,10 @@ def lint_pack(root: Path, *, release: bool = False) -> list[LintIssue]:
     if pack_card is not None:
         _check_listing(root, pack_card, present, issues)
 
+    withheld = set(pack_card.withheld) if pack_card is not None else set()
     for dataset_id in present:
-        _lint_dataset(root, dataset_id, release=release, issues=issues)
+        _lint_dataset(
+            root, dataset_id, release=release, withheld=dataset_id in withheld, issues=issues
+        )
 
     return issues

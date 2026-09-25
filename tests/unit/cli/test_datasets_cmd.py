@@ -1,5 +1,8 @@
+import importlib.abc
 import json
+import sys
 
+import pytest
 from tests.unit.preprocess.inventory._demo import DEMO_TARGET, install, make_demo_tree
 from tests.unit.protocols.conftest import make_pack
 
@@ -140,3 +143,124 @@ def test_info_of_an_unknown_dataset_suggests_close_matches(run, monkeypatch):
     result = run("datasets", "info", "dmeo")
     assert result.code == 2
     assert "did you mean 'demo'" in result.err
+
+
+# ------------------------------------------------------------------------------ synth
+
+
+def _block_av(monkeypatch):
+    """Make ``import av`` fail for the rest of the test, as it does without the extra."""
+    for name in [n for n in sys.modules if n == "av" or n.startswith("av.")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    class _Blocker(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.partition(".")[0] == "av":
+                raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [_Blocker(), *sys.meta_path])
+
+
+def test_synth_without_media_writes_the_tree_and_reports_it(run, tmp_path):
+    out = tmp_path / "data"
+    result = run(
+        "datasets",
+        "synth",
+        "toyfake",
+        "--out",
+        str(out),
+        "--videos",
+        "20",
+        "--seed",
+        "3",
+        "--no-media",
+        "--json",
+    )
+    assert result.code == 0, result.err
+    root = out / "toyfake"
+    assert json.loads(result.out) == {
+        "dataset_id": "toyfake",
+        "root": str(root),
+        "n_videos": 20,
+        "by_task": {"REAL": 8, "BLEND_A": 6, "BLEND_B": 6},
+        "seed": 3,
+        "media": False,
+        "next": [
+            f"dfwb inventory build toyfake --root {root}",
+            "dfwb protocols verify toyfake",
+        ],
+        "note": "the built-in toyfake pack describes the tree made with --videos 200 --seed 0, "
+        "so verify reports this one as partial coverage",
+    }
+    assert sorted(p.name for p in root.iterdir()) == [
+        "README.txt",
+        "blend-a",
+        "blend-b",
+        "official_splits.json",
+        "original",
+    ]
+
+
+def test_synth_prints_the_next_commands(run, tmp_path):
+    out = tmp_path / "data"
+    result = run("datasets", "synth", "toyfake", "--out", str(out), "--no-media")
+    assert result.code == 0, result.err
+    root = out / "toyfake"
+    assert f"wrote 200 toyfake videos to {root}" in result.out
+    assert "REAL 80, BLEND_A 60, BLEND_B 60" in result.out
+    assert "no media" in result.out
+    assert f"  dfwb inventory build toyfake --root {root}\n" in result.out
+    assert "  dfwb protocols verify toyfake\n" in result.out
+    assert "partial coverage" not in result.out  # the defaults are the built-in pack's tree
+
+
+def test_synth_notes_when_the_tree_is_not_the_built_in_packs(run, tmp_path):
+    out = tmp_path / "data"
+    result = run("datasets", "synth", "toyfake", "--out", str(out), "--seed", "1", "--no-media")
+    assert result.code == 0, result.err
+    assert result.out.endswith(
+        "note: the built-in toyfake pack describes the tree made with --videos 200 --seed 0, "
+        "so verify reports this one as partial coverage\n"
+    )
+
+
+def test_synth_quotes_a_root_with_spaces_in_the_next_command(run, tmp_path):
+    out = tmp_path / "my data"
+    result = run("datasets", "synth", "toyfake", "--out", str(out), "--no-media", "--json")
+    assert result.code == 0, result.err
+    command = json.loads(result.out)["next"][0]
+    assert command == f"dfwb inventory build toyfake --root '{out / 'toyfake'}'"
+
+
+def test_synth_media_without_pyav_exits_5_naming_the_extra(run, tmp_path, monkeypatch):
+    _block_av(monkeypatch)
+    result = run("datasets", "synth", "toyfake", "--out", str(tmp_path / "data"))
+    assert result.code == 5
+    assert "error: " in result.err
+    assert "[preprocess]" in result.err
+    assert "--no-media" in result.err
+    assert not (tmp_path / "data" / "toyfake").exists()
+
+
+def test_synth_writes_media_when_pyav_is_installed(run, tmp_path):
+    pytest.importorskip("av")
+    out = tmp_path / "data"
+    result = run("datasets", "synth", "toyfake", "--out", str(out), "--videos", "5", "--json")
+    assert result.code == 0, result.err
+    assert json.loads(result.out)["media"] is True
+    assert (out / "toyfake" / "original" / "p000.mkv").stat().st_size > 0
+
+
+def test_synth_knows_only_toyfake(run, tmp_path):
+    result = run("datasets", "synth", "ffpp", "--out", str(tmp_path))
+    assert result.code == 2
+    assert "toyfake" in result.err
+
+
+def test_synth_refuses_a_folder_that_is_not_empty(run, tmp_path):
+    (tmp_path / "toyfake").mkdir()
+    (tmp_path / "toyfake" / "mine.txt").touch()
+    result = run("datasets", "synth", "toyfake", "--out", str(tmp_path), "--no-media")
+    assert result.code == 2
+    assert "hint: " in result.err

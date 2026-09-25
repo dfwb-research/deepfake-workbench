@@ -251,6 +251,14 @@ def test_insightface_is_gated_before_it_looks_for_any_model(isolated, served_pac
     assert served_pack.requests == []
 
 
+def test_each_backend_declares_its_licence_gate_and_terms():
+    # A runner reads these off the class, before building anything, to record an acknowledgement.
+    assert (CenterBackend.license_gate, CenterBackend.license_terms) == (None, None)
+    assert (MediaPipeBackend.license_gate, MediaPipeBackend.license_terms) == (None, None)
+    assert InsightFaceBackend.license_gate == insightface_module.GATE == "insightface-buffalo_l"
+    assert InsightFaceBackend.license_terms == insightface_module.WEIGHTS_LICENSE
+
+
 # ---------------------------------------------------------------------------------- insightface
 
 DET_BYTES = b"stand-in detector model"
@@ -372,11 +380,31 @@ def test_a_pack_missing_a_model_is_refused(isolated, server, monkeypatch):
 
 
 @pytest.mark.usefixtures("stand_in_models", "accepted")
-def test_offline_with_no_model_on_disk_is_an_installation_error(served_pack, monkeypatch):
+def test_offline_with_no_model_on_disk_is_an_installation_error(isolated, served_pack, monkeypatch):
     monkeypatch.setenv("DFWB_OFFLINE", "1")
-    with pytest.raises(InstallationError, match="DFWB_OFFLINE"):
+    with pytest.raises(InstallationError, match="DFWB_OFFLINE") as caught:
         insightface_module.model_file("det_10g.onnx")
     assert served_pack.requests == []
+    # The hint says where the two model files can be put by hand, not where the archive would
+    # have been downloaded to.
+    hint = caught.value.hint
+    assert "det_10g.onnx" in hint
+    assert "w600k_r50.onnx" in hint
+    assert str(_cache_pack(isolated)) in hint
+    assert str(_home_pack(isolated)) in hint
+    assert f".buffalo_l.{os.getpid()}.zip" not in hint  # the download's private name
+
+
+@pytest.mark.usefixtures("stand_in_models", "accepted")
+def test_a_failed_download_names_where_to_put_the_models_by_hand(isolated, server, monkeypatch):
+    monkeypatch.setattr(insightface_module, "PACK_URL", f"{server.url}/missing.zip")
+    with pytest.raises(InstallationError, match="404") as caught:
+        insightface_module.model_file("det_10g.onnx")
+    hint = caught.value.hint
+    assert "det_10g.onnx" in hint
+    assert "w600k_r50.onnx" in hint
+    assert str(_cache_pack(isolated)) in hint
+    assert f".buffalo_l.{os.getpid()}.zip" not in hint  # the download's private name
 
 
 @pytest.mark.usefixtures("stand_in_models")
@@ -518,6 +546,40 @@ def test_building_insightface_loads_nothing(runtime):
     assert isinstance(backend, FaceBackend)
     assert (backend.name, backend.version, backend.license) == ("insightface", "1", "MIT")
     assert backend.has_pose is False
+
+
+@pytest.mark.usefixtures("stand_in_models", "accepted")
+def test_insightface_prepare_fetches_and_verifies_both_models_without_loading_them(
+    isolated, served_pack, monkeypatch
+):
+    fake = FakeOnnxRuntime()
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    backend = InsightFaceBackend()
+    backend.prepare()
+    target = _cache_pack(isolated)
+    assert (target / "det_10g.onnx").read_bytes() == DET_BYTES
+    assert (target / "w600k_r50.onnx").read_bytes() == REC_BYTES
+    assert served_pack.requests == ["/buffalo_l.zip"]
+    assert fake.sessions == []
+    # Once both are on disk, preparing again (another run, say) downloads nothing.
+    backend.prepare()
+    assert served_pack.requests == ["/buffalo_l.zip"]
+    assert fake.sessions == []
+
+
+@pytest.mark.usefixtures("stand_in_models")
+def test_insightface_prepare_rechecks_the_licence_before_touching_any_model(
+    isolated, served_pack, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, "onnxruntime", FakeOnnxRuntime())
+    licenses.accept(insightface_module.GATE, license="non-commercial research use only")
+    backend = InsightFaceBackend()
+    licenses.state_file().unlink()  # the acknowledgement is withdrawn after the backend was built
+    with pytest.raises(InstallationError) as caught:
+        backend.prepare()
+    assert caught.value.exit_code == 5
+    assert served_pack.requests == []
+    assert not isolated.cache.exists()
 
 
 def test_the_first_detect_opens_the_detector_once_on_the_cpu(runtime, isolated):
@@ -790,6 +852,33 @@ def test_building_mediapipe_loads_nothing(mediapipe_stub, server):
     assert isinstance(backend, FaceBackend)
     assert (backend.name, backend.version, backend.license) == ("mediapipe", "1", "Apache-2.0")
     assert backend.has_pose is False
+
+
+def test_mediapipe_prepare_fetches_the_model_without_opening_a_detector(
+    mediapipe_stub, server, isolated
+):
+    backend = MediaPipeBackend()
+    backend.prepare()
+    model = isolated.cache / "models" / "mediapipe" / "blaze_face_short_range.tflite"
+    assert model.read_bytes() == SHORT_BYTES
+    assert server.requests == ["/short.tflite"]
+    assert mediapipe_stub.detectors == []
+    # The model is now in the cache: neither preparing again nor detecting downloads it again.
+    backend.prepare()
+    backend.detect(_frames(1, 8, 8))
+    assert server.requests == ["/short.tflite"]
+    (detector,) = mediapipe_stub.detectors
+    assert detector.options.base_options.model_asset_path == str(model)
+    backend.close()
+
+
+def test_mediapipe_prepare_offline_without_the_model_is_an_installation_error(
+    mediapipe_stub, server, monkeypatch
+):
+    monkeypatch.setenv("DFWB_OFFLINE", "1")
+    with pytest.raises(InstallationError, match="DFWB_OFFLINE"):
+        MediaPipeBackend().prepare()
+    assert server.requests == []
 
 
 def test_mediapipe_downloads_its_model_once_and_converts_detections(

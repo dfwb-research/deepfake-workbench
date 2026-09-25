@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-__all__ = ["DecodeError", "VideoSource", "open_source"]
+__all__ = ["DecodeError", "VideoSource", "open_source", "require_library"]
 
 _EXTRA_HINT = 'pip install "deepfake-workbench[preprocess]"'
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp"})
@@ -200,6 +200,22 @@ class _FrameDirectorySource:
             if image is None:
                 return
             yield index, self._cv2.cvtColor(image, self._cv2.COLOR_BGR2RGB)
+
+
+def require_library(library: Literal["opencv", "pyav"]) -> None:
+    """Refuse a decode ``library`` that is not installed, without opening anything.
+
+    :func:`open_source` needs the library anyway; a caller about to decode many videos checks it
+    once, first, so that a missing extra stops everything before any work.
+
+    Raises:
+        InstallationError: ``library`` (OpenCV for ``"opencv"``, PyAV for ``"pyav"``) cannot be
+            imported.
+    """
+    if library == "opencv":
+        _require_cv2()
+    else:
+        _require_av()
 
 
 def open_source(path: Path, *, library: Literal["opencv", "pyav"]) -> VideoSource:

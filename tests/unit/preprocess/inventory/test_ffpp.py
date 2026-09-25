@@ -344,7 +344,8 @@ def test_schemes_and_benchmark():
         "all-test": "all-test",
         "benchmark": "benchmark",
     }
-    assert builder.benchmark == BenchmarkSpec(k_fake=500)
+    # The benchmark is defined at c23, whatever other compressions are on disk.
+    assert builder.benchmark == BenchmarkSpec(k_fake=500, compressions=("c23",))
     assert builder.pairing_rule == "target-id"
     assert builder.pairing_fanout is None
 
@@ -369,6 +370,27 @@ def test_the_benchmark_draws_from_the_official_test(tmp_path):
     assert ("FS_DF/002_003", "c23") in chosen
     assert len(chosen) == 2
     assert {key for key, _ in chosen} <= {"FS_DF/002_003", "REAL/002", "REAL/003"}
+
+
+def test_the_benchmark_ignores_the_other_compressions_on_disk(tmp_path):
+    root = tmp_path / "FaceForensics++"
+    for compression in ("raw", "c23", "c40"):
+        _touch(root / "original_content" / "YouTube" / compression / "videos", "000", "001")
+        _touch(root / "manipulated_content" / "Deepfakes" / compression / "videos", "000_001")
+    _write_official(root, {"train": [], "val": [], "test": [["000", "001"]]})
+    builder = FaceForensicsBuilder()
+    records = collect_records(builder, root)
+    official = builder.official_splits(root, records)
+    assert builder.benchmark is not None
+    chosen = assign_benchmark(
+        records,
+        spec=builder.benchmark,
+        is_real=builder.is_real,
+        task_rank=builder.task_rank(),
+        pool_keys=[key for key, split in official.items() if split == "test"],
+    )
+    assert {compression for _, compression in chosen} == {"c23"}
+    assert len(chosen) == 2
 
 
 def test_dataset_card():

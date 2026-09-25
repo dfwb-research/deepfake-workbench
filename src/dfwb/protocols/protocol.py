@@ -10,9 +10,8 @@ scheme of every dataset of every installed pack, without reading any split file.
 from __future__ import annotations
 
 import dataclasses
-import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,13 +29,12 @@ from dfwb.core.records import (
     read_split_tsv,
     split_sha256,
 )
+from dfwb.protocols._versions import parse_version
 from dfwb.protocols._yaml import read_card, read_labels
 from dfwb.protocols.packs import Pack, find_dataset, installed_packs
 from dfwb.protocols.refs import ProtocolRef, parse_ref
 
 __all__ = ["LabelMapping", "Protocol", "ProtocolInfo", "list_protocols", "load"]
-
-_VERSION_PIN = re.compile(r"^\d+\.\d+\.\d+$")
 
 # Plain VideoRecord fields the ``where`` filter may query, plus the derived "task" key (the key
 # prefix before the first "/"). ``attrs.<name>`` is handled separately (its vocabulary is per
@@ -55,6 +53,21 @@ _WHERE_FIELDS = frozenset(
     }
 )
 _ATTR_PREFIX = "attrs."
+# Every split a scheme can assign; a ``split`` filter naming anything else is a typo.
+_SPLIT_NAMES: tuple[str, ...] = ("train", "val", "test", "exclude")
+
+
+def _check_split(name: object) -> None:
+    if name not in _SPLIT_NAMES:
+        raise ConfigError(
+            f"unknown split {name!r}{did_you_mean(str(name), _SPLIT_NAMES)}",
+            hint="splits: " + ", ".join(_SPLIT_NAMES),
+        )
+
+
+def _is_members(value: object) -> bool:
+    """A ``where`` value that means membership: a non-string sequence, or a set."""
+    return isinstance(value, (Sequence, Set)) and not isinstance(value, (str, bytes))
 
 
 def _task_of(key: str) -> str:
@@ -125,9 +138,11 @@ class Protocol:
 
         A video the scheme does not assign is absent from its split file and so is never
         returned, regardless of ``split``/``where``; ``exclude`` is reserved for explicit
-        exclusions. ``where`` keys are ``VideoRecord`` fields,
-        ``"task"`` (the key prefix before ``/``), or ``"attrs.<name>"``; a scalar value means
-        equality (``None`` matches a null value), a list means membership.
+        exclusions. ``split`` is one split name or several, each of ``train``, ``val``, ``test``
+        and ``exclude`` (a split the scheme does not assign simply matches nothing). ``where``
+        keys are ``VideoRecord`` fields, ``"task"`` (the key prefix before ``/``), or
+        ``"attrs.<name>"``; a scalar value means equality (``None`` matches a null value), and a
+        list, tuple, set or other non-string sequence means membership.
 
         Builds a ``(key, compression) -> split`` dict from the split rows and walks
         ``videos.jsonl.gz`` once (:func:`~dfwb.core.records.iter_jsonl_dicts`, which owns the
@@ -136,12 +151,18 @@ class Protocol:
         construct rows it is about to discard (the 250k-row read-performance budget).
 
         Raises:
-            ConfigError: a ``where`` key is not one of those, with a did-you-mean suggestion.
+            ConfigError: a ``split`` is not a split name, or a ``where`` key is not one of
+                those, with a did-you-mean suggestion.
             ContractError: a row has no string ``"key"``, or a matched row does not build a
                 ``VideoRecord`` (both name ``videos.jsonl.gz:<lineno>``).
         """
         wanted = None if split is None else ({split} if isinstance(split, str) else set(split))
-        where = where or {}
+        for name in sorted(wanted or (), key=str):
+            _check_split(name)
+        where = {
+            key: list(value) if _is_members(value) else value
+            for key, value in (where or {}).items()
+        }
         attr_keys = self._check_where_fields(where)
         split_index = {(row.key, row.compression): row.split for row in self._rows}
         name = self._videos_path.name
@@ -220,7 +241,12 @@ class Protocol:
 
         When ``split`` is given, a pair is kept if the real record's split in this scheme equals
         ``split``, or, when the real is absent from the scheme, the fake's split does.
+
+        Raises:
+            ConfigError: ``split`` is not a split name (with a did-you-mean suggestion).
         """
+        if split is not None:
+            _check_split(split)
         if self._pairs_path is None:
             return []
         records = read_jsonl(self._pairs_path, PairRecord)
@@ -291,8 +317,12 @@ def _matches_where(data: Mapping[str, Any], where: Mapping[str, Any]) -> bool:
 
 
 def _check_pin(ref: str, pin: str, pack_version: str, scheme_sha256: str) -> None:
-    if _VERSION_PIN.match(pin):
-        if pin != pack_version:
+    """A version pin must equal the pack's version (PEP 440 equality); a hash pin must prefix the
+    scheme's hash."""
+    pinned = parse_version(pin)
+    if pinned is not None:
+        installed = parse_version(pack_version)
+        if installed is None or installed.sort_key != pinned.sort_key:
             raise ContractError(
                 f"{ref} pinned @{pin} but installed pack version is {pack_version}",
                 hint="install the pinned pack version, or update the pin",
@@ -317,7 +347,8 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
     Raises:
         UnknownKeyError: the dataset or pack is unknown, or the scheme is not one of the card's.
         ContractError: a pin does not match, the split file has drifted from the card, the pack
-            is broken, or a recipe scheme has nothing materialized yet.
+            is broken, or a recipe scheme has nothing materialized yet or was materialized for
+            another version of the pack (the hint says to materialize it again).
     """
     parsed = parse_ref(ref) if isinstance(ref, str) else ref
     pack = find_dataset(parsed.dataset, pack=parsed.pack)
@@ -338,7 +369,8 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
 
     split_path = dataset_dir / "splits" / f"{scheme}.tsv.gz"
     videos_path = dataset_dir / "videos.jsonl.gz"
-    if not split_path.is_file():
+    materialized_copy = not split_path.is_file()
+    if materialized_copy:
         resolved_work_root = (
             work_root if work_root is not None else require_root("work", resolve_roots())
         )
@@ -353,6 +385,14 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
 
     rows = read_split_tsv(split_path)
     sha256 = split_sha256(rows)
+    if sha256 != scheme_card.sha256 and materialized_copy:
+        # The pack's card moved on (an upgrade) since this recipe scheme was materialized.
+        raise ContractError(
+            f"{canonical_ref}: the materialized split {split_path} hashes to {sha256}, not the "
+            f"card's {scheme_card.sha256}",
+            hint=f"the pack changed since it was materialized; run: dfwb protocols materialize "
+            f"{canonical_ref}",
+        )
     if sha256 != scheme_card.sha256:
         raise ContractError(
             f"{canonical_ref}: split file hash {sha256} does not match the card's "
@@ -379,9 +419,12 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
 
 
 def list_protocols() -> list[ProtocolInfo]:
-    """One row per scheme per dataset per healthy pack, plus one row per broken pack.
+    """One row per scheme per dataset per healthy pack, plus one row per broken pack or dataset.
 
-    ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read.
+    ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read. A pack
+    that cannot be read gives one row with an empty ``dataset_id``; a dataset whose card cannot
+    be read gives one row with its ``dataset_id`` and an empty ``scheme``. Either way ``broken``
+    holds the reason, and every other pack and dataset is still listed.
     """
     rows: list[ProtocolInfo] = []
     for pack in installed_packs():
@@ -390,7 +433,15 @@ def list_protocols() -> list[ProtocolInfo]:
             continue
         assert pack.card is not None  # invariant: card is None only when error is set
         for dataset_id in pack.card.datasets:
-            card = read_card(pack.dataset_dir(dataset_id))
+            try:
+                card = read_card(pack.dataset_dir(dataset_id))
+            except ContractError as exc:
+                rows.append(
+                    ProtocolInfo(
+                        dataset_id, "", pack.name, pack.version, "", False, None, exc.message
+                    )
+                )
+                continue
             for scheme_name, scheme_card in card.schemes.items():
                 rows.append(
                     ProtocolInfo(

@@ -9,13 +9,16 @@ datasets-root refusal is exercised on purpose, not by accident of the machine ru
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from pathlib import Path
 
 import pytest
 
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.paths import ResolvedRoot
+from dfwb.core.records import assert_no_absolute_paths
 from dfwb.core.records.local import (
     BackendSpec,
     CropSpec,
@@ -27,7 +30,17 @@ from dfwb.core.records.local import (
     TrackSpec,
     TrackStats,
 )
-from dfwb.preprocess.face.store import Store, recover_video_dir, video_relpath
+from dfwb.preprocess.face.store import (
+    Store,
+    parse_shard_filename,
+    portable_reason,
+    read_running_marker,
+    recover_video_dir,
+    running_markers,
+    shard_index_filename,
+    shard_running_filename,
+    video_relpath,
+)
 
 _NO_DATASETS_ROOT = {"datasets": ResolvedRoot("datasets", None, "unset", "DFWB_DATASETS_ROOT")}
 
@@ -72,6 +85,127 @@ def test_index_path_and_video_dir_nest_under_the_key():
     assert store.video_dir(_record("ffpp/vid002", compression=None)) == Path(
         "/tmp/store-root/ffpp/vid002/_"
     )
+
+
+def test_sharded_index_path_names_this_shards_own_file():
+    store = Store(Path("/tmp/store-root"), _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    assert store.index_path == Path("/tmp/store-root/index.shard-0-of-2.jsonl")
+
+
+def test_shard_index_filename_and_parse_shard_filename_round_trip():
+    assert shard_index_filename(0, 2) == "index.shard-0-of-2.jsonl"
+    assert parse_shard_filename("index.shard-0-of-2.jsonl") == (0, 2)
+    assert parse_shard_filename("index.shard-11-of-100.jsonl") == (11, 100)
+
+
+@pytest.mark.parametrize(
+    "name", ["index.jsonl", "index.shard-0-of-2.txt", "index.shard-a-of-2.jsonl", "profile.json"]
+)
+def test_parse_shard_filename_rejects_anything_else(name):
+    assert parse_shard_filename(name) is None
+
+
+def test_a_sharded_store_appends_to_its_own_shard_file_not_index_jsonl(tmp_path):
+    store = Store(tmp_path / "store", _profile(), roots=_NO_DATASETS_ROOT, shard=(1, 3))
+    store.append(_record("a/1"))
+
+    assert (tmp_path / "store" / "index.shard-1-of-3.jsonl").is_file()
+    assert not (tmp_path / "store" / "index.jsonl").exists()
+
+
+def test_a_sharded_stores_records_union_index_jsonl_and_its_own_shard_file(tmp_path):
+    root = tmp_path / "store"
+    unsharded = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+    unsharded.append(_record("a/1", status="ok", n_frames=4))
+    unsharded.append(_record("a/2", status="ok", n_frames=4))
+
+    sharded = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    sharded.append(_record("a/1", status="decode_error", n_frames=0))  # a redo, still in flight
+
+    records = {(r.key, r.compression): r for r in sharded.records()}
+    assert set(records) == {("a/1", None), ("a/2", None)}
+    assert records[("a/1", None)].status == "decode_error"  # this shard's row wins
+    assert records[("a/2", None)].status == "ok"  # only in index.jsonl, untouched by this shard
+    assert sharded.done_keys() == {("a/2", None)}
+
+
+def test_a_sharded_store_never_reads_another_shards_file(tmp_path):
+    root = tmp_path / "store"
+    other = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(1, 2))
+    other.append(_record("a/1", status="ok", n_frames=4))
+
+    mine = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    assert mine.records() == []
+    assert mine.done_keys() == set()
+
+
+def test_an_unsharded_store_ignores_a_shard_file_left_next_to_it(tmp_path):
+    root = tmp_path / "store"
+    sharded = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 1))
+    sharded.append(_record("a/1", status="ok", n_frames=4))
+
+    plain = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+    assert plain.records() == []
+    assert plain.index_path == root / "index.jsonl"
+
+
+def test_running_writes_a_marker_with_host_pid_and_started_at_then_removes_it(tmp_path):
+    root = tmp_path / "store"
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    marker = root / "index.shard-0-of-2.jsonl.running"
+
+    with store.running():
+        assert marker.is_file()
+        info = json.loads(marker.read_text("utf-8"))
+        assert info["pid"] == os.getpid()
+        assert info["host"]
+        assert info["started_at"]
+
+    assert not marker.exists()
+
+
+def test_running_removes_the_marker_even_when_the_block_raises(tmp_path):
+    root = tmp_path / "store"
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    marker = root / "index.shard-0-of-2.jsonl.running"
+
+    def _raise() -> None:
+        assert marker.is_file()
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError), store.running():
+        _raise()
+
+    assert not marker.exists()
+
+
+def test_running_is_a_no_op_for_an_unsharded_store(tmp_path):
+    root = tmp_path / "store"
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+
+    with store.running():
+        pass
+
+    assert not root.exists()  # nothing written at all
+
+
+def test_running_markers_and_read_running_marker(tmp_path):
+    root = tmp_path / "store"
+    assert running_markers(root) == []  # store not created yet
+
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    with store.running():
+        markers = running_markers(root)
+        assert markers == [root / "index.shard-0-of-2.jsonl.running"]
+        info = read_running_marker(markers[0])
+        assert info["pid"] == os.getpid()
+
+    assert running_markers(root) == []
+    assert read_running_marker(root / "index.shard-0-of-2.jsonl.running") == {}
+
+
+def test_shard_running_filename():
+    assert shard_running_filename(0, 2) == "index.shard-0-of-2.jsonl.running"
 
 
 def test_append_writes_one_line_per_record_and_flushes(tmp_path):
@@ -159,27 +293,6 @@ def test_write_profile_allows_the_same_profile_with_different_backend_meta_but_w
     payload = json.loads((root / "profile.json").read_text("utf-8"))
     # the file recorded on first use is kept; the mismatch is only logged
     assert payload["backend"]["meta"] == {"a": 1}
-
-
-def test_cleanup_partial_removes_leftover_tmp_directories(tmp_path):
-    root = tmp_path / "store"
-    good = root / "a" / "1" / "_"
-    good.mkdir(parents=True)
-    (good / "frame_000000.png").write_bytes(b"not really a png")
-    stale = root / "a" / "2" / "_.tmp-12345"
-    stale.mkdir(parents=True)
-    (stale / "frame_000000.png").write_bytes(b"partial")
-
-    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
-    store.cleanup_partial()
-
-    assert good.is_dir()
-    assert not stale.exists()
-
-
-def test_cleanup_partial_is_a_no_op_when_the_store_root_does_not_exist_yet(tmp_path):
-    store = Store(tmp_path / "never-created", _profile(), roots=_NO_DATASETS_ROOT)
-    store.cleanup_partial()  # must not raise
 
 
 def test_a_store_root_inside_a_datasets_root_is_refused(tmp_path):
@@ -292,17 +405,30 @@ def test_recover_video_dir_is_a_no_op_when_nothing_needs_cleaning_up(tmp_path):
     recover_video_dir(tmp_path / "never-created" / "_")  # must not raise either
 
 
-def test_cleanup_partial_restores_a_stranded_old_directory(tmp_path):
-    root = tmp_path / "store"
-    out_dir = root / "a" / "1" / "_"
-    out_dir.mkdir(parents=True)
-    (out_dir / "frame_000000.png").write_bytes(b"the last known-good content")
-    old_dir = out_dir.with_name(f"{out_dir.name}.old-4242")
-    out_dir.rename(old_dir)
-
-    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
-    store.cleanup_partial()
-
-    assert out_dir.is_dir()
-    assert (out_dir / "frame_000000.png").read_bytes() == b"the last known-good content"
-    assert not old_dir.exists()
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "/data/ffpp/c23/000.mp4: PyAV could not open this file ([Errno 1094995529] Invalid "
+            "data found when processing input: '/data/ffpp/c23/000.mp4')",
+            "000.mp4: PyAV could not open this file ([Errno 1094995529] Invalid data found when "
+            "processing input: '000.mp4')",
+        ),
+        (
+            'error: OSError: cannot write "/work/x/frame_000001.png"',
+            'error: OSError: cannot write "frame_000001.png"',
+        ),
+        ("see (/tmp/a/log.txt) and ~/notes/b.txt", "see (log.txt) and b.txt"),
+        ("path=/srv/data/v.mp4,other", "path=v.mp4,other"),
+        ("from file:///srv/data/v.mp4", "from v.mp4"),
+        ("a directory: /srv/data/clips/", "a directory: clips"),
+        # Not paths: a URL, a slash between words, a relative path, and no path at all.
+        ("fetched https://example.org/a/b", "fetched https://example.org/a/b"),
+        ("real / fake", "real / fake"),
+        ("originals/c23/000.avi: short", "originals/c23/000.avi: short"),
+        ("short: 3 of 8", "short: 3 of 8"),
+    ],
+)
+def test_portable_reason_keeps_only_the_last_part_of_every_absolute_path(text, expected):
+    assert portable_reason(text) == expected
+    assert_no_absolute_paths(portable_reason(text))

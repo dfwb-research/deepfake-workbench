@@ -19,7 +19,6 @@ from dfwb import __version__
 from dfwb.core.errors import (
     ConfigError,
     ContractError,
-    InstallationError,
     PluginError,
     UnknownKeyError,
 )
@@ -519,15 +518,6 @@ def test_a_key_with_an_unknown_task_is_a_contract_error(env, monkeypatch):
     (raw / "Demo").mkdir()
     with pytest.raises(ContractError, match=r"task 'NOPE'.*REAL, FS_SWAP"):
         build_inventory("unknowntask")
-
-
-def test_probe_is_not_available_yet(env, monkeypatch):
-    raw, _ = env
-    install(monkeypatch)
-    make_demo_tree(raw / "Demo")
-    with pytest.raises(InstallationError) as info:
-        build_inventory("demo", probe=True)
-    assert "[preprocess]" in info.value.hint
 
 
 def test_jobs_must_be_positive(env, monkeypatch):
