@@ -114,6 +114,15 @@ def test_adapt_refusal_propagates(tmp_path, toy_pack):
         datamodule.setup("fit")
 
 
+def test_an_adapt_refusal_lists_the_shipped_profiles_it_is_given(tmp_path, toy_pack):
+    work_root = tmp_path / "work"
+    write_toy_store(work_root, profile=toy_profile(backend="center", scale=1.0))
+    shipped = [toy_profile(backend="insightface", scale=1.3, size=64)]
+    datamodule = _datamodule(toy_config(), work_root, shipped_profiles=shipped)
+    with pytest.raises(ContractError, match=f"would serve it: {PROFILE}"):
+        datamodule.setup("fit")
+
+
 def test_allow_mismatch_proceeds_and_records_it(tmp_path, toy_pack):
     work_root = tmp_path / "work"
     write_toy_store(work_root, profile=toy_profile(backend="center", scale=1.0))
@@ -150,13 +159,13 @@ def test_transforms_apply_to_train_only(toy_work_root):
     train_multi = datamodule.train_dataset
     assert train_multi is not None
 
-    # the train source and a val-mode dataset over the same videos place clips identically
-    # (uniform sampling, same clip count), so the only difference is the transform.
+    # the train source and an untransformed train dataset over the same videos, seed and epoch
+    # draw the same frames, so the only difference is the transform.
     train_sample = train_multi[0]
     same_video = ClipDataset(
         datamodule.train_sources[0].index,
         datamodule.train_sources[0].dataset.spec,
-        train=False,
+        train=True,
         adapt_chain=datamodule.train_sources[0].adaptation.chain,
         seed=0,
     )[0]
@@ -188,6 +197,37 @@ def test_balance_chooses_the_train_sampler(toy_work_root, balance, mode, expecte
         assert sorted(sampler) == list(range(len(datamodule.train_dataset)))
     else:
         assert isinstance(sampler, expected)
+
+
+def test_source_weights_drive_source_balancing(toy_work_root):
+    group_a = {**toy_source("train", **{"attrs.group": "a"}), "weight": 3.0}
+    group_b = toy_source("train", **{"attrs.group": "b"})
+    config = toy_config(
+        data={
+            "train": [group_a, group_b],
+            "loader": {"batch_size": 8, "num_workers": 0, "balance": "source"},
+        }
+    )
+    datamodule = _datamodule(config, toy_work_root)
+    datamodule.setup("fit")
+    assert datamodule.train_dataset.weights == pytest.approx((0.75, 0.25))
+    sampler = datamodule.train_dataloader().sampler
+    n_a = len(datamodule.train_dataset.datasets[0])
+    draws = []
+    for epoch in range(20):
+        sampler.set_epoch(epoch)
+        draws += list(sampler)
+    share_a = sum(index < n_a for index in draws) / len(draws)
+    assert share_a == pytest.approx(0.75, abs=0.05)
+
+
+def test_a_source_weight_without_source_balancing_is_warned_about(toy_work_root, caplog):
+    config = toy_config(data={"train": [{**toy_source("train"), "weight": 2.0}]})
+    datamodule = _datamodule(config, toy_work_root)
+    with caplog.at_level("WARNING"):
+        datamodule.setup("fit")
+    assert "data.train[0].weight" in caplog.text
+    assert "balance: source" in caplog.text
 
 
 def test_an_unknown_balance_is_a_config_error_naming_video_label(toy_work_root):
@@ -244,18 +284,83 @@ def test_val_loaders_group_each_video_without_shuffling(toy_work_root):
     assert [b.keys for b in loader] == [b.keys for b in batches]  # fixed order, no shuffle
 
 
-def test_workers_persist_when_there_are_workers(toy_work_root):
-    config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 2}})
+def test_train_workers_persist_and_validation_workers_do_not(toy_work_root):
+    # validation workers are started for each validation pass and stop after it, so several
+    # validation sources never hold num_workers idle processes each while training runs
+    config = toy_config(
+        data={
+            "loader": {"batch_size": 8, "num_workers": 2},
+            "val": [toy_source("val"), toy_source("val", **{"attrs.group": "a"})],
+        }
+    )
     datamodule = _datamodule(config, toy_work_root)
     datamodule.setup("fit")
     train = datamodule.train_dataloader()
-    (val,) = datamodule.val_dataloader()
     assert (train.num_workers, train.persistent_workers) == (2, True)
-    assert (val.num_workers, val.persistent_workers) == (2, True)
+    for val in datamodule.val_dataloader():
+        assert (val.num_workers, val.persistent_workers) == (2, False)
 
     single = _datamodule(toy_config(), toy_work_root)
     single.setup("fit")
     assert single.train_dataloader().persistent_workers is False
+
+
+@pytest.mark.parametrize(("device", "pinned"), [("cuda", True), ("cpu", False)])
+def test_loaders_pin_memory_only_for_a_cuda_device(toy_work_root, device, pinned):
+    from types import SimpleNamespace
+
+    datamodule = _datamodule(toy_config(), toy_work_root)
+    datamodule.setup("fit")
+    datamodule.trainer = SimpleNamespace(
+        current_epoch=0, strategy=SimpleNamespace(root_device=torch.device(device))
+    )
+    assert datamodule.train_dataloader().pin_memory is pinned
+    assert all(loader.pin_memory is pinned for loader in datamodule.val_dataloader())
+
+
+def test_loaders_do_not_pin_memory_without_a_trainer(toy_work_root):
+    datamodule = _datamodule(toy_config(), toy_work_root)
+    datamodule.setup("fit")
+    assert datamodule.train_dataloader().pin_memory is False
+
+
+@pytest.mark.parametrize("pairs", [False, True], ids=["plain", "pairs"])
+def test_every_dataset_pickles_for_loader_workers(toy_work_root, pairs):
+    # spawn and forkserver workers (forkserver is Python 3.14's default) receive the dataset,
+    # its transforms and its adaptation chain pickled
+    from multiprocessing.reduction import ForkingPickler
+
+    import torch.multiprocessing  # registers torch's tensor reductions with ForkingPickler
+
+    config = toy_config(
+        data={
+            "transforms": {"train": [{"name": "hflip", "p": 0.5}, {"name": "jpeg", "quality": 50}]}
+        }
+    )
+    datamodule = ProtocolDataModule(
+        config.data,
+        input_spec=InputSpec(size=(24, 24), mean=(0.5, 0.5, 0.5), std=(0.2, 0.2, 0.2)),
+        work_root=toy_work_root,
+        seed=0,
+        pairs=pairs,
+    )
+    datamodule.setup("fit")
+    datasets = [datamodule.train_dataset, *(source.dataset for source in datamodule.val_sources)]
+    for dataset in datasets:
+        restored = ForkingPickler.loads(ForkingPickler.dumps(dataset))
+        assert len(restored) == len(dataset)
+        torch.testing.assert_close(restored[0].clip, dataset[0].clip)
+
+
+@pytest.mark.parametrize("context", ["forkserver", "spawn"])
+def test_the_train_loader_runs_in_forkserver_and_spawn_workers(toy_work_root, context):
+    config = toy_config(data={"loader": {"batch_size": 8, "num_workers": 2}})
+    datamodule = _datamodule(config, toy_work_root)
+    datamodule.setup("fit")
+    loader = datamodule.train_dataloader()
+    loader.multiprocessing_context = context
+    batches = list(loader)
+    assert [len(batch.keys) for batch in batches] == [8] * 4
 
 
 def test_set_epoch_reaches_the_train_datasets_and_sampler(toy_work_root):

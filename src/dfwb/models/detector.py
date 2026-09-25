@@ -20,14 +20,14 @@ from dfwb.core.detector import (
     DetectorMeta,
     DetectorOutput,
 )
-from dfwb.core.errors import ContractError
+from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.plugins import api
 from dfwb.models.backbone import Backbone
 from dfwb.models.heads import Head
 from dfwb.models.pools import TemporalPool
 from dfwb.models.stem import build_stem
 
-__all__ = ["AssembledDetector", "build_detector"]
+__all__ = ["AssembledDetector", "assemble_detector", "build_detector"]
 
 _FRAMEWORK_DISTRIBUTION = "deepfake-workbench"
 
@@ -83,16 +83,25 @@ class AssembledDetector(nn.Module):  # type: ignore[misc, unused-ignore]  # Any 
         pooled = self.pool(per_frame)
         return pooled, per_frame
 
+    def _logit(self, features: Tensor) -> Tensor:
+        """The head, in float32 whatever autocast is active: under ``bf16-mixed`` or
+        ``16-mixed`` a head run in half precision rounds nearby scores to the same value, which
+        would quantise every score, metric and score file computed from them."""
+        with torch.autocast(device_type=features.device.type, enabled=False):
+            logit: Tensor = self.head(features.float())
+        return logit
+
     def forward(self, batch: ClipBatch) -> DetectorOutput:
-        """Training path: logits, not probabilities."""
+        """Training path: logits, not probabilities (both computed in float32)."""
         pooled, _ = self._pooled_and_per_frame(batch)
-        logit = self.head(pooled)
+        logit = self._logit(pooled)
         return DetectorOutput(score=torch.sigmoid(logit), logit=logit, features=pooled)
 
     def predict(self, batch: ClipBatch) -> DetectorOutput:
         """Inference path: switches to eval mode for the duration (restoring whatever mode this
         module was in beforehand, even on error), and runs under ``torch.inference_mode()``.
-        Scores are in ``[0, 1]``; ``frame_scores`` is filled for image backbones.
+        Scores are in ``[0, 1]``, computed in float32; ``frame_scores`` is filled for image
+        backbones.
 
         Raises:
             ContractError: The head has ``num_classes != 1``. Scoring is defined for binary
@@ -110,12 +119,12 @@ class AssembledDetector(nn.Module):  # type: ignore[misc, unused-ignore]  # Any 
         try:
             with torch.inference_mode():
                 pooled, per_frame = self._pooled_and_per_frame(batch)
-                logit = self.head(pooled)
+                logit = self._logit(pooled)
                 score = torch.sigmoid(logit)
                 frame_scores = None
                 if per_frame is not None:
                     b, t, d = per_frame.shape
-                    frame_logit = self.head(per_frame.reshape(b * t, d)).reshape(b, t)
+                    frame_logit = self._logit(per_frame.reshape(b * t, d)).reshape(b, t)
                     frame_scores = torch.sigmoid(frame_logit)
                 return DetectorOutput(
                     score=score, logit=logit, frame_scores=frame_scores, features=pooled
@@ -135,6 +144,32 @@ def _framework_license() -> str:
     return meta.get("License-Expression") or meta.get("License") or "UNKNOWN"
 
 
+def assemble_detector(
+    section: ModelSection, backbone: Backbone, meta: DetectorMeta
+) -> AssembledDetector:
+    """Put an already-built ``backbone`` together with the stem, pool and head ``section`` names.
+
+    Raises:
+        ConfigError: ``section`` sets a stem for a ``kind="video"`` backbone. Such a backbone sees
+            whole clips, never single frames, so the per-frame stem would never run while its
+            parameters still trained.
+    """
+    if section.stem is not None and backbone.kind == "video":
+        raise ConfigError(
+            f"model.stem: {section.backbone.name!r} is a video backbone, which sees whole clips, "
+            "so a stem in front of it would never run",
+            hint="drop model.stem, or use an image backbone",
+        )
+    stem = build_stem(section.stem) if section.stem is not None else None
+    pool: TemporalPool | None = None
+    if backbone.kind != "video":
+        pool = api.temporal_pools.build(
+            section.temporal_pool.name, dim=backbone.out_dim, **section.temporal_pool.params
+        )
+    head = api.heads.build(section.head.name, dim=backbone.out_dim, **section.head.params)
+    return AssembledDetector(backbone=backbone, stem=stem, pool=pool, head=head, meta=meta)
+
+
 def build_detector(
     model_cfg: ModelSection | Mapping[str, Any],
     *,
@@ -146,18 +181,14 @@ def build_detector(
     ``input_spec_overrides`` is applied on top of the backbone's own ``native_input`` (via
     ``dataclasses.replace``). ``source`` becomes ``DetectorMeta.source`` verbatim, e.g.
     ``"run:<fingerprint>"`` once a checkpoint records where it came from.
+
+    Raises:
+        ConfigError: A stem is set for a video backbone (see :func:`assemble_detector`).
     """
     section = (
         model_cfg if isinstance(model_cfg, ModelSection) else ModelSection.model_validate(model_cfg)
     )
     backbone = api.backbones.build(section.backbone.name, **section.backbone.params)
-    stem = build_stem(section.stem) if section.stem is not None else None
-    pool: TemporalPool | None = None
-    if backbone.kind != "video":
-        pool = api.temporal_pools.build(
-            section.temporal_pool.name, dim=backbone.out_dim, **section.temporal_pool.params
-        )
-    head = api.heads.build(section.head.name, dim=backbone.out_dim, **section.head.params)
 
     input_spec = backbone.native_input
     if input_spec_overrides:
@@ -173,4 +204,4 @@ def build_detector(
         citation=None,
         source=source,
     )
-    return AssembledDetector(backbone=backbone, stem=stem, pool=pool, head=head, meta=detector_meta)
+    return assemble_detector(section, backbone, detector_meta)

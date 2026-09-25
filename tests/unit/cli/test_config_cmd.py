@@ -43,7 +43,7 @@ def test_validate_accepts_the_toy_cpu_template(run, requires_torch):
     shown = json.loads(run("config", "show", "-c", str(path), "--json").out)["config"]
     assert shown["data"]["processing"] == "toy-64-center-8f"
     assert shown["data"]["train"] == [
-        {"protocol": "toyfake/official", "split": "train", "where": {}}
+        {"protocol": "toyfake/official", "split": "train", "where": {}, "weight": 1.0}
     ]
     assert shown["data"]["clip"]["frames"] == 1
     assert shown["data"]["loader"]["batch_size"] == 16
@@ -51,7 +51,7 @@ def test_validate_accepts_the_toy_cpu_template(run, requires_torch):
     assert shown["model"]["backbone"] == {"name": "tiny-cnn"}
     assert shown["model"]["input"] == {"crop": "full-frame", "crop_scale": None}
     assert shown["train"]["max_epochs"] == 2
-    assert shown["train"]["precision"] == "32-true"
+    assert shown["train"]["precision"] == "auto"  # 32-true on the CPU it runs on
     assert shown["train"]["lightning"]["accelerator"] == "cpu"
 
 
@@ -73,6 +73,7 @@ def test_binary_frame_holds_the_contract_skeleton_defaults():
     assert template["model"]["temporal_pool"] == {"name": "mean"}
     assert template["train"]["monitor"] == "val/video_auc"
     assert template["train"]["mode"] == "max"
+    assert template["train"]["precision"] == "auto"
     assert template["eval"]["metrics"] == ["auc", "eer", "tpr@fpr=0.01", "ece", "brier"]
 
 
@@ -114,7 +115,9 @@ def test_validate_checks_components(run, tmp_path):
     assert "backbones: unknown key 'nonexistent-backbone'" in result.err
 
 
-def test_validate_ok(run, tmp_path, monkeypatch):
+def _stand_in_components(monkeypatch):
+    """Stand-ins for the experiment's torch components (so no torch is needed), and the real
+    metrics (numpy only), as the only installed plugin."""
     from dfwb.core import plugins
 
     def register(api):
@@ -128,6 +131,8 @@ def test_validate_ok(run, tmp_path, monkeypatch):
             ("transforms", "color-jitter"),
         ]:
             getattr(api, reg).add(key, target=t, summary="test")
+        for name in ("auc", "eer", "tpr", "fpr", "ece", "brier", "nll"):
+            api.metrics.add(name, target=f"dfwb.eval.metrics:{name}", summary="test")
 
     class EP:
         name, value, group, dist = "t", "t:register", "dfwb.plugins", None
@@ -138,11 +143,41 @@ def test_validate_ok(run, tmp_path, monkeypatch):
     monkeypatch.setattr(
         plugins, "_entry_points", lambda group: [EP()] if group == "dfwb.plugins" else []
     )
+
+
+def test_validate_ok(run, tmp_path, monkeypatch):
+    _stand_in_components(monkeypatch)
     exp = _experiment(tmp_path)
     result = run("config", "validate", "-c", str(exp))
     assert result.code == 0, result.err
     assert result.out.startswith(f"ok: {exp} (dfwb.train/1, fingerprint ")
     assert json.loads(run("config", "validate", "-c", str(exp), "--json").out)["valid"] is True
+
+
+def test_validate_checks_the_eval_section_and_precision(run, tmp_path, monkeypatch):
+    # typos here used to pass validation and only fail after a whole training epoch
+    _stand_in_components(monkeypatch)
+    exp = _experiment(tmp_path)
+    result = run(
+        "config",
+        "validate",
+        "-c",
+        str(exp),
+        "eval.metrics=[auc, eerr, tpr@fpt=0.01]",
+        "eval.aggregate=mean-prb",
+    )
+    assert result.code == 2, result.err
+    assert "eval.metrics[1]: " in result.err
+    assert "did you mean 'eer'" in result.err
+    assert "eval.metrics[2]: " in result.err
+    assert "did you mean 'fpr'" in result.err
+    assert "eval.aggregate: " in result.err
+    assert "did you mean 'mean-prob'" in result.err
+
+    typo = run("config", "validate", "-c", str(exp), "train.precision=bf16-mixd")
+    assert typo.code == 2
+    assert "train.precision: 'bf16-mixd' is not one of" in typo.err
+    assert "(did you mean 'bf16-mixed'" in typo.err
 
 
 def test_init_writes_a_valid_starter(run, tmp_path):

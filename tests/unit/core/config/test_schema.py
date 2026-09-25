@@ -51,7 +51,7 @@ def test_errors_name_exact_paths_with_suggestions(experiment):
     data["train"]["max_epoch"] = 3
     data["data"]["clip"]["sampling"] = "unifrom"
     data["data"]["train"][0]["split"] = "trian"
-    del data["train"]["precision"]
+    del data["train"]["devices"]
     with pytest.raises(ConfigError) as info:
         validate_config(data, source="exp.yaml")
     lines = info.value.message.splitlines()
@@ -64,7 +64,7 @@ def test_errors_name_exact_paths_with_suggestions(experiment):
         "  data.train[0].split: 'trian' is not one of ['train', 'val', 'test'] "
         "(did you mean 'train'?)" in lines
     )
-    assert "  train.precision: required key is missing" in lines
+    assert "  train.devices: required key is missing" in lines
     assert "  train.max_epoch: unknown key (did you mean 'max_epochs'?)" in lines
     assert info.value.hint == "see `dfwb schema export c2` for every key and type"
 

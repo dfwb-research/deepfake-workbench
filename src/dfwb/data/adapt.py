@@ -65,10 +65,10 @@ def compatible_profiles(
     spec: InputSpec, candidates: Iterable[ProcessingProfile]
 ) -> list[ProcessingProfile]:
     """Every one of ``candidates`` that could actually serve ``spec``: same crop kind, and (when
-    ``spec.crop_scale`` is set) at least that scale. Used both by :func:`adapt` (to name a
-    compatible profile when it must refuse) and by callers choosing a profile before ``adapt`` is
-    even called (:mod:`dfwb.score.harness`), so the one rule of what "compatible" means lives
-    here rather than being copied."""
+    ``spec.crop_scale`` is set) at least that scale. Used by :func:`adapt` (to name a compatible
+    profile, and the shipped profiles that would serve, when it must refuse) and by callers
+    choosing a profile before ``adapt`` is even called (:mod:`dfwb.score.harness`), so the one
+    rule of what "compatible" means lives here rather than being copied."""
     return [
         candidate
         for candidate in candidates
@@ -94,27 +94,45 @@ def _refuse(
     profile: ProcessingProfile,
     problem: str,
     candidates: Sequence[ProcessingProfile],
+    shipped: Sequence[ProcessingProfile],
 ) -> ContractError:
     compatible = _find_compatible(spec, candidates)
+    serving = sorted({candidate.id for candidate in compatible_profiles(spec, shipped)})
+    shipped_text = (
+        f"; built-in profiles that would serve it: {', '.join(serving)}" if serving else ""
+    )
     if compatible is not None:
         message = (
-            f"{problem}; profile {compatible.profile_id()!r} (id {compatible.id!r}) is compatible"
+            f"{problem}; profile {compatible.profile_id()!r} (id {compatible.id!r}) is "
+            f"compatible{shipped_text}"
         )
         hint = f"process this data with profile {compatible.id!r}, or point at its store instead"
+    elif serving:
+        message = f"{problem}; no processed store provides {_requirement_text(spec)}{shipped_text}"
+        hint = (
+            f"process this data with one of them, e.g. `dfwb preprocess run <dataset> "
+            f"--profile {serving[0]}`, and set data.processing to it"
+        )
     else:
         message = f"{problem}; no available profile provides {_requirement_text(spec)}"
         hint = "run `dfwb preprocess profiles` to see what is available"
     return ContractError(message, hint=hint)
 
 
-def _step(transform: ClipTransform) -> Callable[[Tensor], Tensor]:
+# Every step of a chain is a module-level class or function, never a closure: a DataLoader whose
+# workers are started by spawn or forkserver (the default start method on Python 3.14) pickles
+# the dataset, this chain included, into every worker, and a local function cannot be pickled.
+
+
+class _Step:
     """A registered clip transform, called without a generator (the adaptation chain is never
     random), narrowed to the plain ``Tensor -> Tensor`` shape :class:`AdaptResult.chain` needs."""
 
-    def _call(clip: Tensor) -> Tensor:
-        return transform(clip)
+    def __init__(self, transform: ClipTransform) -> None:
+        self.transform = transform
 
-    return _call
+    def __call__(self, clip: Tensor) -> Tensor:
+        return self.transform(clip)
 
 
 def _channel_flip(clip: Tensor) -> Tensor:
@@ -122,14 +140,15 @@ def _channel_flip(clip: Tensor) -> Tensor:
     return clip.flip(dims=(1,))
 
 
-def _value_range(lo: float, hi: float) -> Callable[[Tensor], Tensor]:
+class _ValueRange:
     """``x * (hi - lo) + lo``, mapping a clip already in ``[0, 1]`` into ``[lo, hi]``."""
-    scale = hi - lo
 
-    def _apply(clip: Tensor) -> Tensor:
-        return clip * scale + lo
+    def __init__(self, lo: float, hi: float) -> None:
+        self.lo = lo
+        self.scale = hi - lo
 
-    return _apply
+    def __call__(self, clip: Tensor) -> Tensor:
+        return clip * self.scale + self.lo
 
 
 class _Chain:
@@ -151,6 +170,7 @@ def adapt(
     *,
     allow_mismatch: bool = False,
     candidates: Iterable[ProcessingProfile] = (),
+    shipped: Iterable[ProcessingProfile] = (),
 ) -> AdaptResult:
     """Build the deterministic chain that turns a store's clips into ``spec``'s own shape.
 
@@ -172,7 +192,10 @@ def adapt(
     A refusal's ``ContractError`` names the best of ``candidates`` that could actually serve
     ``spec`` (its :meth:`~dfwb.core.records.local.ProcessingProfile.profile_id`, plus its shipped
     ``id`` slug), or, when none of ``candidates`` is compatible, states the requirement itself
-    (crop kind, minimum scale, size) and points at ``dfwb preprocess profiles``.
+    (crop kind, minimum scale, size) and points at ``dfwb preprocess profiles``. It also lists
+    every one of ``shipped`` -- the profiles the installed framework ships, which a caller that
+    may import the face pipeline passes in -- that would serve ``spec`` once data is processed
+    with it.
 
     With ``allow_mismatch=True``, both refusals instead proceed: ``AdaptResult.mismatch`` is
     ``True``, ``reason`` explains which one (the same wording the ``ContractError`` would have
@@ -183,6 +206,7 @@ def adapt(
             ``allow_mismatch`` is ``False``.
     """
     candidate_list = list(candidates)
+    shipped_list = list(shipped)
     store_kind = crop_kind(profile)
 
     mismatch = False
@@ -197,7 +221,7 @@ def adapt(
             f"is a {store_kind} crop"
         )
         if not allow_mismatch:
-            raise _refuse(spec, profile, problem, candidate_list)
+            raise _refuse(spec, profile, problem, candidate_list, shipped_list)
         mismatch = True
         reason = problem
     elif spec.crop_scale is not None and spec.crop_scale != profile.crop.scale:
@@ -207,27 +231,27 @@ def adapt(
                 f"{profile.profile_id()!r} only has scale {profile.crop.scale}"
             )
             if not allow_mismatch:
-                raise _refuse(spec, profile, problem, candidate_list)
+                raise _refuse(spec, profile, problem, candidate_list, shipped_list)
             mismatch = True
             reason = problem
         else:
             derived_px = round(profile.crop.size * spec.crop_scale / profile.crop.scale)
-            steps.append(_step(CenterCrop(size=derived_px)))
+            steps.append(_Step(CenterCrop(size=derived_px)))
             derived_crop = True
             current_size = derived_px
 
     if spec.size != (current_size, current_size):
-        steps.append(_step(Resize(size=spec.size)))
+        steps.append(_Step(Resize(size=spec.size)))
 
     if spec.color == "bgr":
         steps.append(_channel_flip)
 
     lo, hi = spec.value_range
     if (lo, hi) != (0.0, 1.0):
-        steps.append(_value_range(lo, hi))
+        steps.append(_ValueRange(lo, hi))
 
     if spec.mean is not None and spec.std is not None:
-        steps.append(_step(Normalize(mean=spec.mean, std=spec.std)))
+        steps.append(_Step(Normalize(mean=spec.mean, std=spec.std)))
 
     return AdaptResult(
         chain=_Chain(steps), derived_crop=derived_crop, mismatch=mismatch, reason=reason

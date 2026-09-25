@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 import click
 
 from dfwb.cli._output import emit_json, json_option
 
 _TRAIN_MODULES = ("torch", "lightning")
+
+
+def _shipped_profiles() -> list[Any]:
+    """Every processing profile dfwb ships, for a refusal to name those that would serve the
+    detector (the train layer never imports the face pipeline that owns them)."""
+    from dfwb.preprocess.face.profiles import builtin_profiles, load_profile
+
+    return [load_profile(name) for name in builtin_profiles()]
 
 
 def _require_train_extra() -> None:
@@ -76,11 +85,22 @@ def train(
     from dfwb.train.run import resume_run, run_experiment
 
     loaded = load_config(config_path, overrides) if config_path is not None else None
+    shipped = _shipped_profiles()
     if resume is not None:
-        results = [resume_run(resume, config=loaded, device=device, progress=not as_json)]
+        results = [
+            resume_run(
+                resume,
+                config=loaded,
+                device=device,
+                progress=not as_json,
+                shipped_profiles=shipped,
+            )
+        ]
     else:
         assert loaded is not None
-        results = run_experiment(loaded, device=device, progress=not as_json)
+        results = run_experiment(
+            loaded, device=device, progress=not as_json, shipped_profiles=shipped
+        )
 
     if as_json:
         emit_json([result.to_json() for result in results])

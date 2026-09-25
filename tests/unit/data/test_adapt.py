@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,39 @@ def test_refusal_names_the_best_of_several_compatible_candidates():
         adapt(spec, profile, candidates=[too_small, bigger_than_needed, just_right])
 
     assert just_right.profile_id() in str(excinfo.value)
+
+
+def test_refusal_lists_the_shipped_profiles_that_would_serve_the_spec():
+    profile = _profile(id="store-face", scale=1.3, size=100)
+    shipped = [
+        _profile(id="shipped-full", backend="center", scale=1.0, size=64),
+        _profile(id="shipped-face", scale=1.3, size=256),
+        _profile(id="shipped-full-2", backend="center", scale=1.0, size=128),
+    ]
+    spec = _spec(crop="full-frame", crop_scale=None)
+
+    with pytest.raises(ContractError) as excinfo:
+        adapt(spec, profile, shipped=shipped)
+
+    exc = excinfo.value
+    assert "built-in profiles that would serve it: shipped-full, shipped-full-2" in exc.message
+    assert "shipped-face" not in exc.message
+    assert "--profile shipped-full" in exc.hint
+
+
+def test_a_local_compatible_store_is_named_before_the_shipped_profiles():
+    profile = _profile(id="store-face", scale=1.3, size=100)
+    local = _profile(id="wide-face", scale=2.0, size=100)
+    shipped = [_profile(id="shipped-wide", scale=2.5, size=256)]
+    spec = _spec(crop_scale=2.0)
+
+    with pytest.raises(ContractError) as excinfo:
+        adapt(spec, profile, candidates=[local], shipped=shipped)
+
+    message = excinfo.value.message
+    assert local.profile_id() in message
+    assert "built-in profiles that would serve it: shipped-wide" in message
+    assert repr(local.id) in excinfo.value.hint
 
 
 # --------------------------------------------------------------------------------- allow_mismatch
@@ -332,6 +366,30 @@ def test_chain_is_deterministic_and_has_no_randomness():
     result = adapt(spec, profile)
     clip = torch.rand(1, 3, 100, 100)
     torch.testing.assert_close(result.chain(clip), result.chain(clip))
+
+
+def test_the_chain_pickles_so_loader_workers_can_receive_it():
+    # a DataLoader started by spawn or forkserver (the default on Python 3.14) sends its dataset,
+    # adaptation chain included, to every worker pickled.
+    from multiprocessing.reduction import ForkingPickler
+
+    import torch.multiprocessing  # registers torch's tensor reductions with ForkingPickler
+
+    profile = _profile(scale=1.3, size=100)
+    spec = _spec(
+        crop_scale=1.2,
+        size=(64, 64),
+        color="bgr",
+        value_range=(-1.0, 1.0),
+        mean=(0.1, 0.2, 0.3),
+        std=(0.5, 0.6, 0.7),
+    )
+    chain = adapt(spec, profile).chain
+    clip = torch.rand(2, 3, 100, 100)
+
+    for dumps in (pickle.dumps, ForkingPickler.dumps):
+        restored = pickle.loads(dumps(chain))
+        torch.testing.assert_close(restored(clip), chain(clip))
 
 
 # ------------------------------------------------------------------------------ available_profiles

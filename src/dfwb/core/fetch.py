@@ -84,6 +84,7 @@ def fetch(
                 hint=_network_hint(destination),
             ) from None
         except urllib.error.HTTPError as exc:
+            exc.close()  # it holds the server's open response; the message needs only the status
             raise InstallationError(
                 f"{url}: download failed ({exc.code} {exc.reason})",
                 hint=_network_hint(destination),

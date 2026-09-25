@@ -10,8 +10,9 @@ says it has.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor, nn
@@ -85,6 +86,21 @@ class Backbone(nn.Module):  # type: ignore[misc, unused-ignore]  # Any without t
         """The submodule LoRA adapters are injected into, or ``None`` when this backbone has no
         LoRA support."""
         return None
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        """JSON-safe data a checkpoint keeps so :meth:`from_checkpoint` can rebuild this
+        backbone's exact architecture without fetching anything. Most backbones rebuild from
+        their config parameters alone and keep nothing here."""
+        return {}
+
+    @classmethod
+    def from_checkpoint(cls, params: Mapping[str, Any], state: Mapping[str, Any]) -> Self:
+        """Rebuild the architecture a checkpoint was saved from, before its weights are loaded
+        into it: ``params`` are the saved config parameters (``pretrained`` already switched off,
+        since the weights come from the checkpoint), ``state`` what :meth:`checkpoint_state`
+        returned at save time. Never downloads anything; override it when rebuilding from
+        ``params`` alone would (as a hub model's config would be)."""
+        return cls(**params)
 
     def apply_freeze(self, freeze: FreezeSpec) -> None:
         """Set ``requires_grad`` on this backbone's own parameters; never touches other modules."""

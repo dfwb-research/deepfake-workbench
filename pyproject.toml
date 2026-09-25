@@ -35,7 +35,7 @@ eval             = ["scipy>=1.11", "matplotlib>=3.8", "pyarrow>=14"]
 preprocess       = ["opencv-python-headless>=4.9", "av>=12"]
 face-insightface = ["deepfake-workbench[preprocess]", "onnxruntime>=1.17"]
 face-mediapipe   = ["deepfake-workbench[preprocess]", "mediapipe>=0.10"]
-train            = ["torch>=2.6", "torchvision>=0.21", "lightning>=2.4", "timm>=1.0", "safetensors>=0.4"]
+train            = ["torch>=2.6", "torchvision>=0.21", "lightning>=2.4", "timm>=1.0", "safetensors>=0.4", "pillow>=10.1"]
 hf               = ["deepfake-workbench[train]", "transformers>=4.45"]
 peft             = ["deepfake-workbench[train]", "peft>=0.12"]
 wandb            = ["wandb>=0.17"]
@@ -141,6 +141,8 @@ module = [
   "wandb.*",
   "huggingface_hub",
   "huggingface_hub.*",
+  "PIL",
+  "PIL.*",
 ]
 ignore_missing_imports = true
 
@@ -180,6 +182,11 @@ markers = [
 ]
 xfail_strict = true
 pythonpath = ["."]
+filterwarnings = [
+  # Lightning's own pytree helper calls a torch API torch has deprecated; nothing here can change
+  # it, and it repeats on every training step. Matched by its message, so no other warning hides.
+  'ignore:`isinstance\(treespec, LeafSpec\)` is deprecated:FutureWarning',
+]
 
 [tool.coverage.run]
 source = ["dfwb"]

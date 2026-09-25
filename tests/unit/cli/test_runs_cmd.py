@@ -67,6 +67,17 @@ def test_runs_list_table(run, tmp_path):
     assert run("runs", "list").code == 0
 
 
+def test_runs_list_root_lists_runs_written_under_another_output_root(run, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    run_dir = fake_run(elsewhere, "custom", "20260104-000000", 3, FP_B, latest=True)
+    assert json.loads(run("runs", "list", "--json").out) == []  # not under the runs root
+    rows = json.loads(run("runs", "list", "--root", str(elsewhere), "--json").out)
+    assert [(row["name"], row["path"]) for row in rows] == [("custom", str(run_dir))]
+    table = run("runs", "list", "--root", "elsewhere")
+    assert table.code == 0
+    assert table.out.splitlines()[1].split()[:2] == ["custom", f"{run_dir.name}*"]
+
+
 def test_runs_list_with_no_runs(run, tmp_path):
     result = run("runs", "list")
     assert result.code == 0

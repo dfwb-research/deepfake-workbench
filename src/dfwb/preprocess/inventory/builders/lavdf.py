@@ -51,7 +51,7 @@ from dfwb.preprocess.inventory.base import (
     has_videos,
     scan_videos,
 )
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["LAVDFBuilder"]
 
@@ -205,8 +205,8 @@ class LAVDFBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set drawn from the official test: up to 100 "
-            "fakes per category, balanced with as many reals (real video with fake audio "
-            "counting as real)",
+            f"fakes per category, {BENCHMARK_REALS} (real video with fake audio counting as "
+            "real)",
         ),
     }
     default_scheme = "official"

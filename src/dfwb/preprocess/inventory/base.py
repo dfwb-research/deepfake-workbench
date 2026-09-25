@@ -149,7 +149,7 @@ class SchemeSpec:
         rule: The generic rule: ``official`` (the publisher's split),
             ``official+ident-80-20`` (the official test plus an identity-disjoint 80/20
             train/val carve), ``ident-72-14-14`` (an identity-disjoint carve),
-            ``all-test`` (every video is test) or ``benchmark`` (a seeded, balanced test subset).
+            ``all-test`` (every video is test) or ``benchmark`` (a seeded test subset).
         kind: ``official``, ``derived`` or ``subset`` (the scheme card's kind).
         params: Rule parameters, e.g. ``{"policy": "test-only-official"}``.
         source: Where the official split comes from, when there is one.

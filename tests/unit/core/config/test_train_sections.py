@@ -65,6 +65,23 @@ def test_new_keys_have_defaults():
     assert (train.nan_tolerance, train.heartbeat_steps) == (3, 50)
     assert train.loggers == ["csv", "tensorboard"]
     assert train.lightning == {}
+    assert train.callbacks == []
+
+
+def test_precision_defaults_to_auto():
+    data = copy.deepcopy(BASE)
+    del data["train"]["precision"]
+    config = validate_config(data, source="exp.yaml")
+    assert isinstance(config, TrainConfig)
+    assert config.train.precision == "auto"
+
+
+def test_precision_is_one_of_the_supported_settings():
+    (line,) = _problems(_config(train={"precision": "bf16-mixd"}))
+    assert line == (
+        "  train.precision: 'bf16-mixd' is not one of "
+        "['auto', '32-true', 'bf16-mixed', '16-mixed'] (did you mean 'bf16-mixed' or '16-mixed'?)"
+    )
 
 
 # ------------------------------------------------------------------------------ model.input
@@ -114,6 +131,19 @@ def test_balance_is_one_of_three_modes():
     assert lines == ["  data.loader.balance: 'x' is not one of ['none', 'video-label', 'source']"]
     typo = {"batch_size": 4, "num_workers": 0, "balance": "video-labl"}
     assert "(did you mean 'video-label'?)" in _problems(_config(data={"loader": typo}))[0]
+
+
+def test_a_source_weight_defaults_to_one_and_must_be_positive():
+    config = validate_config(BASE, source="exp.yaml")
+    assert isinstance(config, TrainConfig)
+    assert config.data.train[0].weight == 1.0
+    weighted = [{"protocol": "toyfake/official", "split": "train", "weight": 2.5}]
+    config = validate_config(_config(data={"train": weighted}), source="exp.yaml")
+    assert isinstance(config, TrainConfig)
+    assert config.data.train[0].weight == 2.5
+    zero = [{"protocol": "toyfake/official", "split": "train", "weight": 0}]
+    (line,) = _problems(_config(data={"train": zero}))
+    assert line.startswith("  data.train[0].weight: ")
 
 
 def test_pairs_and_allow_input_mismatch_are_booleans():

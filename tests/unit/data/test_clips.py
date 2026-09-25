@@ -7,6 +7,7 @@ never by calling :func:`clip_windows` itself and trusting its own answer.
 
 from __future__ import annotations
 
+import itertools
 import random
 
 import pytest
@@ -92,14 +93,6 @@ def test_uniform_splits_ct_positions_into_c_clips_of_t_in_order():
     assert windows[1] == all_positions[8:]
 
 
-def test_uniform_is_identical_whichever_mode_uses_the_same_count():
-    spec = ClipSpec(frames=4, sampling="uniform", clips_per_video=ClipsPerVideo(train=5, eval=5))
-    n = 37
-    assert clip_windows(n, spec, train=True, rng=None) == clip_windows(
-        n, spec, train=False, rng=None
-    )
-
-
 def test_uniform_never_needs_padding_even_for_a_short_video():
     spec = ClipSpec(frames=8, sampling="uniform", clips_per_video=ClipsPerVideo(train=1, eval=1))
     windows = clip_windows_padded(3, spec, train=False, rng=None)
@@ -109,11 +102,70 @@ def test_uniform_never_needs_padding_even_for_a_short_video():
     assert max(positions) <= 2
 
 
-def test_uniform_train_never_needs_an_rng():
+def test_uniform_eval_never_needs_an_rng():
     spec = ClipSpec(frames=1, sampling="uniform", clips_per_video=ClipsPerVideo(train=4, eval=4))
-    # no ValueError, even though train=True and rng=None: uniform is rng-free.
-    windows = clip_windows(10, spec, train=True, rng=None)
+    windows = clip_windows(10, spec, train=False, rng=None)
     assert len(windows) == 4
+
+
+def _segments(n: int, count: int) -> list[range]:
+    """The stored-frame positions segment k of ``count`` equal segments covers, hand-computed:
+    from floor(k * n / count) up to, not including, floor((k + 1) * n / count) -- at least one."""
+    bounds = [k * n // count for k in range(count + 1)]
+    return [range(lo, max(hi, lo + 1)) for lo, hi in itertools.pairwise(bounds)]
+
+
+def test_uniform_train_draws_one_position_inside_each_segment():
+    spec = ClipSpec(frames=4, sampling="uniform", clips_per_video=ClipsPerVideo(train=2, eval=2))
+    n = 37
+    segments = _segments(n, 8)
+    for seed in range(20):
+        windows = clip_windows(n, spec, train=True, rng=random.Random(seed))
+        positions = [p for window in windows for p in window]
+        assert len(positions) == 8
+        assert all(p in segment for p, segment in zip(positions, segments, strict=True))
+
+
+def test_uniform_train_positions_change_from_epoch_to_epoch():
+    # the dataset seeds each train draw by (seed, epoch, index): a new epoch, new positions
+    spec = ClipSpec(frames=8, sampling="uniform", clips_per_video=ClipsPerVideo(train=1, eval=4))
+    draws = {
+        epoch: clip_windows(64, spec, train=True, rng=random.Random(f"0:{epoch}:5"))
+        for epoch in range(4)
+    }
+    assert len({tuple(window[0]) for window in draws.values()}) == 4
+    assert draws[0] != clip_windows(64, spec, train=False, rng=None)[:1]
+
+
+def test_uniform_train_positions_are_reproducible_for_one_seed_and_epoch():
+    spec = ClipSpec(frames=4, sampling="uniform", clips_per_video=ClipsPerVideo(train=3, eval=3))
+    first = clip_windows(50, spec, train=True, rng=random.Random("7:2:11"))
+    again = clip_windows(50, spec, train=True, rng=random.Random("7:2:11"))
+    assert first == again
+
+
+def test_uniform_train_uses_every_stored_frame_when_c_times_t_equals_the_frame_count():
+    # 32 of 32: one frame per segment, so an epoch trains on every stored frame of every video,
+    # the thesis's 32-frames-all regime, whatever the seed
+    spec = ClipSpec(frames=1, sampling="uniform", clips_per_video=ClipsPerVideo(train=32, eval=32))
+    for seed in range(5):
+        windows = clip_windows(32, spec, train=True, rng=random.Random(seed))
+        assert [w[0] for w in windows] == list(range(32))
+
+
+def test_uniform_train_on_a_video_shorter_than_its_positions_stays_in_range_unpadded():
+    spec = ClipSpec(frames=8, sampling="uniform", clips_per_video=ClipsPerVideo(train=1, eval=1))
+    for seed in range(10):
+        ((positions, padded),) = clip_windows_padded(3, spec, train=True, rng=random.Random(seed))
+        assert padded is False
+        assert positions == sorted(positions)
+        assert all(0 <= p <= 2 for p in positions)
+
+
+def test_uniform_train_needs_an_rng():
+    spec = ClipSpec(frames=1, sampling="uniform", clips_per_video=ClipsPerVideo(train=4, eval=4))
+    with pytest.raises(ValueError, match="rng"):
+        clip_windows(10, spec, train=True, rng=None)
 
 
 # ------------------------------------------------------------------------------------ consecutive

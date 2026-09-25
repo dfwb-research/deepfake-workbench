@@ -25,7 +25,7 @@ from typing import Final
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["DFDCBuilder"]
 
@@ -102,7 +102,7 @@ class DFDCBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 1,000 fakes drawn at random from "
-            "the official test, balanced with as many reals",
+            f"the official test, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official"
@@ -112,7 +112,7 @@ class DFDCBuilder(BaseBuilder):
         "aliases": ["Deepfake Detection Challenge"],
         "release": "the public test set of the Deepfake Detection Challenge: 5,000 videos of "
         "paid actors, half of them manipulated",
-        "homepage": "https://ai.facebook.com/datasets/dfdc",
+        "homepage": "https://ai.meta.com/datasets/dfdc/",
         "license": {
             "spdx": None,
             "summary": "the DFDC dataset terms of use: non-commercial research only",

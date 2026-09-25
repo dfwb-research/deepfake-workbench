@@ -11,7 +11,7 @@ Biases logging are all optional extras, installed only when you need them.
 | `face-insightface` | The `insightface` face-detection backend, on top of `preprocess` (`onnxruntime`) |
 | `face-mediapipe` | The `mediapipe` face-detection backend, on top of `preprocess` (`mediapipe`) |
 | `eval` | Bootstrap confidence intervals and plots (`scipy`, `matplotlib`) |
-| `train` | The training stack: `torch`, `torchvision`, `lightning`, `timm`, `safetensors` |
+| `train` | The training stack: `torch`, `torchvision`, `lightning`, `timm`, `safetensors`, `pillow` |
 | `hf` | Hugging Face backbones on top of `train` (`transformers`) |
 | `peft` | Parameter-efficient fine-tuning on top of `train` (`peft`) |
 | `wandb` | Weights & Biases logging (`wandb`) |

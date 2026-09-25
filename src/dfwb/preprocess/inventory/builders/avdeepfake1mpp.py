@@ -66,7 +66,7 @@ from dfwb.preprocess.inventory.base import (
     has_videos,
     validate_compressions,
 )
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["AVDeepfake1MPPBuilder"]
 
@@ -261,8 +261,8 @@ class AVDeepfake1MPPBuilder(BaseBuilder):
             "subset",
             rationale="a small, seeded evaluation set drawn from every video (there is no "
             "official test): up to 100 fakes per task, so the few diff2lip fakes are never "
-            "crowded out by Talklip, balanced with as many reals (real video with fake audio "
-            "counting as real)",
+            f"crowded out by Talklip, {BENCHMARK_REALS} (real video with fake audio counting as "
+            "real)",
         ),
     }
     default_scheme = "official"

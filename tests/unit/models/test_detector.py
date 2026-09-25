@@ -12,7 +12,7 @@ from torch import nn
 
 from dfwb.core.config.schema import ComponentSpec, ModelSection
 from dfwb.core.detector import DETECTOR_CONTRACT_VERSION, ClipBatch, DetectorMeta, InputSpec
-from dfwb.core.errors import ContractError
+from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.plugins import api
 from dfwb.models.backbone import Backbone, BackboneOutput
 from dfwb.models.backbones.tiny_cnn import TinyCNN
@@ -249,3 +249,78 @@ def test_video_backbone_skips_the_pool_and_has_no_frame_scores():
     prediction = detector.predict(batch)
     assert prediction.frame_scores is None
     assert prediction.score.shape == (2,)
+
+
+@pytest.mark.usefixtures("_fake_stem_layer")
+def test_a_stem_in_front_of_a_video_backbone_is_a_config_error_at_build():
+    # a video backbone sees whole clips and never runs the per-frame stem, so a configured stem
+    # would silently do nothing while its parameters still trained
+    api.backbones.add(
+        "fake-video",
+        target="tests.unit.models._fake_layers:FakeVideoBackbone",
+        summary="fake video backbone for assembly tests",
+    )
+    cfg = ModelSection(
+        backbone=ComponentSpec(name="fake-video"),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="linear"),
+        stem=ComponentSpec(name="fake-stem-hook"),
+    )
+    with pytest.raises(ConfigError, match=r"model\.stem") as caught:
+        build_detector(cfg)
+    assert "video" in caught.value.message
+
+
+class _FlattenBackbone(Backbone):
+    """An image backbone with no autocast-eligible op: its features are its input, flattened, so
+    they stay float32 under autocast and only the head's precision is left to test."""
+
+    kind = "image"
+    out_dim = 12
+    native_input = InputSpec(size=(2, 2), value_range=(0.0, 1.0), mean=None, std=None)
+
+    def forward(self, x: torch.Tensor) -> BackboneOutput:
+        return BackboneOutput(pooled=x.flatten(1), tokens=None)
+
+    def param_groups(self) -> dict[str, list[nn.Parameter]]:
+        return {}
+
+
+def test_scores_keep_full_precision_under_bf16_autocast():
+    from dfwb.models.pools import MeanPool
+
+    torch.manual_seed(0)
+    detector = AssembledDetector(
+        backbone=_FlattenBackbone(),
+        stem=None,
+        pool=MeanPool(dim=12),
+        head=LinearHead(dim=12),
+        meta=DetectorMeta(
+            name="flatten-mean-linear",
+            version="0",
+            contract_version=DETECTOR_CONTRACT_VERSION,
+            input=_FlattenBackbone.native_input,
+            license="MIT",
+            weights_license=None,
+            citation=None,
+            source=None,
+        ),
+    )
+    batch = _batch(64, 2, size=2)
+    reference = detector.forward(batch)
+    reference_frames = detector.predict(batch).frame_scores
+    assert len(set(reference.score.tolist())) == 64  # distinct logits, distinct scores
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        trained = detector.forward(batch)
+        scored = detector.predict(batch)
+
+    for out in (trained, scored):
+        assert out.score.dtype == torch.float32
+        assert out.logit is not None
+        assert out.logit.dtype == torch.float32
+        assert len(set(out.score.tolist())) == 64
+        torch.testing.assert_close(out.score, reference.score, rtol=0, atol=1e-6)
+    assert scored.frame_scores is not None
+    assert scored.frame_scores.dtype == torch.float32
+    torch.testing.assert_close(scored.frame_scores, reference_frames, rtol=0, atol=1e-6)

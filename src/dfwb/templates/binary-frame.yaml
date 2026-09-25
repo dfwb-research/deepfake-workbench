@@ -26,7 +26,7 @@ optim: {name: adamw, lr: 1.0e-4, weight_decay: 0.05, groups: {backbone: {lr_scal
 schedule: {name: cosine, warmup_epochs: 1}
 train:
   max_epochs: 10
-  precision: bf16-mixed
+  precision: auto                   # per device: bf16-mixed or 16-mixed on a GPU, else 32-true
   devices: 1
   monitor: val/video_auc
   mode: max

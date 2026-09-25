@@ -48,3 +48,23 @@ class NoOutChannels(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self.conv(x)
+
+
+class FakeVideoBackbone(nn.Module):
+    """A stand-in ``kind="video"`` backbone for assembly checks: sees ``[B,T,C,H,W]`` whole."""
+
+    kind = "video"
+    out_dim = 6
+
+    def __init__(self) -> None:
+        super().__init__()
+        from dfwb.core.detector import InputSpec
+
+        self.native_input = InputSpec(size=(8, 8), frames=4, value_range=(0.0, 1.0))
+        self.proj = nn.Linear(3 * 8 * 8 * 4, 6)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.proj(x.reshape(x.shape[0], -1))
+
+    def param_groups(self) -> dict[str, list[nn.Parameter]]:
+        return {"proj": list(self.proj.parameters())}

@@ -30,12 +30,12 @@ from contextlib import contextmanager
 
 import torch
 from torch import Tensor
-from torchvision.io import decode_jpeg, encode_jpeg
 from torchvision.transforms import v2
 
 from dfwb.core.config.schema import ComponentSpec
 from dfwb.core.errors import ConfigError, DFWBError, Loc, format_loc
 from dfwb.core.plugins import get_registry
+from dfwb.data._images import jpeg_round_trip
 from dfwb.data.dataset import ClipTransform
 
 __all__ = [
@@ -195,7 +195,7 @@ class GaussianNoise:
 
 
 class Jpeg:
-    """Round-trips the clip through JPEG (``encode_jpeg``/``decode_jpeg``), at one quality per
+    """Round-trips the clip through JPEG (encoded and decoded with Pillow), at one quality per
     clip: a fixed ``quality``, or one drawn uniformly from the closed range ``quality`` gives."""
 
     def __init__(self, quality: int | tuple[int, int]) -> None:
@@ -214,8 +214,7 @@ class Jpeg:
     def __call__(self, clip: Tensor, *, generator: torch.Generator | None = None) -> Tensor:
         quality = self._quality(generator)
         frames = [(frame * 255.0).round().clamp(0, 255).to(torch.uint8) for frame in clip]
-        encoded = encode_jpeg(frames, quality=quality)
-        decoded = decode_jpeg(encoded)
+        decoded = jpeg_round_trip(frames, quality)
         return torch.stack(decoded).to(torch.float32) / 255.0
 
 

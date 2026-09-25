@@ -8,6 +8,7 @@ its items.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -139,6 +140,38 @@ def test_png_decode_matches_cv2_imread_converted_to_rgb(tmp_path):
     torch.testing.assert_close(sample.clip[0], expected)
 
 
+@pytest.mark.parametrize("shape", [(32, 32, 3), (7, 13, 3), (64, 48, 3)])
+def test_png_decoding_is_pixel_identical_to_torchvisions_decoder(tmp_path, shape):
+    # stored frames used to be read with torchvision's (now deprecated) decode_png; Pillow must
+    # give exactly the same pixels back
+    io = pytest.importorskip("torchvision.io")
+    if not hasattr(io, "decode_png"):
+        pytest.skip("this torchvision no longer has its own PNG decoder to compare with")
+    video_dir = tmp_path / "v"
+    video_dir.mkdir()
+    image = np.random.default_rng(sum(shape)).integers(0, 256, size=shape, dtype=np.uint8)
+    frame_path = video_dir / "frame_000000.png"
+    cv2.imwrite(str(frame_path), image)
+    item = VideoItem(0, "toy", "v", None, 0, "L", "M", video_dir, [0])
+    spec = ClipSpec(frames=1, sampling="uniform", clips_per_video=ClipsPerVideo(train=1, eval=1))
+
+    sample = ClipDataset(_video_index([item]), spec, train=False, seed=0)[0]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        expected = io.decode_png(io.read_file(str(frame_path)))
+    assert torch.equal(sample.clip[0], expected.to(torch.float32) / 255.0)
+
+
+def test_decoding_a_clip_raises_no_deprecation_warning(tmp_path):
+    item = _video_item(tmp_path / "v", n_frames=3)
+    spec = ClipSpec(frames=2, sampling="uniform", clips_per_video=ClipsPerVideo(train=1, eval=1))
+    dataset = ClipDataset(_video_index([item]), spec, train=False, seed=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        dataset[0]
+
+
 def test_frame_indices_are_source_frame_numbers_not_positions(tmp_path):
     # non-contiguous, so a position and its stored frame number never coincide by accident.
     source_numbers = [10, 15, 20, 25, 30]
@@ -267,6 +300,22 @@ def test_num_workers_does_not_change_train_windows(tmp_path):
     assert _collect(0) == _collect(2)
 
 
+def test_uniform_train_frames_change_each_epoch_and_eval_frames_never_do(tmp_path):
+    items = [_video_item(tmp_path / "a", key="a", n_frames=32)]
+    index = _video_index(items)
+    spec = ClipSpec(frames=4, sampling="uniform", clips_per_video=ClipsPerVideo(train=1, eval=1))
+
+    def _frames(train: bool, epoch: int) -> list[int]:
+        dataset = ClipDataset(index, spec, train=train, seed=3)
+        dataset.set_epoch(epoch)
+        return dataset[0].frame_indices
+
+    train_draws = {tuple(_frames(True, epoch)) for epoch in range(5)}
+    assert len(train_draws) > 1
+    assert all(len(set(draw)) == 4 for draw in train_draws)
+    assert len({tuple(_frames(False, epoch)) for epoch in range(5)}) == 1
+
+
 def test_dataloader_num_workers_zero_and_two_agree_in_eval_mode_too(tmp_path):
     items = [
         _video_item(tmp_path / "a", key="a", n_frames=10),
@@ -324,6 +373,107 @@ def test_set_epoch_reaches_persistent_workers(tmp_path, context):
         reference = ClipDataset(index, spec, train=True, seed=seed)
         reference.set_epoch(epoch)
         assert [reference[i].frame_indices for i in range(len(reference))] == expected_windows
+
+
+def _adapted_train_dataset(tmp_path: Path) -> ClipDataset:
+    """A train dataset with every kind of transform and every adaptation step, so each one of
+    them has to cross a process boundary when a loader starts its workers."""
+    from dfwb.core.config.schema import ComponentSpec
+    from dfwb.core.detector import InputSpec
+    from dfwb.core.records.local import (
+        BackendSpec,
+        CropSpec,
+        DecodeSpec,
+        ExtrasSpec,
+        ProcessingProfile,
+        SamplingSpec,
+        TrackSpec,
+    )
+    from dfwb.data.adapt import adapt
+    from dfwb.data.transforms import build_transforms
+
+    rng = np.random.default_rng(0)
+    items = []
+    for v in range(3):
+        video_dir = tmp_path / f"v{v}"
+        video_dir.mkdir()
+        for number in range(6):
+            image = rng.integers(0, 256, size=(16, 16, 3), dtype=np.uint8)
+            cv2.imwrite(str(video_dir / f"frame_{number:06d}.png"), image)
+        items.append(
+            VideoItem(
+                source=0,
+                dataset="toy",
+                key=f"v{v}",
+                compression=None,
+                label=v % 2,
+                label_key="L",
+                method="M",
+                video_dir=video_dir,
+                frame_indices=list(range(6)),
+            )
+        )
+    profile = ProcessingProfile(
+        id="toy-face",
+        backend=BackendSpec(name="insightface"),
+        track=TrackSpec(iou=0.5, strategy="greedy"),
+        crop=CropSpec(scale=1.3, size=16, square=True, align="none"),
+        sampling=SamplingSpec(mode="uniform", frames=6),
+        decode=DecodeSpec(library="opencv", color="rgb"),
+        extras=ExtrasSpec(landmarks=False, mesh=False, masks=False),
+    )
+    spec = InputSpec(
+        crop_scale=1.2,
+        size=(12, 12),
+        color="bgr",
+        value_range=(-1.0, 1.0),
+        mean=(0.1, 0.2, 0.3),
+        std=(0.5, 0.6, 0.7),
+    )
+    transform = build_transforms(
+        [
+            ComponentSpec(name="hflip", p=0.5),
+            ComponentSpec(name="random-resized-crop", size=16, scale=(0.5, 1.0)),
+            ComponentSpec(name="color-jitter", brightness=0.2, hue=0.05),
+            ComponentSpec(name="grayscale", p=0.2),
+            ComponentSpec(name="gaussian-blur", kernel_size=3),
+            ComponentSpec(name="gaussian-noise", std=0.02),
+            ComponentSpec(name="jpeg", quality=(30, 90)),
+        ]
+    )
+    clip_spec = ClipSpec(
+        frames=2, sampling="uniform", clips_per_video=ClipsPerVideo(train=2, eval=1)
+    )
+    return ClipDataset(
+        _video_index(items),
+        clip_spec,
+        train=True,
+        transform=transform,
+        adapt_chain=adapt(spec, profile).chain,
+        seed=3,
+    )
+
+
+@pytest.mark.parametrize("context", ["forkserver", "spawn"])
+def test_an_adapted_dataset_loads_in_forkserver_and_spawn_workers(tmp_path, context):
+    # spawn and forkserver (the default start method on Python 3.14) pickle the dataset into
+    # every worker: the transforms and the adaptation chain have to survive that, and the batches
+    # have to come out exactly as a loader without workers makes them.
+    from dfwb.data.collate import collate_clips
+
+    dataset = _adapted_train_dataset(tmp_path)
+
+    def _batches(**options: object) -> list[torch.Tensor]:
+        loader = DataLoader(dataset, batch_size=2, collate_fn=collate_clips, **options)
+        return [batch.clips for batch in loader]
+
+    expected = _batches(num_workers=0)
+    got = _batches(num_workers=2, multiprocessing_context=context)
+
+    assert len(got) == len(expected) == 3
+    for mine, theirs in zip(got, expected, strict=True):
+        assert mine.shape == (2, 2, 3, 12, 12)
+        torch.testing.assert_close(mine, theirs)
 
 
 # -------------------------------------------------------------------------- transform / adapt

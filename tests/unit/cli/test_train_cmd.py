@@ -120,6 +120,21 @@ def test_train_refuses_a_dim_the_framework_supplies(run, toy, monkeypatch):
     assert "unexpected" not in result.err
 
 
+def test_an_input_the_store_cannot_serve_names_the_built_in_profiles_that_can(run, toy):
+    # the toy store is a face crop; a full-frame detector needs a store without face detection
+    model = {
+        "backbone": {"name": "tiny-cnn"},
+        "temporal_pool": {"name": "mean"},
+        "head": {"name": "linear"},
+        "input": {"crop": "full-frame", "crop_scale": None},
+    }
+    path = write_toy_config(toy, toy_config(model=model))
+    result = run("train", "-c", str(path))
+    assert result.code == 4, result.err
+    assert "built-in profiles that would serve it: toy-64-center-8f" in result.err
+    assert "--profile toy-64-center-8f" in result.err
+
+
 def test_json_output_stays_json_whatever_the_passthrough_says(run, toy):
     # the progress bar and the model summary print to stdout, which --json keeps for the results
     lightning = {"enable_progress_bar": True, "enable_model_summary": True}

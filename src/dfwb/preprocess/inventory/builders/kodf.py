@@ -31,7 +31,7 @@ from typing import Final
 
 from dfwb.core.records import InventoryRecord
 from dfwb.preprocess.inventory.base import BaseBuilder, LabelSpec, SchemeSpec, TaskSpec
-from dfwb.protocols.rules import BenchmarkSpec, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, local_key
 
 __all__ = ["KoDFBuilder"]
 
@@ -100,7 +100,7 @@ class KoDFBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 2 fakes per target actor and method, "
-            "drawn from the whole dataset and balanced with as many reals",
+            f"drawn from the whole dataset, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "ident-72-14-14"

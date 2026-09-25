@@ -48,7 +48,7 @@ from dfwb.preprocess.inventory.base import (
     TaskSpec,
     expand_compressions,
 )
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.rules import BENCHMARK_REALS, BenchmarkSpec, Split, local_key
 
 __all__ = ["WildDeepfakeBuilder"]
 
@@ -151,7 +151,7 @@ class WildDeepfakeBuilder(BaseBuilder):
             "benchmark",
             "subset",
             rationale="a small, seeded evaluation set: up to 100 fakes drawn at random from the "
-            "official test, balanced with as many reals",
+            f"official test, {BENCHMARK_REALS}",
         ),
     }
     default_scheme = "official+ident-80-20"

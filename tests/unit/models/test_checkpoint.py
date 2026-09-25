@@ -64,6 +64,21 @@ def test_checkpoint_directory_holds_only_safetensors_and_json(tmp_path):
     assert names == ["detector.json", "model.safetensors"]
 
 
+def test_a_backbone_without_checkpoint_state_still_saves(tmp_path):
+    # a plugin backbone need not subclass Backbone: one without checkpoint_state() has nothing
+    # extra to record, and saving must not fail after its first epoch
+    cfg = _model_cfg()
+    detector = build_detector(cfg)
+    assert hasattr(type(detector.backbone), "checkpoint_state")
+    plain = type("PlainBackbone", (torch.nn.Module,), {})()
+    for name in ("kind", "out_dim", "native_input"):
+        setattr(plain, name, getattr(detector.backbone, name))
+    detector.backbone = plain
+    checkpoint.save(tmp_path, detector, cfg)
+    payload = json.loads((tmp_path / "detector.json").read_text("utf-8"))
+    assert payload["backbone_state"] == {}
+
+
 def test_checkpoint_round_trip_gives_identical_outputs(tmp_path):
     torch.manual_seed(0)
     cfg = _model_cfg()
@@ -199,3 +214,130 @@ def test_lora_checkpoint_round_trip(tmp_path):
     assert torch.allclose(before.score, after.score, atol=1e-5)
     lora_keys = [k for k in restored.state_dict() if "lora" in k]
     assert lora_keys
+
+
+# --------------------------------------------------------------------- what a checkpoint keeps
+
+
+def test_load_restores_the_saved_meta_rather_than_regenerating_it(tmp_path):
+    import dataclasses
+
+    cfg = _model_cfg()
+    detector = build_detector(cfg, source="run:abc")
+    detector.meta = dataclasses.replace(
+        detector.meta,
+        name="my-detector",
+        version="0.0.7",
+        license="Apache-2.0",
+        weights_license="CC-BY-4.0",
+        training_data=("toyfake-pack:toyfake/official@0.1.0",),
+    )
+    checkpoint.save(tmp_path, detector, cfg)
+    restored = checkpoint.load(tmp_path)
+    assert restored.meta == detector.meta
+
+
+def test_a_provider_below_one_is_checked_on_major_and_minor(tmp_path):
+    # before 1.0 a minor release may break things, so 0.x checkpoints are matched on 0.x
+    from dfwb import __version__
+
+    cfg = _model_cfg()
+    checkpoint.save(tmp_path, build_detector(cfg), cfg)
+    meta_path = tmp_path / "detector.json"
+    payload = json.loads(meta_path.read_text())
+    major, minor = __version__.split(".")[:2]
+    assert major == "0"
+
+    def _record(version: str) -> None:
+        for component in payload["components"]:
+            if component["provider"] == "dfwb":
+                component["version"] = version
+        meta_path.write_text(json.dumps(payload))
+
+    _record(f"0.{int(minor) + 1}.0")
+    with pytest.raises(InstallationError, match=rf"0\.{int(minor) + 1}") as caught:
+        checkpoint.load(tmp_path)
+    assert f'pip install "deepfake-workbench==0.{int(minor) + 1}.*"' in caught.value.hint
+
+    _record(f"0.{minor}.99")
+    checkpoint.load(tmp_path)  # the same 0.x: loads
+
+
+# ------------------------------------------------------------------ loading never downloads
+
+
+def _refuse_pretrained(monkeypatch: pytest.MonkeyPatch, module: object, name: str) -> None:
+    original = getattr(module, name)
+
+    def _guard(*args: object, **kwargs: object) -> object:
+        if kwargs.get("pretrained"):
+            raise AssertionError(f"{name}(pretrained=True) while loading a checkpoint")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, _guard)
+
+
+def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DFWB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+
+def test_loading_a_timm_checkpoint_never_fetches_pretrained_weights(tmp_path, monkeypatch):
+    timm = pytest.importorskip("timm")
+    built = ModelSection(
+        backbone=ComponentSpec(name="timm", model="test_vit", pretrained=False),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="linear"),
+    )
+    # what the run's config said: the weights it started from were downloaded
+    saved = built.model_copy(
+        update={"backbone": ComponentSpec(name="timm", model="test_vit", pretrained=True)}
+    )
+    detector = build_detector(built)
+    detector.eval()
+    batch = _batch(2, 1, size=detector.meta.input.size[0])
+    before = detector.predict(batch)
+    checkpoint.save(tmp_path, detector, saved)
+
+    _refuse_pretrained(monkeypatch, timm, "create_model")
+    _offline(monkeypatch)
+    restored = checkpoint.load(tmp_path)
+    torch.testing.assert_close(restored.predict(batch).score, before.score)
+
+
+@pytest.mark.parametrize("kind", ["vit", "clip"])
+def test_loading_an_hf_checkpoint_never_touches_the_hub(tmp_path, monkeypatch, kind):
+    pytest.importorskip("transformers")
+    import shutil
+
+    import transformers
+    from tests.unit.models.test_hf_vision import _save_clip, _save_vit
+
+    model_dir = (_save_vit if kind == "vit" else _save_clip)(tmp_path)
+    built = ModelSection(
+        backbone=ComponentSpec(name="hf-vision", model=str(model_dir), pretrained=False),
+        temporal_pool=ComponentSpec(name="mean"),
+        head=ComponentSpec(name="linear"),
+    )
+    saved = built.model_copy(
+        update={
+            "backbone": ComponentSpec(name="hf-vision", model="some-org/not-here", pretrained=True)
+        }
+    )
+    detector = build_detector(built)
+    detector.eval()
+    batch = _batch(2, 1, size=detector.meta.input.size[0])
+    before = detector.predict(batch)
+    out = tmp_path / "ckpt"
+    checkpoint.save(out, detector, saved)
+    shutil.rmtree(model_dir)  # nothing left to read the model from but the checkpoint
+
+    def _no_hub(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the hub (or a model directory) was read while loading a checkpoint")
+
+    for name in ("AutoModel", "AutoConfig", "AutoImageProcessor"):
+        monkeypatch.setattr(getattr(transformers, name), "from_pretrained", _no_hub)
+    _offline(monkeypatch)
+    restored = checkpoint.load(out)
+    torch.testing.assert_close(restored.predict(batch).score, before.score)
+    assert restored.meta == detector.meta

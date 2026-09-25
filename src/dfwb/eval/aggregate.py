@@ -8,15 +8,16 @@ parsed with the same ``name@k=v`` syntax as a metric spec.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
-from dfwb.core.errors import ConfigError, did_you_mean
-from dfwb.eval.metrics import parse_metric_spec, validate_scores
+from dfwb.core.errors import ConfigError, DFWBError, did_you_mean
+from dfwb.eval.metrics import check_metric_spec, parse_metric_spec, validate_scores
 
-__all__ = ["aggregate"]
+__all__ = ["aggregate", "check_eval_config", "check_mode"]
 
 FloatArray = NDArray[np.float64]
 
@@ -55,6 +56,64 @@ _MODES: dict[str, tuple[Callable[..., float], frozenset[str], bool]] = {
 }
 
 
+def _parse_mode(mode: str) -> tuple[str, dict[str, Any]]:
+    name, params = parse_metric_spec(mode)
+    if name not in _MODES:
+        raise ConfigError(
+            f"aggregate: unknown mode {name!r}{did_you_mean(name, _MODES)}",
+            hint="modes: " + ", ".join(sorted(_MODES)),
+        )
+    allowed = _MODES[name][1]
+    for param_name in params:
+        if param_name not in allowed:
+            raise ConfigError(
+                f"aggregate/{name}: {param_name}: unknown parameter"
+                f"{did_you_mean(param_name, allowed)}",
+                hint="accepted parameters: " + (", ".join(sorted(allowed)) or "none"),
+            )
+    return name, params
+
+
+def check_mode(mode: str) -> None:
+    """Check an aggregation mode without aggregating anything (see :func:`aggregate`).
+
+    Raises:
+        ConfigError: The mode is unknown, or given a parameter it does not accept.
+    """
+    _parse_mode(mode)
+
+
+def check_eval_config(metrics: Sequence[str], aggregate_mode: str) -> None:
+    """Check a training config's ``eval:`` section -- every metric spec and the aggregation mode
+    -- before anything is trained or scored, so a typo costs nothing.
+
+    Raises:
+        ConfigError: One line per problem, each at its config path (``eval.metrics[1]: ...``,
+            ``eval.aggregate: ...``).
+    """
+    problems: list[tuple[str, DFWBError]] = []
+    for index, spec in enumerate(metrics):
+        try:
+            check_metric_spec(spec)
+        except DFWBError as exc:
+            problems.append((f"eval.metrics[{index}]", exc))
+    try:
+        check_mode(aggregate_mode)
+    except DFWBError as exc:
+        problems.append(("eval.aggregate", exc))
+    if not problems:
+        return
+    lines = [f"  {where}: {spec_problem.message}" for where, spec_problem in problems]
+    hints = {spec_problem.hint for _, spec_problem in problems}
+    raise ConfigError(
+        f"{len(lines)} invalid eval value(s)\n" + "\n".join(lines),
+        hint=hints.pop()
+        if len(hints) == 1
+        else "`dfwb plugins list` shows every metric; aggregation modes: "
+        + ", ".join(sorted(_MODES)),
+    )
+
+
 def aggregate[K: Hashable](frame_rows: Iterable[tuple[K, float]], mode: str) -> dict[K, float]:
     """Reduce ``(video_key, frame_score)`` rows to one score per key, by ``mode``.
 
@@ -79,20 +138,8 @@ def aggregate[K: Hashable](frame_rows: Iterable[tuple[K, float]], mode: str) -> 
         ContractError: a frame score is not finite, or (for a mode that requires it) not in
             ``[0, 1]``.
     """
-    name, params = parse_metric_spec(mode)
-    if name not in _MODES:
-        raise ConfigError(
-            f"aggregate: unknown mode {name!r}{did_you_mean(name, _MODES)}",
-            hint="modes: " + ", ".join(sorted(_MODES)),
-        )
-    fn, allowed, bounded = _MODES[name]
-    for param_name in params:
-        if param_name not in allowed:
-            raise ConfigError(
-                f"aggregate/{name}: {param_name}: unknown parameter"
-                f"{did_you_mean(param_name, allowed)}",
-                hint="accepted parameters: " + (", ".join(sorted(allowed)) or "none"),
-            )
+    name, params = _parse_mode(mode)
+    fn, _, bounded = _MODES[name]
     groups: dict[K, list[float]] = {}
     for key, score in frame_rows:
         groups.setdefault(key, []).append(float(score))
