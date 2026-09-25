@@ -67,7 +67,7 @@ def test_find_env_file(tmp_path):
     assert find_env_file(tmp_path, {}) is None
     write(tmp_path, "A=1\n")
     assert find_env_file(tmp_path, {}) == tmp_path / ".env"
-    other = tmp_path / "hades.env"
+    other = tmp_path / "gpu-node-1.env"
     other.write_text("A=2\n")
     assert find_env_file(tmp_path, {"DFWB_ENV_FILE": str(other)}) == other
     with pytest.raises(ConfigError, match="DFWB_ENV_FILE"):

@@ -50,15 +50,18 @@ small number of general families:
   the parts the publisher actually released (a dataset that only ships an official test set has
   no official train or validation split).
 - **an official test plus a derived train/validation carve** — the publisher's official test set
-  is kept as is, and an identity-disjoint train/validation split is carved from the rest (or, for
-  some datasets, from everything) using a seeded, deterministic rule, so no identity crosses
-  between splits.
+  is kept as is, and an identity-disjoint train/validation split is carved, using a seeded,
+  deterministic rule so no identity crosses between splits, either from every other video or,
+  for a dataset whose publisher also lists a train split, from that train split alone.
 - **a fully derived, identity-disjoint split** — used when a dataset has no official split at
   all: every video's identity decides its split, by the same seeded, deterministic rule.
 - **all-test** — every video is test. Useful for evaluating a detector on a dataset it was never
   trained on.
 - **benchmark** — a small, seeded, class-balanced subset of a dataset's test videos, for a fast
-  comparison across datasets rather than an exhaustive evaluation.
+  comparison across datasets rather than an exhaustive evaluation. A benchmark can be defined at
+  given compressions, recorded in its scheme card's parameters, so it is the same subset
+  whichever other compressions a local copy holds: the FaceForensics++ and DeepFakeDetection
+  benchmarks are defined at c23.
 
 A scheme may also be published as a *recipe* rather than a list of keys: its rule, the rule's
 parameters, and the sha256 hash the resulting split rows must match, but no key list. This lets a

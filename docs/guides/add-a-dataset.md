@@ -117,7 +117,9 @@ it is what keeps `self.copies` correct when a builder is used directly, outside 
   one exists, and only use an `official` scheme when you do.
 - **`pair_candidates(self, fake)`** — given a fake `InventoryRecord`, return the real local id (or
   ids) it could pair with. The default returns `None` (no pairing). Used by pack building to
-  record which real each fake was generated from.
+  record which real each fake was generated from, but only when the builder also sets the class
+  attribute `pairing_rule`, the name every pair records (e.g. `pairing_rule = "target-id"`); with
+  the default, `None`, nothing is paired.
 - **`describe_layout(self)`** — human-readable text for `dfwb datasets info`. The default builds
   it from the task table; override it only if the layout is not "one folder per task".
 
