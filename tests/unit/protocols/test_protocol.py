@@ -294,3 +294,24 @@ def test_list_protocols_marks_default_and_broken(fixture_packs):
     assert len(broken_rows) == 1
     assert broken_rows[0].pack == "broken"
     assert "schema_version" in (broken_rows[0].broken or "")
+
+
+def test_a_broken_dataset_card_is_one_broken_row_not_a_failure(fixture_packs):
+    # One bad dataset.yaml never hides the other datasets of its pack, nor other packs.
+    roots = fixture_packs(
+        {"toyone-pack": {"toyone": {}}, "mixed": {"good": {}, "bad": {}}},
+        builders={"toyone-pack": {"toyone": write_toyone_dataset}},
+    )
+    (roots["mixed"] / "bad" / "dataset.yaml").write_text("id: [\n")
+
+    rows = list_protocols()
+
+    healthy = {(r.pack, r.dataset_id, r.scheme) for r in rows if r.broken is None}
+    assert ("toyone-pack", "toyone", "official") in healthy
+    assert ("mixed", "good", "official") in healthy
+    (broken,) = [r for r in rows if r.broken is not None]
+    assert (broken.pack, broken.dataset_id, broken.scheme) == ("mixed", "bad", "")
+    assert broken.version == "1.0.0"
+    assert "invalid YAML" in (broken.broken or "")
+    assert load("toyone").dataset == "toyone"
+    assert load("good").dataset == "good"

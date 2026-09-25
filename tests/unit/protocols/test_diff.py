@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ from dfwb.core.records import (
     PackProvenance,
     SplitRow,
     VideoRecord,
+    read_jsonl,
+    write_jsonl,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
 from dfwb.protocols._yaml import read_labels
@@ -156,18 +159,103 @@ def _write_pack(
 # -------------------------------------------------------------------------------------------
 
 
-def test_identical_packs_require_a_patch_bump(tmp_path):
+def test_identical_packs_require_no_bump(tmp_path):
+    # Only the version differs: nothing a release would carry has changed.
     old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
     new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
 
     result = diff_packs(old, new)
 
-    assert result.required_bump == "patch"
+    assert result.required_bump == "none"
     assert result.labels_changed == []
+    assert result.relabelled == []
     scheme_rows = [
         (s.dataset, s.scheme, s.status, s.added, s.removed, s.moved) for s in result.schemes
     ]
     assert scheme_rows == [(DATASET_ID, "official", "same", 0, 0, 0)]
+
+
+@pytest.mark.parametrize(
+    ("name", "old_text", "new_text"),
+    [
+        ("NOTICE.md", "Synthetic fixture", "A reworded synthetic fixture"),
+        ("dataset.yaml", "release: '1'", "release: '1 (re-mastered)'"),
+    ],
+)
+def test_a_hash_stable_text_change_requires_a_patch_bump(tmp_path, name, old_text, new_text):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    path = new / DATASET_ID / name
+    text = path.read_text()
+    assert old_text in text
+    path.write_text(text.replace(old_text, new_text))
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "patch"
+    assert [s.status for s in result.schemes] == ["same"]
+
+
+def test_a_pack_card_change_other_than_the_version_requires_a_patch_bump(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    card = yaml.safe_load((new / "pack.yaml").read_text())
+    card["name"] = "renamed-pack"
+    (new / "pack.yaml").write_text(yaml.safe_dump(card))
+
+    assert diff_packs(old, new).required_bump == "patch"
+
+
+def _relabel(pack: Path, key: str, **changes: str) -> None:
+    videos = [
+        dataclasses.replace(v, **changes) if v.key == key else v
+        for v in read_jsonl(pack / DATASET_ID / "videos.jsonl.gz", VideoRecord)
+    ]
+    write_jsonl(pack / DATASET_ID / "videos.jsonl.gz", videos)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"label_key": "DIFFDS-REAL"}, {"method": "FakeB"}],
+    ids=["label_key", "method"],
+)
+def test_a_relabelled_video_requires_a_major_bump(tmp_path, changes):
+    # Every scheme and label mapping is unchanged; only one video's label or method moved.
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    _relabel(new, "FAKE/f2", **changes)
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "major"
+    assert result.relabelled == [f"{DATASET_ID}/FAKE/f2|"]
+    assert [s.status for s in result.schemes] == ["same"]
+    assert result.labels_changed == []
+
+
+def test_relabelled_videos_are_joined_on_key_and_compression(tmp_path):
+    extra = [
+        VideoRecord("FAKE/f9", "c23", "DIFFDS-FAKE", "FakeA"),
+        VideoRecord("FAKE/f9", "c40", "DIFFDS-FAKE", "FakeA"),
+    ]
+    old = _write_pack(
+        tmp_path / "old", "pack", "1.0.0", _official_only(), extra_videos={DATASET_ID: extra}
+    )
+    new = _write_pack(
+        tmp_path / "new", "pack", "1.0.1", _official_only(), extra_videos={DATASET_ID: extra}
+    )
+    videos = [
+        dataclasses.replace(v, method="FakeB")
+        if (v.key, v.compression) == ("FAKE/f9", "c40")
+        else v
+        for v in read_jsonl(new / DATASET_ID / "videos.jsonl.gz", VideoRecord)
+    ]
+    write_jsonl(new / DATASET_ID / "videos.jsonl.gz", videos)
+
+    result = diff_packs(old, new)
+
+    assert result.relabelled == [f"{DATASET_ID}/FAKE/f9|c40"]
+    assert result.required_bump == "major"
 
 
 def test_added_scheme_requires_a_minor_bump(tmp_path):

@@ -50,13 +50,17 @@ def list_(as_json: bool) -> None:
         train, val, test = (counts.get(s, "-") for s in ("train", "val", "test"))
         table_rows.append([name, r.pack, r.version, r.kind, train, val, test])
     for r in broken:
-        table_rows.append([f"({r.pack})", r.pack, "-", "BROKEN", "-", "-", "-"])
+        name = r.dataset_id or f"({r.pack})"
+        table_rows.append([name, r.pack, r.version or "-", "BROKEN", "-", "-", "-"])
     if table_rows:
         click.echo(table(headers, table_rows))
     else:
         click.echo("no protocol packs installed")
     for r in broken:
-        click.echo(f"warning: pack {r.pack!r} is broken: {r.broken}", err=True)
+        what = (
+            f"dataset {r.dataset_id!r} of pack {r.pack!r}" if r.dataset_id else f"pack {r.pack!r}"
+        )
+        click.echo(f"warning: {what} is broken: {r.broken}", err=True)
 
 
 @protocols.command("info")
@@ -351,25 +355,30 @@ def _scheme_diff_row(scheme_diff: Any) -> dict[str, Any]:
     }
 
 
+# How many relabelled videos a diff names (the count is always given in full).
+_RELABELLED_SHOWN = 20
+
+
 @protocols.command("diff")
 @click.argument("old", type=click.Path(path_type=Path, file_okay=False, exists=True))
 @click.argument("new", type=click.Path(path_type=Path, file_okay=False, exists=True))
 @click.option(
     "--expect-bump",
     "expect_bump",
-    type=click.Choice(["major", "minor", "patch"]),
+    type=click.Choice(["major", "minor", "patch", "none"]),
     default=None,
-    help="Fail unless the version change between the two pack.yaml files is at least the bump "
-    "these changes require.",
+    help="The bump you claim for this release. Fails unless it is at least the bump these "
+    "changes require ('none' when nothing but the version changed).",
 )
 @json_option
 def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
     """Compare two protocol pack directories and report the SemVer bump the changes require.
 
-    With ``--expect-bump``, also compares that requirement against the actual version change
-    between ``OLD/pack.yaml`` and ``NEW/pack.yaml`` (a plain SemVer component comparison, nothing
-    to do with the value passed to the option itself) and exits 4 when the actual change is
-    smaller than what the changes require -- the check a release pipeline runs before publishing.
+    With ``--expect-bump``, the value is the bump the pack author claims for the release: the
+    command exits 4, naming both, when that claim is smaller than the bump the changes require --
+    the check a release pipeline runs before publishing. An unchanged pack requires ``none``,
+    which any claim covers. It also reads both ``pack.yaml`` versions and reports their change;
+    a malformed version, or one that goes down, exits 4.
     """
     from dfwb.core.records import PackCard
     from dfwb.protocols._yaml import read_model
@@ -383,17 +392,21 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         old_card = read_model(old / "pack.yaml", PackCard)
         new_card = read_model(new / "pack.yaml", PackCard)
         actual_bump = version_bump(old_card.version, new_card.version)
-        if bump_rank(actual_bump) < bump_rank(result.required_bump):
+        if bump_rank(expect_bump) < bump_rank(result.required_bump):
             exit_code = 4
 
+    relabelled = result.relabelled[:_RELABELLED_SHOWN]
     if as_json:
         payload: dict[str, Any] = {
             "schemes": [_scheme_diff_row(s) for s in result.schemes],
             "labels_changed": result.labels_changed,
             "labels_added": result.labels_added,
+            "relabelled": relabelled,
+            "relabelled_count": len(result.relabelled),
             "required_bump": result.required_bump,
         }
-        if actual_bump is not None:
+        if expect_bump is not None:
+            payload["expected_bump"] = expect_bump
             payload["actual_bump"] = actual_bump
         emit_json(payload)
         return exit_code
@@ -404,12 +417,18 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         click.echo("labels changed: " + ", ".join(result.labels_changed))
     if result.labels_added:
         click.echo("labels added: " + ", ".join(result.labels_added))
+    if result.relabelled:
+        shown = "" if len(relabelled) == len(result.relabelled) else f" (first {len(relabelled)})"
+        click.echo(f"videos relabelled: {len(result.relabelled)}{shown}")
+        for key in relabelled:
+            click.echo(f"  {key}")
     click.echo(f"required bump: {result.required_bump}")
-    if actual_bump is not None:
-        click.echo(f"actual bump (pack.yaml version change): {actual_bump}")
+    if expect_bump is not None:
+        click.echo(f"expected bump: {expect_bump}")
+        click.echo(f"pack.yaml version change: {actual_bump}")
         if exit_code:
             click.echo(
-                f"error: the version change is only a {actual_bump!r} bump, but these changes "
+                f"error: --expect-bump {expect_bump!r} does not cover these changes, which "
                 f"require {result.required_bump!r}",
                 err=True,
             )

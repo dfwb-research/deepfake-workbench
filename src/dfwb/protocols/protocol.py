@@ -379,9 +379,12 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
 
 
 def list_protocols() -> list[ProtocolInfo]:
-    """One row per scheme per dataset per healthy pack, plus one row per broken pack.
+    """One row per scheme per dataset per healthy pack, plus one row per broken pack or dataset.
 
-    ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read.
+    ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read. A pack
+    that cannot be read gives one row with an empty ``dataset_id``; a dataset whose card cannot
+    be read gives one row with its ``dataset_id`` and an empty ``scheme``. Either way ``broken``
+    holds the reason, and every other pack and dataset is still listed.
     """
     rows: list[ProtocolInfo] = []
     for pack in installed_packs():
@@ -390,7 +393,15 @@ def list_protocols() -> list[ProtocolInfo]:
             continue
         assert pack.card is not None  # invariant: card is None only when error is set
         for dataset_id in pack.card.datasets:
-            card = read_card(pack.dataset_dir(dataset_id))
+            try:
+                card = read_card(pack.dataset_dir(dataset_id))
+            except ContractError as exc:
+                rows.append(
+                    ProtocolInfo(
+                        dataset_id, "", pack.name, pack.version, "", False, None, exc.message
+                    )
+                )
+                continue
             for scheme_name, scheme_card in card.schemes.items():
                 rows.append(
                     ProtocolInfo(

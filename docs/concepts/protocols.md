@@ -102,7 +102,7 @@ exception:
 | 0 | Success | Full coverage on `verify`; no error-level issues on `lint`; a matching hash on `materialize`. |
 | 2 | Usage or configuration problem | An invalid protocol reference; `--split` names a split the scheme does not have; no local inventory to verify against. |
 | 3 | Partial coverage | `verify`: at least one requested split is missing a video. |
-| 4 | Contract or data mismatch | `verify`: a video's label or method disagrees with the pack; `lint`: at least one error-level issue; `materialize`: the rebuilt split does not hash to the published value; `diff --expect-bump`: the pack's actual version change is smaller than what the differences between the two packs require. |
+| 4 | Contract or data mismatch | `verify`: a video's label or method disagrees with the pack; `lint`: at least one error-level issue; `materialize`: the rebuilt split does not hash to the published value; `diff --expect-bump`: the bump claimed is smaller than what the differences between the two packs require (an unchanged pack requires none). |
 | 5 | A needed optional dependency is missing | Commands that need the `preprocess` extra for media probing (e.g. `dfwb inventory build --probe`) when it is not installed. |
 
 Every error prints an `error:` line describing what went wrong and a `hint:` line describing the
