@@ -105,6 +105,16 @@ class PairedClipDataset(Dataset[ClipSample]):
     def __len__(self) -> int:
         return len(self._real) + len(self._fake)
 
+    def pair_groups(self) -> list[list[int]]:
+        """The dataset indices of each surviving pair, in pair order: that pair's real rows, then
+        its fake rows. A batch sampler that keeps a pair together keeps one of these together."""
+        n_real = len(self._real)
+        size = self._clips_per_pair
+        return [
+            [*range(p * size, (p + 1) * size), *range(n_real + p * size, n_real + (p + 1) * size)]
+            for p in range(n_real // size if size else 0)
+        ]
+
     def __getitem__(self, i: int) -> ClipSample:
         if not 0 <= i < len(self):
             raise IndexError(i)

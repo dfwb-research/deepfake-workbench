@@ -18,7 +18,7 @@ import itertools
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
 from torch import Tensor
@@ -28,6 +28,9 @@ from torchvision.io import decode_png, read_file
 from dfwb.core.errors import ConfigError
 from dfwb.data.clips import ClipSpec, clip_windows_padded
 from dfwb.data.index import VideoIndex
+
+if TYPE_CHECKING:
+    from dfwb.data.paired import PairedClipDataset
 
 __all__ = ["ClipDataset", "ClipSample", "ClipTransform", "MultiSource"]
 
@@ -154,9 +157,14 @@ class ClipDataset(Dataset[ClipSample]):
 
 class MultiSource(Dataset[ClipSample]):
     """Concatenates several :class:`ClipDataset` sources, tagging every sample with the index of
-    the dataset (its position in ``datasets``) it came from, in ``extras["dfwb/source_id"]``."""
+    the dataset (its position in ``datasets``) it came from, in ``extras["dfwb/source_id"]``.
 
-    def __init__(self, datasets: Sequence[ClipDataset], weights: Sequence[float]) -> None:
+    A source may also be a :class:`~dfwb.data.paired.PairedClipDataset` (one per training source
+    when a run trains on real/fake pairs): it is concatenated exactly the same way."""
+
+    def __init__(
+        self, datasets: Sequence[ClipDataset | PairedClipDataset], weights: Sequence[float]
+    ) -> None:
         datasets = list(datasets)
         weights = list(weights)
         if len(weights) != len(datasets):

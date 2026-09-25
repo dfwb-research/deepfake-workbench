@@ -12,7 +12,17 @@ mistaken for a side effect of importing dfwb. They are required dependencies of 
 (``dfwb.data``, ``dfwb.models``, ``dfwb.train``, ``dfwb.score``, ``dfwb.zoo``), which import them
 at module level by design, not as a side effect. Those layers are only walked here when torch
 happens to be installed, so this test still runs (and still proves the torch-free layers are
-silent) in an environment without it. What it does *not* check is whether torch is *absent* from
+silent) in an environment without it.
+
+Lightning, when installed, is pre-imported for the same reason: it is the training layer's own
+required dependency (``dfwb.train`` subclasses its classes at module level), and importing it
+registers warning filters and, when ``rich`` is installed, imports ``rich`` for its progress bar.
+Those are Lightning's own import-time effects, so the heavy-module check counts only what
+importing dfwb itself adds on top of what was already loaded before the walk. Lightning's metrics
+dependency also imports matplotlib when it is installed, and matplotlib keeps a config directory
+and font cache; the subprocess points those outside the home directory being watched, and
+matplotlib joins the heavy-module check instead, so a dfwb module that imported it would still be
+caught by the torch-free walk. What it does *not* check is whether torch is *absent* from
 the torch-free layers (``dfwb.core``, ``dfwb.protocols``, ``dfwb.eval``, ``dfwb.preprocess``) when
 it is not installed at all: that is ``test_torch_free.py``'s job, which runs those layers' imports
 with torch actively blocked."""
@@ -45,6 +55,11 @@ torch_installed = _torch_installed()
 if torch_installed:
     import torch  # noqa: F401 -- pre-imported for the same reason as numpy above
     import torchvision  # noqa: F401 -- ditto; only ever installed alongside torch
+    if importlib.util.find_spec("lightning") is not None:
+        import lightning.pytorch  # noqa: F401 -- ditto; the training layer's own dependency
+
+HEAVY = ("dotenv", "matplotlib", "rich")
+heavy_before = {m for m in HEAVY if m in sys.modules}
 
 env = dict(os.environ)
 handlers = list(logging.getLogger().handlers)
@@ -62,12 +77,12 @@ print(json.dumps({
     "warning_filters_changed": warnings.filters != filters,
     "files_changed": sorted(os.listdir(".")) != files,
     "plugins_loaded": bool(plugins is not None and plugins._report is not None),
-    "heavy_modules": sorted(m for m in ("dotenv", "rich") if m in sys.modules),
+    "heavy_modules": sorted(m for m in HEAVY if m in sys.modules and m not in heavy_before),
 }))
 """
 
 
-def test_importing_every_module_has_no_side_effects(tmp_path):
+def test_importing_every_module_has_no_side_effects(tmp_path, tmp_path_factory):
     (tmp_path / ".env").write_text("DFWB_CANARY=1\nCUDA_VISIBLE_DEVICES=7\n")
     home = tmp_path / "home"
     home.mkdir()
@@ -76,6 +91,7 @@ def test_importing_every_module_has_no_side_effects(tmp_path):
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(home / ".config"),
         "XDG_CACHE_HOME": str(home / ".cache"),
+        "MPLCONFIGDIR": str(tmp_path_factory.mktemp("mplconfig")),
     }
     env.pop("CUDA_VISIBLE_DEVICES", None)
     done = subprocess.run(

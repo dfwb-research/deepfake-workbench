@@ -1,10 +1,18 @@
-"""A small real ``AssembledDetector`` (``tiny-cnn``) for loss, optimiser and schedule tests.
+"""Fixtures for the train layer's tests.
 
-Built directly from the model classes rather than through ``build_detector``/the registries: these
-tests care about parameter groups and gradients, not config parsing or plugin discovery.
+- :func:`make_detector`: a small real ``AssembledDetector`` (``tiny-cnn``) for loss, optimiser and
+  schedule tests, built directly from the model classes rather than through ``build_detector``/the
+  registries: those tests care about parameter groups and gradients, not config parsing or plugin
+  discovery.
+- ``toy_pack``/``toy_work_root``: the ``toytrain`` protocol pack and processed store from
+  :mod:`tests.unit.train._toy`, for the Lightning module, data module, callback and logger tests.
+  They import it lazily, so the loss/optimiser/schedule tests never need Lightning.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from torch import nn
@@ -48,3 +56,33 @@ def make_detector(
 @pytest.fixture
 def detector() -> AssembledDetector:
     return make_detector()
+
+
+@pytest.fixture
+def deterministic_torch(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Lightning's ``deterministic=True`` switches torch's process-wide deterministic mode on and
+    sets ``CUBLAS_WORKSPACE_CONFIG``; put both back so later tests in this worker see neither."""
+    import torch
+
+    before = torch.are_deterministic_algorithms_enabled()
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    yield
+    torch.use_deterministic_algorithms(before)
+
+
+@pytest.fixture
+def toy_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The ``toytrain`` protocol pack, installed; returns its dataset directory."""
+    from tests.unit.train._toy import install_toytrain_pack
+
+    return install_toytrain_pack(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def toy_work_root(tmp_path: Path, toy_pack: Path, deterministic_torch: None) -> Path:
+    """A work root holding the ``toytrain`` processed store (every video processed)."""
+    from tests.unit.train._toy import write_toy_store
+
+    work_root = tmp_path / "work"
+    write_toy_store(work_root)
+    return work_root
