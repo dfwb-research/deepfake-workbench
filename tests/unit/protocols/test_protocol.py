@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -350,7 +351,10 @@ def test_a_pre_release_pack_version_pins(tmp_path):
     protocol = load("toyfake/official", work_root=tmp_path)
     version = protocol.pack_version
     assert load(f"toyfake/official@{version}", work_root=tmp_path).ref == "toyfake/official"
-    assert load("toyfake/official@0.1.0a2", work_root=tmp_path).pack_version == "0.1.0a2"
-    assert load("toyfake/official@0.1.0-alpha.2", work_root=tmp_path).pack_version == "0.1.0a2"
+    pre = re.fullmatch(r"(\d+\.\d+\.\d+)(a|b|rc)(\d+)", version)
+    assert pre, f"toyfake is expected to carry a pre-release version, got {version}"
+    release, kind, number = pre.groups()
+    spelled = f"{release}-{ {'a': 'alpha', 'b': 'beta', 'rc': 'pre'}[kind] }.{number}"
+    assert load(f"toyfake/official@{spelled}", work_root=tmp_path).pack_version == version
     with pytest.raises(ContractError, match=r"pinned @0\.1\.0a1"):
         load("toyfake/official@0.1.0a1", work_root=tmp_path)
