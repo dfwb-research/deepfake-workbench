@@ -94,7 +94,7 @@ def test_config_and_lookup_commands_run_with_torch_blocked(blocked, tmp_path):
     steps = [
         (["config", "init", "--out", "exp.yaml"], 0),
         (["config", "show", "-c", "exp.yaml"], 0),
-        (["config", "validate", "-c", "exp.yaml"], 2),  # no components are installed
+        (["config", "validate", "-c", "exp.yaml"], 5),  # every component needs torch
         (["plugins", "info", "layers/srm"], 2),  # unknown key, with an install hint
         (["datasets", "info", "nope"], 2),  # no such builder
         (["inventory", "build", "nope"], 2),

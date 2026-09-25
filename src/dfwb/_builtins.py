@@ -180,6 +180,66 @@ def register(api: PluginAPI) -> None:
         summary="Linear, an optional BatchNorm, GELU, Dropout, then a Linear output layer",
         requires=("torch",),
     )
+    api.transforms.add(
+        "resize",
+        target="dfwb.data.transforms:Resize",
+        summary="Resize every frame of the clip to size",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "center-crop",
+        target="dfwb.data.transforms:CenterCrop",
+        summary="Centre-crop every frame of the clip to size",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "random-resized-crop",
+        target="dfwb.data.transforms:RandomResizedCrop",
+        summary="One random crop (scale, ratio) per clip, resized to size, same for every frame",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "hflip",
+        target="dfwb.data.transforms:HorizontalFlip",
+        summary="Flips the whole clip left-right with probability p",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "color-jitter",
+        target="dfwb.data.transforms:ColorJitter",
+        summary="Brightness/contrast/saturation/hue jitter, one draw per clip",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "grayscale",
+        target="dfwb.data.transforms:Grayscale",
+        summary="Converts the whole clip to grayscale with probability p, one decision per clip",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "gaussian-blur",
+        target="dfwb.data.transforms:GaussianBlur",
+        summary="Gaussian blur with a sigma drawn once per clip",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "gaussian-noise",
+        target="dfwb.data.transforms:GaussianNoise",
+        summary="Adds one noise field per clip (std), broadcast to every frame, clamped to [0, 1]",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "jpeg",
+        target="dfwb.data.transforms:Jpeg",
+        summary="Round-trips the clip through JPEG at one quality per clip",
+        requires=("torch", "torchvision"),
+    )
+    api.transforms.add(
+        "normalize",
+        target="dfwb.data.transforms:Normalize",
+        summary="Per-channel (x - mean) / std; for input adaptation, refused inside transforms",
+        requires=("torch", "torchvision"),
+    )
     api.losses.add(
         "bce",
         target="dfwb.train.losses:BCELoss",
