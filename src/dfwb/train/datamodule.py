@@ -47,7 +47,7 @@ from dfwb.data.transforms import build_transforms
 from dfwb.protocols.protocol import Protocol as LoadedProtocol
 from dfwb.protocols.protocol import load
 
-__all__ = ["BALANCE_MODES", "ProtocolDataModule", "SourceData"]
+__all__ = ["BALANCE_MODES", "ProtocolDataModule", "SourceData", "source_names"]
 
 _log = logging.getLogger(__name__)
 
@@ -137,6 +137,14 @@ def _unique_names(bases: Sequence[str]) -> list[str]:
         seen[base] = seen.get(base, 0) + 1
         names.append(base if seen[base] == 1 else f"{base}-{seen[base]}")
     return names
+
+
+def source_names(entries: Sequence[DataSource], *, work_root: Path) -> list[str]:
+    """The names :class:`ProtocolDataModule` gives these sources (``val/<name>/<metric>``, the
+    score files), from their protocols alone: no processed store is read, so a run can check a
+    per-source monitor before it joins any data."""
+    bases = [_base_name(load(entry.protocol, work_root=work_root), entry) for entry in entries]
+    return _unique_names(bases)
 
 
 class ProtocolDataModule(L.LightningDataModule):

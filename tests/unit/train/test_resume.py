@@ -50,10 +50,26 @@ class _CrashAtTrainEnd(Callback):
         raise _Crash("interrupted after the last epoch")
 
 
-def _config() -> TrainConfig:
-    # warmup then cosine decay: the learning rate at every step depends on where the run is, so a
-    # resume that lost its place in the schedule (or the optimiser's moments) shows up.
+def _config(num_workers: int = 0) -> TrainConfig:
+    """A run whose every step depends on the state a resume must carry over.
+
+    - Warmup then cosine decay: the learning rate depends on where the run is, so a resume that
+      lost its place in the schedule (or the optimiser's moments) shows up.
+    - Dropout in the head draws from the global torch generator at every training step, so a
+      resume that did not put the random states back trains on different masks.
+    - A flip per clip, from the data's own seeded generators (not the global one): the resumed
+      epoch must draw the same flips, in-process or in loader workers.
+    """
     return toy_config(
+        data={
+            "transforms": {"train": [{"name": "hflip", "p": 0.5}]},
+            "loader": {"batch_size": 8, "num_workers": num_workers},
+        },
+        model={
+            "backbone": {"name": "tiny-cnn"},
+            "temporal_pool": {"name": "mean"},
+            "head": {"name": "linear", "dropout": 0.5},
+        },
         train={"max_epochs": 2, "lightning": {"deterministic": True}},
         schedule={"name": "cosine", "warmup_epochs": 0.5, "min_lr": 0.001},
         optim={"name": "adamw", "lr": 0.01, "weight_decay": 0.01},
@@ -96,8 +112,9 @@ def _no_pickles(monkeypatch) -> None:
     monkeypatch.setattr(torch, "load", _refuse)
 
 
-def test_resume_matches_uninterrupted(tmp_path, toy_work_root, monkeypatch):
-    config = _config()
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_resume_matches_uninterrupted(tmp_path, toy_work_root, monkeypatch, num_workers):
+    config = _config(num_workers)
     uninterrupted = _train(tmp_path / "a", toy_work_root, config)
     run_dir = _interrupted(
         tmp_path / "b", toy_work_root, config, monkeypatch, _CrashAtEpochStart(1)
@@ -136,6 +153,30 @@ def test_resume_matches_uninterrupted(tmp_path, toy_work_root, monkeypatch):
     epochs = {int(row["epoch"]) for row in read_metrics_csv(run_dir) if row.get("train/loss_epoch")}
     assert epochs == {0, 1}
     assert len([row for row in read_metrics_csv(run_dir) if row.get("val/loss")]) == 2
+
+
+def _weights(run_dir: Path) -> dict[str, torch.Tensor]:
+    return load_file(run_dir / "checkpoints" / "last" / "model.safetensors")
+
+
+def test_a_resume_without_the_random_states_would_differ(tmp_path, toy_work_root, monkeypatch):
+    # The control for the test above: with the random states left as the new process has them,
+    # the resumed epoch draws other dropout masks, and the run ends elsewhere. (Without it, a
+    # config that never drew from the global generators would pass whether or not they were put
+    # back.)
+    config = _config()
+    uninterrupted = _train(tmp_path / "a", toy_work_root, config)
+    run_dir = _interrupted(
+        tmp_path / "b", toy_work_root, config, monkeypatch, _CrashAtEpochStart(1)
+    )
+    monkeypatch.setattr(resume_module, "restore_rng", lambda state: None)
+    resumed = resume_run(run_dir, work_root=toy_work_root, progress=False)
+
+    expected, got = _weights(uninterrupted.run_dir), _weights(run_dir)
+    assert not all(torch.allclose(expected[key], got[key], atol=1e-6) for key in expected)
+    assert resumed.metrics["val"]["val/loss"] != pytest.approx(
+        uninterrupted.metrics["val"]["val/loss"], abs=1e-6
+    )
 
 
 def test_resume_state_is_safetensors_and_json(tmp_path, toy_work_root, monkeypatch):

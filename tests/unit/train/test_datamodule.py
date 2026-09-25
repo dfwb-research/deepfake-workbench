@@ -21,6 +21,7 @@ from tests.unit.train._toy import (
 from dfwb.core.detector import InputSpec
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.data.dataset import ClipDataset, MultiSource
+from dfwb.data.index import VideoIndex
 from dfwb.data.paired import PairedClipDataset
 from dfwb.data.samplers import (
     PairGrouped,
@@ -29,7 +30,7 @@ from dfwb.data.samplers import (
     VideoLabelBalanced,
     epoch_seed,
 )
-from dfwb.train.datamodule import BALANCE_MODES, ProtocolDataModule
+from dfwb.train.datamodule import BALANCE_MODES, ProtocolDataModule, source_names
 
 TINY_INPUT = InputSpec(size=(64, 64), value_range=(0.0, 1.0), mean=None, std=None)
 
@@ -41,6 +42,21 @@ def _datamodule(config, work_root, **options) -> ProtocolDataModule:
 
 
 # ------------------------------------------------------------------------------------ setup
+
+
+def test_source_names_come_from_the_protocols_alone(toy_work_root, monkeypatch):
+    entries = [toy_source("val", **{"attrs.group": "a"}), toy_source("val"), toy_source("val")]
+    config = toy_config(data={"val": entries})
+    datamodule = _datamodule(config, toy_work_root)
+    datamodule.setup("fit")
+    expected = [source.name for source in datamodule.val_sources]
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("a processed store was read")
+
+    monkeypatch.setattr(VideoIndex, "build", _refuse)
+    assert source_names(config.data.val, work_root=toy_work_root) == expected
+    assert expected == [f"{DATASET}-official-a", f"{DATASET}-official", f"{DATASET}-official-2"]
 
 
 def test_setup_joins_each_source_and_names_it(toy_work_root):

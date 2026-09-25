@@ -192,9 +192,7 @@ def test_lightning_passthrough_keeps_everything_else():
 # ------------------------------------------------------------------------------ components
 
 
-def test_values_the_framework_supplies_are_not_reported_missing():
-    # a pool and a head get `dim` from the backbone when the detector is built, and a stem gets
-    # `in_channels`: a config that leaves them out is complete.
+def _supplying_registries() -> dict[str, Registry]:
     registries = {
         name: Registry(name)
         for name in ("backbones", "temporal_pools", "heads", "losses", "layers")
@@ -205,6 +203,13 @@ def test_values_the_framework_supplies_are_not_reported_missing():
     registries["heads"].add("linear", f"{target}:make_head", summary="x")
     registries["losses"].add("bce", f"{target}:open_kwargs", summary="x")
     registries["layers"].add("srm", f"{target}:make_stem", summary="x")
+    return registries
+
+
+def test_values_the_framework_supplies_are_not_reported_missing():
+    # a pool and a head get `dim` from the backbone when the detector is built, and a stem gets
+    # `in_channels`: a config that leaves them out is complete.
+    registries = _supplying_registries()
     data = _config(model={"stem": {"name": "srm"}})
     check_components(validate_config(data, source="x"), registries)
 
@@ -216,3 +221,25 @@ def test_values_the_framework_supplies_are_not_reported_missing():
         "1 invalid component value(s)",
         "  model.head.dropot: unknown parameter (did you mean 'dropout'?)",
     ]
+
+
+def test_a_dim_the_framework_supplies_may_not_be_set():
+    # the detector is built with the backbone's output size as `dim`; a second one would clash.
+    data = _config(
+        model={
+            "temporal_pool": {"name": "mean", "dim": 32},
+            "head": {"name": "linear", "dim": 64},
+        }
+    )
+    with pytest.raises(ConfigError) as caught:
+        check_components(validate_config(data, source="x"), _supplying_registries())
+    lines = caught.value.message.splitlines()
+    assert lines[0] == "2 invalid component value(s)"
+    assert "  model.temporal_pool.dim: set from the backbone's output size; leave it out" in lines
+    assert "  model.head.dim: set from the backbone's output size; leave it out" in lines
+
+
+def test_a_stem_may_set_its_own_in_channels():
+    # a stem's in_channels defaults to the 3 image channels, but a config may choose another.
+    data = _config(model={"stem": {"name": "srm", "in_channels": 1}})
+    check_components(validate_config(data, source="x"), _supplying_registries())

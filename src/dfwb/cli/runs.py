@@ -124,7 +124,7 @@ def _print(details: dict[str, Any]) -> None:
     ]
     if monitor:
         best = "undefined" if monitor.get("best") is None else f"{monitor['best']:.4f}"
-        at = f"best {best} at epoch {monitor['best_epoch']}"
+        at = f"best {best} after epoch {monitor['best_epoch']} of {details['epochs']}"
         lines.append(("monitor", f"{monitor['key']} ({monitor['mode']}): {at}"))
     sources = [
         f"{row['role']} {row['name']}: {row['included']} of {row['in_split']} videos"

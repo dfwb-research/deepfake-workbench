@@ -58,7 +58,14 @@ from dfwb.train.losses import LossOutput
 from dfwb.train.optim import build_optimizer
 from dfwb.train.schedules import build_schedule
 
-__all__ = ["DetectorModule", "Monitor", "SourceResult", "VideoScore"]
+__all__ = [
+    "DetectorModule",
+    "Monitor",
+    "SourceResult",
+    "VideoScore",
+    "check_monitor",
+    "check_monitor_syntax",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -118,6 +125,44 @@ class SourceResult:
     metrics: dict[str, float]
 
 
+def check_monitor_syntax(key: str, metrics: Sequence[str]) -> None:
+    """Check a monitor key that needs no source names: it must be a validation value, and a
+    ``val/video_<metric>`` must name a metric in ``eval.metrics``.
+
+    Raises:
+        ConfigError: It is neither.
+    """
+    if not key.startswith(_VAL_PREFIX):
+        raise ConfigError(
+            f"train.monitor: {key!r} is not a validation value",
+            hint=f"monitor {_LOSS_KEY} or {_MEAN_PREFIX}<metric>, e.g. {_MEAN_PREFIX}auc",
+        )
+    if key.startswith(_MEAN_PREFIX) and key.removeprefix(_MEAN_PREFIX) not in metrics:
+        known = [f"{_MEAN_PREFIX}{m}" for m in metrics]
+        raise ConfigError(
+            f"train.monitor: {key!r} is not computed{did_you_mean(key, known)}",
+            hint="add its metric to eval.metrics, or monitor one of: "
+            + ", ".join([*known, _LOSS_KEY]),
+        )
+
+
+def check_monitor(key: str, metrics: Sequence[str], source_names: Sequence[str]) -> None:
+    """Check ``train.monitor`` against every value validation over sources named
+    ``source_names`` logs: ``val/loss``, ``val/video_<metric>`` and ``val/<source>/<metric>``.
+
+    Raises:
+        ConfigError: ``key`` names no value validation will log.
+    """
+    check_monitor_syntax(key, metrics)
+    known = {f"{_MEAN_PREFIX}{m}" for m in metrics} | {_LOSS_KEY}
+    known |= {f"{_VAL_PREFIX}{name}/{m}" for name in source_names for m in metrics}
+    if key not in known:
+        raise ConfigError(
+            f"train.monitor: {key!r} is not a value validation logs{did_you_mean(key, known)}",
+            hint="validation logs: " + ", ".join(sorted(known)),
+        )
+
+
 def _build_loss(spec: ComponentSpec) -> torch.nn.Module:
     loss: torch.nn.Module = api.losses.build(spec.name, **spec.params)
     return loss
@@ -158,7 +203,7 @@ class DetectorModule(L.LightningModule):
         self.schedule_spec = schedule
         self.eval_cfg = eval
         self.monitor = Monitor(train.monitor, train.mode)
-        self._check_monitor()
+        check_monitor_syntax(self.monitor.key, eval.metrics)
         #: The last training step's loss (detached), finite or not.
         self.last_loss: Tensor | None = None
         #: Every value logged by the last validation epoch, at full precision.
@@ -190,43 +235,8 @@ class DetectorModule(L.LightningModule):
         self.check_monitor(self._source_names())
 
     def check_monitor(self, source_names: Sequence[str]) -> None:
-        """Check ``train.monitor`` against what validation over sources named ``source_names``
-        logs, so a typo in a per-source monitor fails before any training.
-
-        Raises:
-            ConfigError: ``train.monitor`` names no value validation will log.
-        """
-        known = self._metric_keys(source_names) | {_LOSS_KEY}
-        if self.monitor.key not in known:
-            raise ConfigError(
-                f"train.monitor: {self.monitor.key!r} is not a value validation logs"
-                f"{did_you_mean(self.monitor.key, known)}",
-                hint="validation logs: " + ", ".join(sorted(known)),
-            )
-
-    def _metric_keys(self, names: Sequence[str]) -> set[str]:
-        """Every metric key validation logs when every metric is defined on every source."""
-        metrics = self.eval_cfg.metrics
-        return {f"{_MEAN_PREFIX}{m}" for m in metrics} | {
-            f"{_VAL_PREFIX}{name}/{m}" for name in names for m in metrics
-        }
-
-    def _check_monitor(self) -> None:
-        key = self.monitor.key
-        if not key.startswith(_VAL_PREFIX):
-            raise ConfigError(
-                f"train.monitor: {key!r} is not a validation value",
-                hint=f"monitor {_LOSS_KEY} or {_MEAN_PREFIX}<metric>, e.g. {_MEAN_PREFIX}auc",
-            )
-        if key.startswith(_MEAN_PREFIX):
-            metric = key.removeprefix(_MEAN_PREFIX)
-            if metric not in self.eval_cfg.metrics:
-                known = [f"{_MEAN_PREFIX}{m}" for m in self.eval_cfg.metrics]
-                raise ConfigError(
-                    f"train.monitor: {key!r} is not computed{did_you_mean(key, known)}",
-                    hint="add its metric to eval.metrics, or monitor one of: "
-                    + ", ".join([*known, _LOSS_KEY]),
-                )
+        """:func:`check_monitor` for this module's monitor and metrics."""
+        check_monitor(self.monitor.key, self.eval_cfg.metrics, source_names)
 
     def _warn_once(self, message: str, *args: object) -> None:
         text = message % args

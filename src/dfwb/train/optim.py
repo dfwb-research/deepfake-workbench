@@ -3,6 +3,10 @@
 Optimisers are not a plugin registry: they are built from the resolved ``AssembledDetector``
 itself, since group names come from the backbone's own ``param_groups()`` plus ``head``, ``pool``
 and ``stem``, and a config typo in a group name can only be caught once that detector exists.
+
+``groups`` may also name ``backbone``: it applies to every group of the backbone's own (``embed``,
+``blocks.<i>``, ``norm``, ...), so one entry configures a backbone whatever its groups are called.
+An entry for one of those groups by name replaces the ``backbone`` entry for that group, whole.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ __all__ = ["build_optimizer"]
 
 _SECTION = "optim"
 _OPTIMIZER_NAMES = ("adamw", "sgd")
+_BACKBONE = "backbone"  # every group of the backbone's own
 
 
 class _GroupSpec(BaseModel):
@@ -107,11 +112,14 @@ def _layer_multiplier(name: str, layer_decay: float | None, num_blocks: int) -> 
 def _param_groups(detector: AssembledDetector, params: _CommonOptimParams) -> list[dict[str, Any]]:
     group_overrides = _validate_groups(params.groups)
     sources = _group_sources(detector)
+    backbone_groups = set(detector.backbone.param_groups())
+    valid = [*sources, _BACKBONE]
     for name in group_overrides:
-        if name not in sources:
+        if name not in sources and name != _BACKBONE:
             raise ConfigError(
-                f"{_SECTION}.groups.{name}: unknown group{did_you_mean(name, sources)}",
-                hint="valid groups: " + ", ".join(sorted(sources)),
+                f"{_SECTION}.groups.{name}: unknown group{did_you_mean(name, valid)}",
+                hint="valid groups: " + ", ".join(sorted(valid)) + f" ({_BACKBONE}: all of the "
+                "backbone's own)",
             )
 
     num_blocks = sum(1 for name in sources if name.startswith("blocks."))
@@ -120,7 +128,11 @@ def _param_groups(detector: AssembledDetector, params: _CommonOptimParams) -> li
         trainable = [p for p in source_params if p.requires_grad]
         if not trainable:
             continue
-        override = group_overrides.get(name, _GroupSpec())
+        override = group_overrides.get(name)
+        if override is None and name in backbone_groups:
+            override = group_overrides.get(_BACKBONE)
+        if override is None:
+            override = _GroupSpec()
         weight_decay = (
             override.weight_decay if override.weight_decay is not None else params.weight_decay
         )

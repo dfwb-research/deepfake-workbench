@@ -205,3 +205,77 @@ def test_unknown_group_name_is_a_config_error_naming_the_dotted_path():
             ComponentSpec(name="adamw", lr=1e-3, groups={"blockz": {"lr_scale": 1.0}}), detector
         )
     assert "blocks.2" in info.value.message
+
+
+# ------------------------------------------------------------------------ the backbone alias
+
+
+def _with_embed_and_norm(detector):
+    """tiny-cnn's three blocks, reported as ``embed``, ``blocks.0`` and ``norm`` -- the shape of
+    a timm or Hugging Face backbone's groups."""
+    backbone = detector.backbone
+    groups = {
+        "embed": list(backbone.block0.parameters()),
+        "blocks.0": list(backbone.block1.parameters()),
+        "norm": list(backbone.block2.parameters()),
+    }
+    backbone.param_groups = lambda: groups  # type: ignore[method-assign]
+    return detector
+
+
+def test_backbone_covers_every_backbone_group_but_not_the_head():
+    detector = _with_embed_and_norm(make_detector())
+    optimizer = build_optimizer(
+        ComponentSpec(
+            name="adamw",
+            lr=1.0,
+            weight_decay=0.05,
+            groups={"backbone": {"lr_scale": 0.1, "weight_decay": 0.0}},
+        ),
+        detector,
+    )
+    assert _lrs(optimizer) == pytest.approx(
+        {"embed": 0.1, "blocks.0": 0.1, "norm": 0.1, "head": 1.0}
+    )
+    assert _wds(optimizer) == {"embed": 0.0, "blocks.0": 0.0, "norm": 0.0, "head": 0.05}
+
+
+def test_a_group_of_its_own_wins_over_backbone():
+    # an entry for one group replaces the backbone entry for that group, whole.
+    detector = _with_embed_and_norm(make_detector())
+    optimizer = build_optimizer(
+        ComponentSpec(
+            name="adamw",
+            lr=1.0,
+            weight_decay=0.05,
+            groups={"backbone": {"lr_scale": 0.1, "weight_decay": 0.0}, "norm": {"lr_scale": 2.0}},
+        ),
+        detector,
+    )
+    assert _lrs(optimizer) == pytest.approx(
+        {"embed": 0.1, "blocks.0": 0.1, "norm": 2.0, "head": 1.0}
+    )
+    assert _wds(optimizer)["norm"] == 0.05  # the top-level value, not the backbone entry's
+
+
+def test_backbone_composes_with_layer_decay():
+    detector = make_detector()
+    optimizer = build_optimizer(
+        ComponentSpec(
+            name="adamw", lr=1.0, layer_decay=0.5, groups={"backbone": {"lr_scale": 0.1}}
+        ),
+        detector,
+    )
+    assert _lrs(optimizer) == pytest.approx(
+        {"blocks.0": 0.1 * 0.5**3, "blocks.1": 0.1 * 0.5**2, "blocks.2": 0.1 * 0.5, "head": 1.0}
+    )
+
+
+def test_unknown_group_names_list_backbone_among_the_valid_ones():
+    with pytest.raises(ConfigError) as info:
+        build_optimizer(
+            ComponentSpec(name="adamw", lr=1e-3, groups={"backbon": {"lr_scale": 1.0}}),
+            make_detector(),
+        )
+    assert "did you mean 'backbone'" in info.value.message
+    assert "backbone" in info.value.hint

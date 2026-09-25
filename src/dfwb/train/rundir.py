@@ -9,7 +9,7 @@ One run of one seed lives at ``<runs root>/<run.name>/<YYYYmmdd-HHMMSS>-s<seed>/
     checkpoints/{best,last}/{model.safetensors,detector.json}
     logs/                   metrics.csv (always), TensorBoard, heartbeat.json
     scores/val/<source>.scores.{csv,meta.json}
-    report.md  metrics.json written when training finishes
+    report.md  metrics.json written when training finishes (epochs counted from 1)
 
 ``<runs root>/<run.name>/latest`` is a relative symlink to the newest run of that name. While a run
 is training, or after it was interrupted, ``resume/`` holds what ``dfwb train --resume`` needs;
@@ -44,6 +44,7 @@ __all__ = [
     "REPORT_FILE",
     "RESUME_DIR",
     "RESUME_STATE_FILE",
+    "Reservation",
     "RunSummary",
     "data_rows",
     "find_run",
@@ -52,7 +53,7 @@ __all__ = [
     "point_latest",
     "read_json",
     "read_run",
-    "reserve_name",
+    "reserve_run_dir",
     "run_stamp",
     "write_json",
 ]
@@ -83,15 +84,49 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text("utf-8"))
 
 
-def reserve_name(parent: Path, stamp: str, seed: int) -> str:
-    """``<stamp>-s<seed>``, or with ``-2``, ``-3``, ... appended when a run of the same seed
-    already started in the same second."""
+@dataclass(frozen=True)
+class Reservation:
+    """A run directory claimed for a new run, and every directory claiming it created."""
+
+    path: Path
+    #: The directories this reservation made, outermost first (the run directory last).
+    created: list[Path]
+
+    def release(self) -> None:
+        """Give the name back: remove what this reservation made, innermost first, stopping at
+        the first directory that is no longer empty (another run, or files already written)."""
+        for directory in reversed(self.created):
+            try:
+                directory.rmdir()
+            except OSError:
+                return
+
+
+def reserve_run_dir(parent: Path, stamp: str, seed: int) -> Reservation:
+    """Create ``parent/<stamp>-s<seed>``, or ``-2``, ``-3``, ... after it when that name is
+    taken (a run of the same seed that started in the same second).
+
+    The name is claimed by creating the directory itself (``mkdir`` fails if it exists), so two
+    runs starting at once can never end up sharing one.
+    """
+    created: list[Path] = []
+    for ancestor in reversed([parent, *parent.parents]):
+        if not ancestor.is_dir():
+            try:
+                ancestor.mkdir()
+            except FileExistsError:
+                continue  # made by another run meanwhile
+            created.append(ancestor)
     base = f"{stamp}-s{seed}"
-    name, n = base, 1
-    while (parent / name).exists() or (parent / name).is_symlink():
-        n += 1
-        name = f"{base}-{n}"
-    return name
+    n = 1
+    while True:
+        path = parent / (base if n == 1 else f"{base}-{n}")
+        try:
+            path.mkdir()
+        except FileExistsError:
+            n += 1
+            continue
+        return Reservation(path, [*created, path])
 
 
 def point_latest(run_dir: Path) -> None:

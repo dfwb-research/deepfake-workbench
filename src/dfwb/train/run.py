@@ -4,9 +4,12 @@ carries an interrupted run on to its end.
 
 Everything that can be checked from the config alone is checked before any data is read and
 before anything is written: every component against the installed plugins, the train transforms,
-the optimiser and its schedule against the built detector, the monitor, the seeds, and the
-trainer's own options. The monitor is checked once more against the validation sources' names as
-soon as the data is joined -- still before any training, and before the run directory exists.
+the seeds, the Lightning passthrough, the monitor (against the validation sources' names, which
+come from their protocol references alone), the optimiser and its schedule against the built
+detector, and the trainer's own options.
+
+A new run claims its directory's name by creating it, before the data is joined; if anything
+fails before the run's records are written, the name is given back (the directories removed).
 
 Each run then writes, in order: ``config.resolved.yaml`` and ``fingerprint.txt`` (exactly what
 ``dfwb config show`` prints for the same config), ``env.json``, ``data.json`` and the ``latest``
@@ -47,9 +50,9 @@ from dfwb.data.transforms import build_transforms
 from dfwb.models.detector import AssembledDetector, build_detector
 from dfwb.train import rundir
 from dfwb.train.callbacks import SafetensorsCheckpoint, build_callbacks
-from dfwb.train.datamodule import ProtocolDataModule, SourceData
+from dfwb.train.datamodule import ProtocolDataModule, SourceData, source_names
 from dfwb.train.loggers import build_loggers
-from dfwb.train.module import DetectorModule
+from dfwb.train.module import DetectorModule, check_monitor, check_monitor_syntax
 from dfwb.train.optim import build_optimizer
 from dfwb.train.resume import ResumeCheckpoint, SavedState, read_state
 from dfwb.train.schedules import build_schedule
@@ -158,11 +161,20 @@ def _check_lightning(options: Mapping[str, Any]) -> None:
 
 
 def _check_config(config: TrainConfig) -> None:
-    """Every check the config allows before a detector is built or any data read."""
+    """Every check the config allows on its own, before a detector is built or any data read."""
     check_components(config, {name: get_registry(name) for name in REGISTRY_NAMES})
     _check_transforms(config)
     _check_seeds(config.run.seeds)
     _check_lightning(config.train.lightning)
+    check_monitor_syntax(config.train.monitor, config.eval.metrics)
+
+
+def _check_monitor_sources(config: TrainConfig, work_root: Path) -> None:
+    """Check the monitor against the validation sources' names, which come from their protocol
+    references alone: a typo in a per-source monitor fails before any processed store is
+    read."""
+    names = source_names(config.data.val, work_root=work_root)
+    check_monitor(config.train.monitor, config.eval.metrics, names)
 
 
 def _check_optimization(config: TrainConfig, detector: AssembledDetector) -> None:
@@ -183,7 +195,6 @@ def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any
         "max_epochs": train.max_epochs,
         "precision": train.precision,
         "enable_checkpointing": False,
-        # both print to stdout, which must hold nothing but the results in JSON mode
         "enable_progress_bar": plan.progress,
         "enable_model_summary": plan.progress,
         "default_root_dir": run_dir,
@@ -191,6 +202,10 @@ def _trainer(plan: _Plan, run_dir: Path, callbacks: list[Callback], loggers: Any
         "callbacks": callbacks,
     }
     options.update(train.lightning)
+    if not plan.progress:
+        # both print to stdout, which then holds nothing but the results (--json), whatever
+        # train.lightning asks for
+        options.update(enable_progress_bar=False, enable_model_summary=False)
     if plan.device is not None:
         options.update(device_options(plan.device))
     try:
@@ -266,7 +281,6 @@ def _env_record(plan: _Plan, seed: int, trainer: L.Trainer) -> dict[str, Any]:
 def _write_run_dir(
     plan: _Plan, run_dir: Path, seed: int, trainer: L.Trainer, data: Mapping[str, Any]
 ) -> None:
-    run_dir.mkdir(parents=True)
     (run_dir / rundir.CONFIG_FILE).write_text(dump_yaml(plan.loaded.data), encoding="utf-8")
     (run_dir / rundir.FINGERPRINT_FILE).write_text(f"{plan.loaded.fingerprint}\n", "utf-8")
     rundir.write_json(run_dir / rundir.ENV_FILE, _env_record(plan, seed, trainer))
@@ -313,7 +327,8 @@ def _metrics_record(
             "mode": module.monitor.mode,
             "fallback": module.monitor.fallback,
             "best": _finite(best["best_value"]),
-            "best_epoch": best["best_epoch"],
+            # counted from 1, like "epochs" (the trainer's own epoch index starts at 0)
+            "best_epoch": None if best["best_epoch"] is None else best["best_epoch"] + 1,
         }
     return {
         "seed": seed,
@@ -336,7 +351,8 @@ def _report(plan: _Plan, run_dir: Path, metrics: Mapping[str, Any], data: Mappin
         "",
         f"- Run: `{run_dir.parent.name}/{run_dir.name}`",
         f"- Config fingerprint: `{metrics['fingerprint']}`",
-        f"- Trained: {metrics['epochs']} epoch(s), {metrics['global_step']} optimiser step(s)",
+        f"- Trained: {metrics['epochs']} epoch(s), {metrics['global_step']} optimiser step(s); "
+        "epochs are counted from 1",
     ]
     monitor = metrics["monitor"]
     if monitor is None:
@@ -347,7 +363,8 @@ def _report(plan: _Plan, run_dir: Path, metrics: Mapping[str, Any], data: Mappin
     else:
         lines.append(
             f"- Best checkpoint (`checkpoints/best`): `{monitor['key']}` ({monitor['mode']}) = "
-            f"{_number(monitor['best'])} after epoch {monitor['best_epoch']}"
+            f"{_number(monitor['best'])} after epoch {monitor['best_epoch']} of "
+            f"{metrics['epochs']}"
         )
     lines += [
         "",
@@ -424,26 +441,16 @@ def _timestamp() -> str:
     return rundir.run_stamp()
 
 
-def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | None) -> RunResult:
+def _prepare(
+    plan: _Plan,
+    seed: int,
+    run_dir: Path,
+    detector: AssembledDetector,
+    restore: SavedState | None,
+) -> tuple[L.Trainer, ProtocolDataModule, dict[str, Any]]:
+    """Build the trainer, join the data, then write the new run's records into its (reserved)
+    directory -- or, for a resumed run, add the resume's own records."""
     config = plan.config
-    seed_everything(seed)
-    detector = build_detector(
-        config.model,
-        input_spec_overrides=config.model.input.overrides() if config.model.input else None,
-        source=f"run:{plan.loaded.fingerprint}",
-    )
-    _check_optimization(config, detector)
-    module = DetectorModule(
-        detector,
-        loss=config.loss,
-        optim=config.optim,
-        schedule=config.schedule,
-        train=config.train,
-        eval=config.eval,
-    )
-    if run_dir is None:
-        parent = plan.runs_root / config.run.name
-        run_dir = parent / rundir.reserve_name(parent, _timestamp(), seed)
     monitored = bool(config.data.val)
     early_stop = config.train.early_stop
     callbacks = [
@@ -474,7 +481,6 @@ def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | 
         allow_mismatch=config.data.allow_input_mismatch,
     )
     datamodule.setup("fit")
-    module.check_monitor([source.name for source in datamodule.val_sources])
     if not monitored:
         _log.warning(
             "%s: no validation sources, so monitoring is off: checkpoints/best is kept as a "
@@ -486,6 +492,38 @@ def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | 
         _write_run_dir(plan, run_dir, seed, trainer, data)
     else:
         _record_resume(plan, run_dir, trainer, data, int(restore.payload["epoch"]))
+
+    return trainer, datamodule, data
+
+
+def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | None) -> RunResult:
+    config = plan.config
+    seed_everything(seed)
+    detector = build_detector(
+        config.model,
+        input_spec_overrides=config.model.input.overrides() if config.model.input else None,
+        source=f"run:{plan.loaded.fingerprint}",
+    )
+    _check_optimization(config, detector)
+    module = DetectorModule(
+        detector,
+        loss=config.loss,
+        optim=config.optim,
+        schedule=config.schedule,
+        train=config.train,
+        eval=config.eval,
+    )
+    reservation: rundir.Reservation | None = None
+    if run_dir is None:
+        reservation = rundir.reserve_run_dir(plan.runs_root / config.run.name, _timestamp(), seed)
+        run_dir = reservation.path
+    try:
+        trainer, datamodule, data = _prepare(plan, seed, run_dir, detector, restore)
+    except BaseException:
+        # nothing of the run was written yet: give its name back
+        if reservation is not None:
+            reservation.release()
+        raise
 
     try:
         with warnings.catch_warnings():
@@ -542,6 +580,7 @@ def run_experiment(
     if device is not None:
         device_options(device)
     work = _work_root(work_root)
+    _check_monitor_sources(train_config, work)
     if train_config.run.output_root:
         root = absolute(train_config.run.output_root)
     else:
@@ -585,7 +624,8 @@ def resume_run(
         )
         raise ConfigError(
             f"{run_dir}: nothing to resume ({why})",
-            hint="start a new run with dfwb train -c <config>",
+            hint="a finished run cannot be extended: more epochs is a new experiment "
+            "(dfwb train -c <config>)",
         )
     recorded = (run_dir / rundir.FINGERPRINT_FILE).read_text("utf-8").strip()
     loaded = load_config(run_dir / rundir.CONFIG_FILE)
@@ -605,7 +645,7 @@ def resume_run(
     _check_config(train_config)
     if device is not None:
         device_options(device)
-    plan = _Plan(
-        loaded, train_config, _work_root(work_root), run_dir.parent.parent, device, progress, argv
-    )
+    work = _work_root(work_root)
+    _check_monitor_sources(train_config, work)
+    plan = _Plan(loaded, train_config, work, run_dir.parent.parent, device, progress, argv)
     return _fit(plan, int(saved.payload["seed"]), run_dir=run_dir, restore=saved)

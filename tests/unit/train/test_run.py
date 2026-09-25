@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("lightning")
 
 import torch
+import yaml
 from safetensors.torch import load_file
 from tests.unit.train._toy import (
     PROFILE,
@@ -124,11 +125,12 @@ def test_the_run_records_how_it_was_produced(tmp_path, toy_work_root):
     assert (metrics["seed"], metrics["epochs"], metrics["global_step"]) == (0, 1, 4)
     assert metrics["fingerprint"] == loaded.fingerprint
     assert metrics["monitor"]["key"] == "val/video_auc"
-    assert metrics["monitor"]["best_epoch"] == 0
+    assert metrics["monitor"]["best_epoch"] == 1  # epochs count from 1, like "epochs"
     assert metrics["val"]["val/video_auc"] == pytest.approx(metrics["monitor"]["best"])
     assert f"val/{SOURCE}/eer" in metrics["val"]
 
     report = (run_dir / "report.md").read_text("utf-8")
+    assert "after epoch 1 of 1" in report
     assert loaded.fingerprint in report
     assert "val/video_auc" in report
     assert SOURCE in report
@@ -334,12 +336,81 @@ def test_config_errors_are_raised_before_any_data_loads(
     assert not (tmp_path / "runs").exists()  # nothing written either
 
 
-def test_the_monitor_is_checked_against_the_sources_before_training(tmp_path, toy_work_root):
-    config = toy_config(train={"monitor": f"val/{SOURCE[:-1]}/auc"})
+def test_a_per_source_monitor_is_checked_before_any_store_is_read(
+    tmp_path, toy_work_root, monkeypatch
+):
+    # the sources' names come from their protocol references alone
+    _no_data(monkeypatch)
+    monkeypatch.setattr(
+        run_module, "build_detector", lambda *a, **k: pytest.fail("a detector was built")
+    )
+    config = toy_config(
+        data={"val": [toy_source("val"), toy_source("val", **{"attrs.group": "a"})]},
+        train={"monitor": f"val/{SOURCE[:-1]}/auc"},
+    )
     with pytest.raises(ConfigError) as caught:
         train(tmp_path, toy_work_root, config)
     assert f"did you mean 'val/{SOURCE}/auc'" in caught.value.message
+    assert f"val/{SOURCE}-a/auc" in caught.value.hint
     assert not (tmp_path / "runs").exists()
+
+
+def test_a_run_that_fails_before_it_starts_leaves_no_directory(tmp_path, toy_pack):
+    # the name is reserved before the data is joined; failing there gives it back
+    empty_work_root = tmp_path / "work"
+    empty_work_root.mkdir()
+    with pytest.raises(ConfigError, match="no single processed store"):
+        train(tmp_path, empty_work_root)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_run_names_are_reserved_atomically(tmp_path, monkeypatch):
+    parent = tmp_path / "runs" / "toy"
+    first = run_module.rundir.reserve_run_dir(parent, "20260102-030405", 0)
+    # a name taken between looking and creating is skipped, not shared
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    second = run_module.rundir.reserve_run_dir(parent, "20260102-030405", 0)
+    monkeypatch.undo()
+    assert (first.path.name, second.path.name) == ("20260102-030405-s0", "20260102-030405-s0-2")
+    assert first.path.is_dir()
+    assert second.path.is_dir()
+    assert first.created == [tmp_path / "runs", parent, first.path]
+    assert second.created == [second.path]
+
+    second.release()
+    assert not second.path.exists()
+    assert first.path.is_dir()  # not the second reservation's to remove
+    first.release()
+    assert not (tmp_path / "runs").exists()  # everything the first one made, and only that
+
+
+def test_a_config_extending_binary_frame_trains(tmp_path, toy_work_root):
+    # the template's optimiser groups ({backbone: {lr_scale: 0.1}}) apply to any backbone
+    experiment = tmp_path / "exp.yaml"
+    experiment.write_text(
+        yaml.safe_dump(
+            {
+                "schema": "dfwb.train/1",
+                "extends": ["dfwb://templates/binary-frame.yaml"],
+                "run": {"name": "toy"},
+                "data": {
+                    "processing": PROFILE,
+                    "clip": {"frames": 1},
+                    "train": [toy_source("train")],
+                    "val": [toy_source("val")],
+                    "loader": {"batch_size": 8, "num_workers": 0},
+                },
+                "model": {"backbone": {"name": "tiny-cnn"}},
+                "train": {"max_epochs": 1, "precision": "32-true"},
+            }
+        )
+    )
+    loaded = load_config(experiment)
+    (result,) = run_experiment(
+        loaded, work_root=toy_work_root, runs_root=tmp_path / "runs", progress=False
+    )
+    assert result.metrics["epochs"] == 1
+    assert result.seed == 42
 
 
 def test_a_missing_work_root_is_named(tmp_path, monkeypatch):

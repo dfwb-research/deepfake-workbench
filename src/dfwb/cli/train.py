@@ -42,7 +42,8 @@ def _require_train_extra() -> None:
     "resume",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Carry on the interrupted run in this run directory.",
+    help="Carry on the run in this run directory: only an interrupted run; a finished run "
+    "cannot be extended -- more epochs is a new experiment.",
 )
 @click.option(
     "--device",
@@ -59,9 +60,9 @@ def train(
 ) -> None:
     """Train a config: one run per seed, each in its own run directory.
 
-    Every config problem is reported before any data is read. With --resume, the run carries on
-    from the end of its last finished epoch, with its own resolved config (-c, if also given,
-    must be the same experiment).
+    Every config problem is reported before any data is read. With --resume, an interrupted run
+    carries on from the end of its last finished epoch, with its own resolved config (-c, if
+    also given, must be the same experiment).
     """
     if config_path is None and resume is None:
         raise click.UsageError(
@@ -92,5 +93,6 @@ def train(
             line += ", no validation (checkpoints/best is the last epoch's)"
         else:
             best = "undefined" if monitor["best"] is None else f"{monitor['best']:.4f}"
-            line += f", best {monitor['key']} = {best} (epoch {monitor['best_epoch']})"
+            at = f"after epoch {monitor['best_epoch']} of {metrics['epochs']}"
+            line += f", best {monitor['key']} = {best} ({at})"
         click.echo(line)

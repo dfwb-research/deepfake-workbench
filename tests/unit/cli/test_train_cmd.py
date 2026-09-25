@@ -82,6 +82,7 @@ def test_train_prints_each_run(run, toy):
     assert len(run_dirs) == 2
     for run_dir in run_dirs:
         assert f"{run_dir}: 1 epoch(s), best val/video_auc = " in result.out
+        assert "(after epoch 1 of 1)" in result.out
     env = json.loads((_run_dirs(toy)[0] / "env.json").read_text("utf-8"))
     assert env["env"]["device"] == "cpu"
 
@@ -105,6 +106,37 @@ def test_train_rejects_bad_component_params_early(run, toy, monkeypatch):
     assert "(did you mean 'partial'?)" in result.err
     assert "hint: " in result.err
     assert not (toy / "runs").exists()
+
+
+def test_train_refuses_a_dim_the_framework_supplies(run, toy, monkeypatch):
+    def _refuse(self, stage=None):
+        raise AssertionError("data was loaded")
+
+    monkeypatch.setattr(ProtocolDataModule, "setup", _refuse)
+    path = write_toy_config(toy, toy_config())
+    result = run("train", "-c", str(path), "model.head.dim=32")
+    assert result.code == 2, result.err
+    assert "model.head.dim: set from the backbone's output size; leave it out" in result.err
+    assert "unexpected" not in result.err
+
+
+def test_json_output_stays_json_whatever_the_passthrough_says(run, toy):
+    # the progress bar and the model summary print to stdout, which --json keeps for the results
+    lightning = {"enable_progress_bar": True, "enable_model_summary": True}
+    path = write_toy_config(toy, toy_config(train={"max_epochs": 1, "lightning": lightning}))
+    result = run("train", "-c", str(path), "--json")
+    assert result.code == 0, result.err
+    (entry,) = json.loads(result.out)
+    assert entry["metrics"]["epochs"] == 1
+
+
+def test_resume_help_says_a_finished_run_is_not_extended(run):
+    result = run("train", "--help")
+    assert result.code == 0
+    text = " ".join(result.out.split())
+    assert "only an interrupted run" in text
+    assert "a finished run cannot be extended" in text
+    assert "more epochs is a new experiment" in text
 
 
 class _Crash(Exception):

@@ -131,7 +131,7 @@ def test_runs_show_text(run, tmp_path):
     text = result.out
     assert f"fingerprint:  {FP_A}" in text
     assert f"same config:  {second} (seed 1, incomplete)" in text
-    assert "monitor:      val/video_auc (max): best 0.7500 at epoch 1" in text
+    assert "monitor:      val/video_auc (max): best 0.7500 after epoch 1 of 2" in text
     assert "train toyfake-official: 9 of 10 videos" in text
     assert "git 0123456 (dirty)" in text
     alone = run("runs", "show", str(second)).out

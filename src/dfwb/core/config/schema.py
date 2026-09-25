@@ -59,13 +59,17 @@ class ConfigModel(BaseModel):
 class ComponentOf:
     """Marks a :class:`ComponentSpec` field as naming a key of the given registry.
 
-    ``supplied`` names parameters the framework passes itself when it builds the component (a
-    pool's and a head's ``dim`` come from the backbone's output size), so a config that leaves
-    them out is still complete.
+    ``supplied`` holds ``(parameter, where its value comes from)`` for each parameter the
+    framework always passes itself when it builds the component: a pool's and a head's ``dim``
+    is the backbone's output size. A config leaves these out, and setting one is an error (the
+    component would get it twice). ``defaulted`` names parameters the framework passes only when
+    the config does not: a stem's ``in_channels`` is the image's 3 channels unless the config
+    sets its own, which then wins. Either way, a config that leaves them out is complete.
     """
 
     registry: str
-    supplied: tuple[str, ...] = ()
+    supplied: tuple[tuple[str, str], ...] = ()
+    defaulted: tuple[str, ...] = ()
 
 
 class ComponentSpec(BaseModel):
@@ -189,11 +193,14 @@ class InputOverrides(ConfigModel):
         }
 
 
+_BACKBONE_DIM = (("dim", "the backbone's output size"),)
+
+
 class ModelSection(ConfigModel):
     backbone: Annotated[ComponentSpec, ComponentOf("backbones")]
-    temporal_pool: Annotated[ComponentSpec, ComponentOf("temporal_pools", supplied=("dim",))]
-    head: Annotated[ComponentSpec, ComponentOf("heads", supplied=("dim",))]
-    stem: Annotated[ComponentSpec | None, ComponentOf("layers", supplied=("in_channels",))] = None
+    temporal_pool: Annotated[ComponentSpec, ComponentOf("temporal_pools", supplied=_BACKBONE_DIM)]
+    head: Annotated[ComponentSpec, ComponentOf("heads", supplied=_BACKBONE_DIM)]
+    stem: Annotated[ComponentSpec | None, ComponentOf("layers", defaulted=("in_channels",))] = None
     input: InputOverrides | None = None
 
 
@@ -377,10 +384,19 @@ def _walk_components(value: Any, loc: tuple[str | int, ...]) -> list[_Found]:
 def _unsupplied(
     pairs: tuple[tuple[Loc, str], ...], marker: ComponentOf, spec: ComponentSpec
 ) -> tuple[tuple[Loc, str], ...]:
-    """``pairs`` without the problems about a parameter the framework supplies itself (which
-    the config rightly left out)."""
-    skipped = {(name,) for name in marker.supplied if name not in spec.params}
+    """``pairs`` without the problems about a parameter the framework passes itself (which the
+    config rightly left out)."""
+    names = [name for name, _ in marker.supplied] + list(marker.defaulted)
+    skipped = {(name,) for name in names if name not in spec.params}
     return tuple((where, text) for where, text in pairs if tuple(where) not in skipped)
+
+
+def _set_but_supplied(marker: ComponentOf, spec: ComponentSpec) -> list[tuple[Loc, str]]:
+    return [
+        ((name,), f"set from {source}; leave it out")
+        for name, source in marker.supplied
+        if name in spec.params
+    ]
 
 
 def check_components(config: ConfigModel, registries: Mapping[str, Any]) -> None:
@@ -394,6 +410,10 @@ def check_components(config: ConfigModel, registries: Mapping[str, Any]) -> None
     """
     found: list[tuple[list[str], str, bool]] = []  # (problem lines, hint, missing install)
     for loc, marker, spec in _walk_components(config, ()):
+        supplied = _set_but_supplied(marker, spec)
+        if supplied:
+            lines = [f"{format_loc((*loc, *where))}: {text}" for where, text in supplied]
+            found.append((lines, "the framework passes these when it builds the detector", False))
         try:
             registries[marker.registry].validate(spec.name, **spec.params)
         except ConfigError as exc:

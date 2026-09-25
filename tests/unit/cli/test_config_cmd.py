@@ -27,6 +27,13 @@ def test_templates(run):
     assert names == ["binary-frame", "toy-cpu"]
 
 
+def test_validate_refuses_a_dim_the_framework_supplies(run, requires_torch):
+    path = resources.files("dfwb").joinpath("templates", "toy-cpu.yaml")
+    result = run("config", "validate", "-c", str(path), "model.head.dim=32")
+    assert result.code == 2
+    assert "model.head.dim: set from the backbone's output size; leave it out" in result.err
+
+
 def test_validate_accepts_the_toy_cpu_template(run, requires_torch):
     # Components are checked against the installed plugins; the toyfake protocol pack and its
     # processed store are only needed once training starts.
