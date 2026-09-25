@@ -76,7 +76,7 @@ from dfwb.core.records import (
 from dfwb.preprocess.face.backends import FaceBackend
 from dfwb.preprocess.face.process import check_backend, process_video
 from dfwb.preprocess.face.profiles import load_profile
-from dfwb.preprocess.face.store import Store, video_relpath
+from dfwb.preprocess.face.store import Store, portable_reason, video_relpath
 from dfwb.preprocess.inventory.runner import get_builder, read_inventory, resolve_video_path
 from dfwb.protocols.protocol import Protocol, _matches_where
 from dfwb.protocols.protocol import load as load_protocol
@@ -395,10 +395,12 @@ def _failed(record: InventoryRecord, reason: str) -> ProcessedRecord:
 
 
 def _error_reason(exc: BaseException) -> str:
-    """``error: <Type>: <first line of the message>``, or ``error: <Type>`` without one."""
+    """``error: <Type>: <first line of the message>``, or ``error: <Type>`` without one, with any
+    absolute path in the message cut down to its file name (see
+    :func:`~dfwb.preprocess.face.store.portable_reason`)."""
     lines = str(exc).strip().splitlines()
     name = type(exc).__name__
-    return f"error: {name}: {lines[0]}" if lines else f"error: {name}"
+    return portable_reason(f"error: {name}: {lines[0]}") if lines else f"error: {name}"
 
 
 @dataclasses.dataclass(frozen=True)

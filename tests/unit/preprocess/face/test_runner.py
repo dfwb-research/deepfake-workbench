@@ -487,8 +487,13 @@ def test_the_shards_of_a_limited_run_add_up_to_the_limited_run(env):
 
 
 def test_shard_merge_equals_single_run(env):
+    # One video that cannot be decoded at all: its row carries a reason, which must read the same
+    # on every machine (no absolute path in it) for merge to write it out.
+    (env.dataset / "originals" / "c40" / "001.avi").write_bytes(b"not a video" * 20)
     single = _run()
+    assert single.counts_by_status == {"ok": 6, "decode_error": 1}
     single_lines = set(_index_lines(single.store))
+    assert not any(str(env.tmp) in line for line in single_lines)
     single_copy = env.tmp / "single-store"
     shutil.copytree(single.store, single_copy)
     shutil.rmtree(single.store)
@@ -834,6 +839,21 @@ def test_a_video_that_raises_is_recorded_as_a_decode_error_naming_it(env, monkey
     monkeypatch.setattr(runner, "process_video", real)
     retried = _run(redo={"decode_error"})
     assert retried == RunSummary({"ok": 1}, 6, summary.store)
+
+
+def test_an_error_quoting_an_absolute_path_is_recorded_with_the_file_name_only(env, monkeypatch):
+    source = env.dataset / "originals" / "c40" / "001.avi"
+
+    def fails(n: int, record: InventoryRecord) -> BaseException | None:
+        if (record.key, record.compression) == ("REAL/001", "c40"):
+            return OSError(f"cannot read '{source}' (see {env.tmp}/log.txt)")
+        return None
+
+    _failing_on(monkeypatch, fails)
+    summary = _run()
+
+    (row,) = [row for row in _rows(summary.store) if row.status != "ok"]
+    assert row.reason == "error: OSError: cannot read '001.avi' (see log.txt)"
 
 
 def test_ten_errors_in_a_row_abort_the_run_naming_the_last_video(env, monkeypatch, fifteen_videos):

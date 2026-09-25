@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from dfwb.core.errors import ConfigError
+from dfwb.core.records import assert_no_absolute_paths
 from dfwb.core.records.local import (
     BackendSpec,
     BuilderRef,
@@ -296,16 +297,23 @@ def test_status_too_short_when_the_container_reports_zero_frames(tmp_path):
     assert list(tmp_path.glob("out.tmp-*")) == []
 
 
-def test_status_decode_error_for_a_corrupt_file(tmp_path):
+@pytest.mark.parametrize("library", ["opencv", "pyav"])
+def test_status_decode_error_for_a_corrupt_file(tmp_path, library):
     video = tmp_path / "corrupt.avi"
     video.write_bytes(b"not a real video file" * 20)
     out_dir = tmp_path / "out"
+    profile = _profile(decode=DecodeSpec(library=library, color="rgb"))
 
-    result = process_video(video, _inventory_record(), _profile(), CenterBackend(), out_dir)
+    result = process_video(video, _inventory_record(), profile, CenterBackend(), out_dir)
 
     assert result.status == "decode_error"
     assert result.n_frames == 0
-    assert result.reason
+    # The reason names the file, never where it sits on this machine, so the index row is the
+    # same wherever the video was processed.
+    assert result.reason is not None
+    assert result.reason.startswith("corrupt.avi: ")
+    assert str(tmp_path) not in result.reason
+    assert_no_absolute_paths(result)
     assert not out_dir.exists()
 
 

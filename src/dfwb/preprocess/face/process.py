@@ -43,7 +43,7 @@ from dfwb.preprocess.face.crop import crop_face, map_landmarks
 from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source
 from dfwb.preprocess.face.identity import cluster_subject
 from dfwb.preprocess.face.sampling import sample_indices
-from dfwb.preprocess.face.store import recover_video_dir, video_relpath
+from dfwb.preprocess.face.store import portable_reason, recover_video_dir, video_relpath
 from dfwb.preprocess.face.track import Tracker
 from dfwb.preprocess.face.types import Face
 
@@ -84,6 +84,9 @@ _FailureStatus = Literal["no_face", "decode_error", "too_short"]
 
 
 def _failure(record: InventoryRecord, *, status: _FailureStatus, reason: str) -> ProcessedRecord:
+    """A failed video's row. ``reason`` often quotes a decoder's message, which names the file by
+    where it sits on this machine; only the file's name is kept (see
+    :func:`~dfwb.preprocess.face.store.portable_reason`)."""
     return ProcessedRecord(
         key=record.key,
         compression=record.compression,
@@ -92,7 +95,7 @@ def _failure(record: InventoryRecord, *, status: _FailureStatus, reason: str) ->
         frame_indices=[],
         relpath=video_relpath(record.key, record.compression),
         track=None,
-        reason=reason,
+        reason=portable_reason(reason),
     )
 
 

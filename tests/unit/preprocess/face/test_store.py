@@ -18,6 +18,7 @@ import pytest
 
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.paths import ResolvedRoot
+from dfwb.core.records import assert_no_absolute_paths
 from dfwb.core.records.local import (
     BackendSpec,
     CropSpec,
@@ -32,6 +33,7 @@ from dfwb.core.records.local import (
 from dfwb.preprocess.face.store import (
     Store,
     parse_shard_filename,
+    portable_reason,
     read_running_marker,
     recover_video_dir,
     running_markers,
@@ -438,3 +440,32 @@ def test_cleanup_partial_restores_a_stranded_old_directory(tmp_path):
     assert out_dir.is_dir()
     assert (out_dir / "frame_000000.png").read_bytes() == b"the last known-good content"
     assert not old_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "/data/ffpp/c23/000.mp4: PyAV could not open this file ([Errno 1094995529] Invalid "
+            "data found when processing input: '/data/ffpp/c23/000.mp4')",
+            "000.mp4: PyAV could not open this file ([Errno 1094995529] Invalid data found when "
+            "processing input: '000.mp4')",
+        ),
+        (
+            'error: OSError: cannot write "/work/x/frame_000001.png"',
+            'error: OSError: cannot write "frame_000001.png"',
+        ),
+        ("see (/tmp/a/log.txt) and ~/notes/b.txt", "see (log.txt) and b.txt"),
+        ("path=/srv/data/v.mp4,other", "path=v.mp4,other"),
+        ("from file:///srv/data/v.mp4", "from v.mp4"),
+        ("a directory: /srv/data/clips/", "a directory: clips"),
+        # Not paths: a URL, a slash between words, a relative path, and no path at all.
+        ("fetched https://example.org/a/b", "fetched https://example.org/a/b"),
+        ("real / fake", "real / fake"),
+        ("originals/c23/000.avi: short", "originals/c23/000.avi: short"),
+        ("short: 3 of 8", "short: 3 of 8"),
+    ],
+)
+def test_portable_reason_keeps_only_the_last_part_of_every_absolute_path(text, expected):
+    assert portable_reason(text) == expected
+    assert_no_absolute_paths(portable_reason(text))

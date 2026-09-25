@@ -31,7 +31,7 @@ import re
 import shutil
 import socket
 from collections.abc import Iterator, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dfwb.core.errors import ConfigError, ContractError
@@ -44,6 +44,7 @@ __all__ = [
     "INDEX_FILE",
     "Store",
     "parse_shard_filename",
+    "portable_reason",
     "read_running_marker",
     "recover_video_dir",
     "running_markers",
@@ -60,6 +61,12 @@ _TMP_SUFFIX = re.compile(r"\.tmp-\d+$")
 _OLD_SUFFIX = re.compile(r"\.old-\d+$")
 _SHARD_FILE = re.compile(r"^index\.shard-(\d+)-of-(\d+)\.jsonl$")
 _RUNNING_SUFFIX = ".running"
+# An absolute path inside free text, found the way the records' no-absolute-paths rule finds one:
+# "/x", "~/x" or "file:///x" at the start or after a separator (a space, "=", ":", ",", ";", a
+# quote or an opening bracket), running up to the next space, quote or closing bracket.
+_ABSOLUTE_IN_TEXT = re.compile(
+    r"""(^|[\s=:,;"'(]|(?=file:///))((?:file://)?(?:~/|/(?![/\s]))[^\s"')\]]*)"""
+)
 
 Key = tuple[str, str | None]
 
@@ -111,6 +118,20 @@ def video_relpath(key: str, compression: str | None) -> str:
     :class:`Store` of its own to ask.
     """
     return f"{key}/{compression or '_'}"
+
+
+def portable_reason(text: str) -> str:
+    """``text`` with every absolute path in it cut down to its last part: ``/data/ffpp/000.mp4``
+    becomes ``000.mp4``.
+
+    A row's ``reason`` often quotes an error message, and error messages name files by where they
+    sit on this machine. Keeping only the file's name makes the row read the same on every machine
+    (so the rows of two shards run on different machines can be compared and merged), and keeps it
+    clear of the rule that records never hold an absolute path.
+    """
+    return _ABSOLUTE_IN_TEXT.sub(
+        lambda match: match.group(1) + PurePosixPath(match.group(2)).name, text
+    )
 
 
 def _stray_siblings(out_dir: Path) -> tuple[list[Path], list[Path]]:
