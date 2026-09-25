@@ -19,7 +19,7 @@ import pytest
 
 from dfwb.core.errors import ConfigError
 from dfwb.core.records.local import TrackSpec
-from dfwb.preprocess.face.track import TrackResult, select_track
+from dfwb.preprocess.face.track import Tracker, TrackResult, select_track
 from dfwb.preprocess.face.types import Face
 
 TRACK = TrackSpec(iou=0.3, strategy="largest-then-iou")
@@ -544,3 +544,56 @@ def test_a_subject_clip_falling_back_to_overlap_can_switch():
     ]
     result = select_track(per_frame, IDENTITY, min_score=0.5, subject=subject)
     assert result.identity_switch is True
+
+
+# ---------------------------------------------------------------------------
+# Tracker: the incremental, one-frame-at-a-time interface select_track is built on
+# ---------------------------------------------------------------------------
+
+
+def test_tracker_step_by_step_matches_select_track_on_the_same_clip():
+    per_frame = _crossing_clip(jump_at=5)
+    expected = select_track(per_frame, TRACK, min_score=0.5)
+
+    tracker = Tracker(TRACK, min_score=0.5)
+    stepped = [(index, *tracker.step(index, faces)) for index, faces in per_frame]
+
+    assert stepped == expected.frames
+    assert tracker.identity_switch is expected.identity_switch
+
+
+def test_tracker_can_be_driven_across_separate_batches_of_frames():
+    # the same clip, but the caller only ever holds one frame's faces in memory at a time,
+    # exactly as a windowed decode would
+    per_frame = _crossing_clip(jump_at=5)
+    expected = select_track(per_frame, TRACK, min_score=0.5)
+
+    tracker = Tracker(TRACK, min_score=0.5)
+    stepped = []
+    for batch_start in range(0, len(per_frame), 3):
+        for index, faces in per_frame[batch_start : batch_start + 3]:
+            stepped.append((index, *tracker.step(index, faces)))
+
+    assert stepped == expected.frames
+    assert tracker.identity_switch is expected.identity_switch
+
+
+def test_tracker_rejects_a_strategy_it_does_not_implement():
+    spec = TrackSpec(iou=0.3, strategy="largest-then-iuo")
+    with pytest.raises(ConfigError, match="largest-then-iou"):
+        Tracker(spec, min_score=0.5)
+
+
+def test_tracker_refuses_a_subject_for_the_largest_then_iou_strategy():
+    subject = np.asarray(_unit(1, 0), dtype=np.float32)
+    with pytest.raises(ValueError, match="identity-cluster"):
+        Tracker(TRACK, min_score=0.5, subject=subject)
+
+
+def test_tracker_step_rejects_a_non_increasing_index():
+    tracker = Tracker(TRACK, min_score=0.5)
+    tracker.step(3, [_face(0, 0, 1, 1)])
+    with pytest.raises(ValueError, match="increasing"):
+        tracker.step(3, [_face(0, 0, 1, 1)])
+    with pytest.raises(ValueError, match="increasing"):
+        tracker.step(1, [_face(0, 0, 1, 1)])

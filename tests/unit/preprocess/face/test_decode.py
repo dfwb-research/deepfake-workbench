@@ -306,3 +306,64 @@ def test_pyav_read_with_no_requested_indices_yields_nothing():
     source = open_source(CLEAN_AVI, library="pyav")
 
     assert list(source.read([])) == []
+
+
+def test_pyav_mid_stream_ffmpeg_error_becomes_decode_error(monkeypatch):
+    av = pytest.importorskip("av")
+    source = open_source(CLEAN_AVI, library="pyav")
+    real_decode = type(source._container).decode
+
+    def flaky_decode(self, *args, **kwargs):
+        for index, frame in enumerate(real_decode(self, *args, **kwargs)):
+            if index == 2:
+                raise av.error.InvalidDataError(
+                    1094995529, "simulated corrupt frame mid-stream", str(CLEAN_AVI)
+                )
+            yield frame
+
+    monkeypatch.setattr(type(source._container), "decode", flaky_decode)
+
+    with pytest.raises(DecodeError, match="partway") as excinfo:
+        list(source.read(sample_indices("all", source.total_frames)))
+    assert not isinstance(excinfo.value, av.error.FFmpegError)
+
+
+def test_pyav_mid_stream_value_error_becomes_decode_error(monkeypatch):
+    pytest.importorskip("av")
+    source = open_source(CLEAN_AVI, library="pyav")
+    real_decode = type(source._container).decode
+
+    def flaky_decode(self, *args, **kwargs):
+        for index, frame in enumerate(real_decode(self, *args, **kwargs)):
+            if index == 2:
+                raise ValueError("simulated malformed frame data")
+            yield frame
+
+    monkeypatch.setattr(type(source._container), "decode", flaky_decode)
+
+    with pytest.raises(DecodeError, match="partway"):
+        list(source.read(sample_indices("all", source.total_frames)))
+
+
+def test_pyav_read_yields_the_frames_decoded_before_a_mid_stream_error(monkeypatch):
+    av = pytest.importorskip("av")
+    source = open_source(CLEAN_AVI, library="pyav")
+    real_decode = type(source._container).decode
+
+    def flaky_decode(self, *args, **kwargs):
+        for index, frame in enumerate(real_decode(self, *args, **kwargs)):
+            if index == 2:
+                raise av.error.InvalidDataError(1094995529, "simulated failure", str(CLEAN_AVI))
+            yield frame
+
+    monkeypatch.setattr(type(source._container), "decode", flaky_decode)
+
+    seen: list[int] = []
+
+    def _consume() -> None:
+        for index, _ in source.read(sample_indices("all", source.total_frames)):
+            seen.append(index)
+
+    with pytest.raises(DecodeError):
+        _consume()
+    assert seen == [0, 1]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import weakref
 from pathlib import Path
@@ -407,6 +408,81 @@ def test_resume_after_interrupt_leaves_no_partial_output(tmp_path, monkeypatch):
     assert len(list(out_dir.glob("frame_*.png"))) == 4
 
 
+def test_a_crash_between_the_two_renames_of_a_redo_is_recovered_on_the_next_call(tmp_path):
+    video = tmp_path / "video.avi"
+    _write_clip(video, 8)
+    profile = _profile(sampling=SamplingSpec(mode="uniform", frames=4))
+    record = _inventory_record()
+    out_dir = tmp_path / "out"
+
+    first = process_video(video, record, profile, CenterBackend(), out_dir)
+    assert first.status == "ok"
+    original_frame_names = {p.name for p in out_dir.glob("frame_*.png")}
+
+    # simulate a crash between the two renames of a redo's atomic swap: the old, good directory
+    # has already been moved aside, but a new (here, abandoned) attempt was never swapped in
+    old_dir = out_dir.with_name(f"{out_dir.name}.old-{os.getpid()}")
+    out_dir.rename(old_dir)
+    abandoned_tmp = out_dir.with_name(f"{out_dir.name}.tmp-{os.getpid()}")
+    abandoned_tmp.mkdir()
+    (abandoned_tmp / "frame_000000.png").write_bytes(b"an abandoned, unfinished attempt")
+
+    # a source that is guaranteed to fail, so this call cannot itself write a fresh out_dir --
+    # whatever ends up at out_dir afterwards can only be the recovery step's doing
+    corrupt_video = tmp_path / "corrupt.avi"
+    corrupt_video.write_bytes(b"not a real video file" * 20)
+    second = process_video(corrupt_video, record, profile, CenterBackend(), out_dir)
+
+    assert second.status == "decode_error"
+    assert not old_dir.exists()
+    assert not abandoned_tmp.exists()
+    assert out_dir.is_dir()
+    assert {p.name for p in out_dir.glob("frame_*.png")} == original_frame_names
+
+
+# ----------------------------------------------------------------------------- windowed streaming
+
+
+def test_backend_detect_never_receives_more_than_one_window(tmp_path):
+    video = tmp_path / "video.avi"
+    n_frames = 100  # more than three windows of 32
+    _write_clip(video, n_frames)
+    profile = _profile(sampling=SamplingSpec(mode="all"))
+    batch_sizes: list[int] = []
+
+    class _CountingBackend(CenterBackend):
+        def detect(self, frames: np.ndarray) -> list[list[Face]]:
+            batch_sizes.append(len(frames))
+            return super().detect(frames)
+
+    result = process_video(
+        video, _inventory_record(), profile, _CountingBackend(), tmp_path / "out"
+    )
+
+    assert result.status == "ok"
+    assert result.n_frames == n_frames
+    assert batch_sizes  # detect was actually called
+    assert max(batch_sizes) <= 32
+    assert len(batch_sizes) >= 4  # ceil(100 / 32)
+    assert sum(batch_sizes) == n_frames
+
+
+def test_a_clip_spanning_several_windows_writes_every_frame_in_order(tmp_path):
+    video = tmp_path / "video.avi"
+    _write_clip(video, 70)  # more than two windows of 32
+    profile = _profile(sampling=SamplingSpec(mode="all"))
+    record = _inventory_record()
+
+    result = process_video(video, record, profile, CenterBackend(), tmp_path / "out")
+
+    assert result.status == "ok"
+    assert result.n_frames == 70
+    assert result.frame_indices == list(range(70))
+    clip = json.loads((tmp_path / "out" / "clip.json").read_text("utf-8"))
+    assert [frame["index"] for frame in clip["frames"]] == list(range(70))
+    assert len(list((tmp_path / "out").glob("frame_*.png"))) == 70
+
+
 # ------------------------------------------------------------------------------------ crop-empty
 
 
@@ -613,6 +689,41 @@ def test_a_second_ok_run_replaces_the_first_output_directory(tmp_path):
     assert result.status == "ok"
     assert not (out_dir / "stray-leftover.txt").exists()
     assert len(list(out_dir.glob("frame_*.png"))) == 4
+
+
+def test_a_mid_stream_decode_error_during_the_windowed_pass_removes_the_tmp_dir(
+    tmp_path, monkeypatch
+):
+    import dfwb.preprocess.face.process as process_module
+    from dfwb.preprocess.face.decode import DecodeError
+
+    video = tmp_path / "video.avi"
+    _write_clip(video, 8)
+    profile = _profile(sampling=SamplingSpec(mode="uniform", frames=4))
+    out_dir = tmp_path / "out"
+
+    real_source = process_module.open_source(video, library="opencv")
+
+    class _FlakySource:
+        total_frames = real_source.total_frames
+        fps = real_source.fps
+        width = real_source.width
+        height = real_source.height
+
+        def read(self, indices: list[int]):
+            for seen, item in enumerate(real_source.read(indices), start=1):
+                yield item
+                if seen == 2:
+                    raise DecodeError("simulated mid-stream failure")
+
+    monkeypatch.setattr(process_module, "open_source", lambda path, *, library: _FlakySource())
+
+    result = process_video(video, _inventory_record(), profile, CenterBackend(), out_dir)
+
+    assert result.status == "decode_error"
+    assert "simulated mid-stream failure" in (result.reason or "")
+    assert not out_dir.exists()
+    assert list(tmp_path.glob("out.tmp-*")) == []
 
 
 def test_a_decode_error_while_reopening_for_identity_cluster_is_reported(tmp_path, monkeypatch):

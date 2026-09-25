@@ -27,19 +27,71 @@ from pathlib import Path
 from typing import Any
 
 from dfwb.core.errors import ConfigError, ContractError
+from dfwb.core.hashing import canonical_json
 from dfwb.core.paths import ResolvedRoot, RootName, resolve_roots
 from dfwb.core.records.io import read_jsonl
 from dfwb.core.records.local import ProcessedRecord, ProcessingProfile
 
-__all__ = ["Store"]
+__all__ = ["Store", "recover_video_dir", "video_relpath"]
 
 _log = logging.getLogger(__name__)
 
 _INDEX_FILE = "index.jsonl"
 _PROFILE_FILE = "profile.json"
 _TMP_SUFFIX = re.compile(r"\.tmp-\d+$")
+_OLD_SUFFIX = re.compile(r"\.old-\d+$")
 
 Key = tuple[str, str | None]
+
+
+def video_relpath(key: str, compression: str | None) -> str:
+    """``<key>/<compression or "_">``, one video's output directory relative to a store root.
+
+    Keys carry a ``/`` of their own (``<task>/<id>``), so this nests one directory per task
+    inside one per dataset. Shared by :meth:`Store.video_dir` and
+    :func:`dfwb.preprocess.face.process.process_video`, which needs the same path but has no
+    :class:`Store` of its own to ask.
+    """
+    return f"{key}/{compression or '_'}"
+
+
+def _stray_siblings(out_dir: Path) -> tuple[list[Path], list[Path]]:
+    """``(old dirs, tmp dirs)`` next to ``out_dir`` left by an atomic swap that never finished."""
+    parent = out_dir.parent
+    if not parent.is_dir():
+        return [], []
+    old_dirs = [
+        path
+        for path in parent.glob(f"{out_dir.name}.old-*")
+        if path.is_dir() and _OLD_SUFFIX.search(path.name)
+    ]
+    tmp_dirs = [
+        path
+        for path in parent.glob(f"{out_dir.name}.tmp-*")
+        if path.is_dir() and _TMP_SUFFIX.search(path.name)
+    ]
+    return old_dirs, tmp_dirs
+
+
+def recover_video_dir(out_dir: Path) -> None:
+    """Repair or clean up whatever ``out_dir.old-*``/``out_dir.tmp-*`` siblings a run that
+    stopped mid-swap left behind.
+
+    A successful redo replaces ``out_dir`` in two steps: the previous, good directory is renamed
+    to a private ``.old-<pid>`` sibling, then the freshly written ``.tmp-<pid>`` directory is
+    renamed into ``out_dir``'s place, and only then is the ``.old-<pid>`` sibling deleted. A crash
+    between the first and second of those steps leaves ``out_dir`` missing with its last good
+    content sitting in ``.old-<pid>``; this restores it, since a redo that never finished must
+    never look like data was lost. Any other leftover -- a ``.tmp-<pid>`` whose swap never
+    happened, or an ``.old-<pid>`` whose final delete never ran after a swap that did complete --
+    holds nothing a reader should see and is simply removed.
+    """
+    old_dirs, tmp_dirs = _stray_siblings(out_dir)
+    if not out_dir.exists() and old_dirs:
+        old_dirs[0].rename(out_dir)
+        old_dirs = old_dirs[1:]
+    for stray in (*old_dirs, *tmp_dirs):
+        shutil.rmtree(stray, ignore_errors=True)
 
 
 def _is_inside(path: Path, parent: Path) -> bool:
@@ -107,24 +159,20 @@ class Store:
     def video_dir(self, record: ProcessedRecord) -> Path:
         """``<root>/<key>/<compression or "_">/``, the directory ``record`` is (or would be)
         written into."""
-        return self.root / record.key / (record.compression or "_")
+        return self.root / video_relpath(record.key, record.compression)
 
     def append(self, record: ProcessedRecord) -> None:
         """Append ``record`` to ``index.jsonl`` as one canonical JSON line, then flush and fsync.
 
         Every outcome is appended, not only ``ok`` ones, so the index always says what happened to
         every video that was attempted.
+
+        Raises:
+            ValueError: a field of ``record`` is NaN or infinite, which is not valid JSON;
+                nothing is written.
         """
+        line = canonical_json(dataclasses.asdict(record)) + "\n"
         self.root.mkdir(parents=True, exist_ok=True)
-        line = (
-            json.dumps(
-                dataclasses.asdict(record),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
         with self.index_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(line)
             handle.flush()
@@ -186,17 +234,20 @@ class Store:
             )
 
     def cleanup_partial(self) -> None:
-        """Remove every leftover ``*.tmp-<pid>`` video directory under this store.
+        """Repair or clean up every video directory under this store left mid-swap by a crash.
 
-        A directory in this shape is always the tmp sibling of a video directory that a crashed
-        run never finished renaming into place; it holds no output any reader should see.
+        Every distinct ``.tmp-<pid>``/``.old-<pid>`` sibling found is resolved with
+        :func:`recover_video_dir`: a video whose last good directory is stranded in ``.old-*``
+        gets it restored, and every other stray tmp or old directory is simply removed.
         """
         if not self.root.is_dir():
             return
-        stale = [
-            path
-            for path in self.root.rglob("*.tmp-*")
-            if path.is_dir() and _TMP_SUFFIX.search(path.name)
-        ]
-        for path in stale:
-            shutil.rmtree(path, ignore_errors=True)
+        slots: set[Path] = set()
+        for path in self.root.rglob("*"):
+            if not path.is_dir():
+                continue
+            match = _TMP_SUFFIX.search(path.name) or _OLD_SUFFIX.search(path.name)
+            if match:
+                slots.add(path.with_name(path.name[: match.start()]))
+        for out_dir in slots:
+            recover_video_dir(out_dir)

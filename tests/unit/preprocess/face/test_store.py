@@ -9,6 +9,7 @@ datasets-root refusal is exercised on purpose, not by accident of the machine ru
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from dfwb.core.records.local import (
     TrackSpec,
     TrackStats,
 )
-from dfwb.preprocess.face.store import Store
+from dfwb.preprocess.face.store import Store, recover_video_dir, video_relpath
 
 _NO_DATASETS_ROOT = {"datasets": ResolvedRoot("datasets", None, "unset", "DFWB_DATASETS_ROOT")}
 
@@ -202,3 +203,106 @@ def test_a_store_root_outside_every_datasets_root_is_accepted(tmp_path):
         )
     }
     Store(tmp_path / "work" / "processed" / "toy-test", _profile(), roots=roots)
+
+
+# ------------------------------------------------------------------------------------ video_relpath
+
+
+def test_video_relpath_nests_the_key_and_uses_an_underscore_for_no_compression():
+    assert video_relpath("ffpp/vid001", "c23") == "ffpp/vid001/c23"
+    assert video_relpath("ffpp/vid002", None) == "ffpp/vid002/_"
+
+
+def test_video_dir_is_built_from_video_relpath(tmp_path):
+    store = Store(tmp_path / "store", _profile(), roots=_NO_DATASETS_ROOT)
+    record = _record("ffpp/vid001", compression="c23")
+    assert store.video_dir(record) == store.root / video_relpath(record.key, record.compression)
+
+
+# -------------------------------------------------------------------------------- canonical append
+
+
+def test_append_refuses_a_record_with_a_nan_field(tmp_path):
+    store = Store(tmp_path / "store", _profile(), roots=_NO_DATASETS_ROOT)
+    bad = ProcessedRecord(
+        key="a/1",
+        compression=None,
+        status="ok",  # type: ignore[arg-type]
+        n_frames=1,
+        frame_indices=[0],
+        relpath="a/1/_",
+        track=TrackStats(mean_confidence=math.nan, identity_switch=False),
+        reason=None,
+    )
+    with pytest.raises(ValueError, match="JSON"):
+        store.append(bad)
+    assert not store.index_path.exists() or store.index_path.read_text("utf-8") == ""
+
+
+# ------------------------------------------------------------------------------- crash-safe redo
+
+
+def test_recover_video_dir_restores_the_old_directory_when_out_dir_is_missing(tmp_path):
+    out_dir = tmp_path / "a" / "1" / "_"
+    out_dir.mkdir(parents=True)
+    (out_dir / "frame_000000.png").write_bytes(b"the last known-good content")
+
+    # a crash between the two renames of an atomic swap: the good directory was already moved
+    # aside, but the freshly-decoded replacement was never swapped into its place
+    old_dir = out_dir.with_name(f"{out_dir.name}.old-4242")
+    out_dir.rename(old_dir)
+    abandoned_tmp = out_dir.with_name(f"{out_dir.name}.tmp-4242")
+    abandoned_tmp.mkdir()
+    (abandoned_tmp / "frame_000000.png").write_bytes(b"an unfinished new attempt")
+
+    recover_video_dir(out_dir)
+
+    assert out_dir.is_dir()
+    assert (out_dir / "frame_000000.png").read_bytes() == b"the last known-good content"
+    assert not old_dir.exists()
+    assert not abandoned_tmp.exists()
+
+
+def test_recover_video_dir_just_cleans_up_when_out_dir_already_exists(tmp_path):
+    out_dir = tmp_path / "a" / "1" / "_"
+    out_dir.mkdir(parents=True)
+    (out_dir / "frame_000000.png").write_bytes(b"the current, already-complete content")
+
+    # a completed swap whose final delete of the old directory never ran, plus an unrelated
+    # leftover tmp directory from some other interrupted attempt
+    stray_old = out_dir.with_name(f"{out_dir.name}.old-111")
+    stray_old.mkdir()
+    stray_tmp = out_dir.with_name(f"{out_dir.name}.tmp-222")
+    stray_tmp.mkdir()
+
+    recover_video_dir(out_dir)
+
+    assert out_dir.is_dir()
+    assert (out_dir / "frame_000000.png").read_bytes() == b"the current, already-complete content"
+    assert not stray_old.exists()
+    assert not stray_tmp.exists()
+
+
+def test_recover_video_dir_is_a_no_op_when_nothing_needs_cleaning_up(tmp_path):
+    out_dir = tmp_path / "a" / "1" / "_"
+    out_dir.mkdir(parents=True)
+    recover_video_dir(out_dir)  # must not raise
+    assert out_dir.is_dir()
+
+    recover_video_dir(tmp_path / "never-created" / "_")  # must not raise either
+
+
+def test_cleanup_partial_restores_a_stranded_old_directory(tmp_path):
+    root = tmp_path / "store"
+    out_dir = root / "a" / "1" / "_"
+    out_dir.mkdir(parents=True)
+    (out_dir / "frame_000000.png").write_bytes(b"the last known-good content")
+    old_dir = out_dir.with_name(f"{out_dir.name}.old-4242")
+    out_dir.rename(old_dir)
+
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+    store.cleanup_partial()
+
+    assert out_dir.is_dir()
+    assert (out_dir / "frame_000000.png").read_bytes() == b"the last known-good content"
+    assert not old_dir.exists()

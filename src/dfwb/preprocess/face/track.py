@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from dfwb.core.records.local import TrackSpec
     from dfwb.preprocess.face.types import Face
 
-__all__ = ["TrackResult", "select_track"]
+__all__ = ["TrackResult", "Tracker", "select_track"]
 
 Box = tuple[float, float, float, float]
 
@@ -80,6 +80,111 @@ class TrackResult:
 
     frames: list[tuple[int, Face | None, str | None]]
     identity_switch: bool
+
+
+class Tracker:
+    """Chooses one face per frame, one frame at a time, keeping only the small amount of state
+    that carries between frames -- not the whole clip.
+
+    :func:`select_track` is a thin loop over this class, for callers that already hold every
+    frame's faces in memory; a caller decoding a clip incrementally (in windows, say, to bound how
+    much of a long video it holds in memory at once) can drive a :class:`Tracker` directly, one
+    :meth:`step` call per decoded frame, in ascending frame-index order, exactly as if it had
+    called :func:`select_track` on the whole clip at once.
+
+    Args:
+        spec: The profile's tracking settings; see :func:`select_track`.
+        min_score: Faces scoring below this are treated as not detected.
+        subject: The clip's subject embedding; see :func:`select_track`.
+
+    Raises:
+        ConfigError: ``spec.strategy`` is not one this release implements.
+        ValueError: ``subject`` was given to a strategy other than ``identity-cluster``.
+    """
+
+    def __init__(
+        self,
+        spec: TrackSpec,
+        *,
+        min_score: float,
+        subject: npt.NDArray[Any] | None = None,
+    ) -> None:
+        _check_strategy(spec.strategy)
+        if subject is not None and spec.strategy != "identity-cluster":
+            raise ValueError(
+                f"a subject embedding is only used by the 'identity-cluster' strategy, "
+                f"not {spec.strategy!r}"
+            )
+        self._min_score = min_score
+        self._subject = None if subject is None else _as_float32(subject)
+        self._iou = spec.iou
+        self._ema = spec.ema
+        # The previous box's weight, worked out in decimal: 1 - 0.7 in binary floating point is
+        # 0.30000000000000004, and the earlier pipeline multiplied by a literal 0.3.
+        self._keep = None if self._ema is None else float(Decimal(1) - Decimal(repr(self._ema)))
+
+        self._previous_raw: Box | None = None
+        self._previous_smoothed: Box | None = None
+        self._previous_good_index: int | None = None
+        self._previous_index: int | None = None
+        self.identity_switch = False
+
+    def step(self, index: int, faces: list[Face]) -> tuple[Face | None, str | None]:
+        """Choose a face on one more frame, following on from every earlier :meth:`step` call.
+
+        Args:
+            index: The frame's index; must be strictly greater than every index passed before.
+            faces: The faces detected on this frame; an empty list means nothing was detected.
+
+        Returns:
+            ``(face, reason)``, exactly as one entry of :attr:`TrackResult.frames` (see
+            :func:`select_track`): ``(None, reason)`` when the frame failed, ``(face, None)``
+            when it succeeded.
+
+        Raises:
+            ValueError: ``index`` does not strictly increase from the previous call.
+        """
+        if self._previous_index is not None and index <= self._previous_index:
+            raise ValueError(
+                f"frame indices must be strictly increasing, got {index} after "
+                f"{self._previous_index}"
+            )
+        self._previous_index = index
+
+        if not faces:
+            return None, "no-face"
+        usable = [face for face in faces if face.score >= self._min_score]
+        if not usable:
+            return None, "low-score"
+        chosen, fell_back = _choose(usable, self._previous_raw, self._subject, self._iou)
+        # the first chosen face is always the largest; that starts the track, it does not switch it
+        if fell_back and self._previous_raw is not None:
+            self.identity_switch = True
+        if chosen is None:
+            return None, "no-subject-match"
+
+        raw = chosen.bbox
+        reported = chosen
+        if self._ema is not None and self._keep is not None:
+            if (
+                self._previous_smoothed is None
+                or self._previous_good_index is None
+                or index - self._previous_good_index > _SMOOTHING_MAX_GAP
+            ):
+                smoothed = raw
+            else:
+                ema, keep, previous = self._ema, self._keep, self._previous_smoothed
+                smoothed = (
+                    ema * raw[0] + keep * previous[0],
+                    ema * raw[1] + keep * previous[1],
+                    ema * raw[2] + keep * previous[2],
+                    ema * raw[3] + keep * previous[3],
+                )
+                reported = dataclasses.replace(chosen, bbox=smoothed)
+            self._previous_smoothed = smoothed
+        self._previous_good_index = index
+        self._previous_raw = raw
+        return reported, None
 
 
 def select_track(
@@ -121,70 +226,12 @@ def select_track(
         ValueError: ``subject`` was given to a strategy other than ``identity-cluster``, or the
             frame indices do not increase.
     """
-    _check_strategy(spec.strategy)
-    if subject is not None and spec.strategy != "identity-cluster":
-        raise ValueError(
-            f"a subject embedding is only used by the 'identity-cluster' strategy, "
-            f"not {spec.strategy!r}"
-        )
-    subject_vector = None if subject is None else _as_float32(subject)
-    ema = spec.ema
-    # The previous box's weight, worked out in decimal: 1 - 0.7 in binary floating point is
-    # 0.30000000000000004, and the earlier pipeline multiplied by a literal 0.3.
-    keep = None if ema is None else float(Decimal(1) - Decimal(repr(ema)))
-
+    tracker = Tracker(spec, min_score=min_score, subject=subject)
     results: list[tuple[int, Face | None, str | None]] = []
-    previous_raw: Box | None = None
-    previous_smoothed: Box | None = None
-    previous_good_index: int | None = None
-    previous_index: int | None = None
-    identity_switch = False
-
     for index, faces in per_frame:
-        if previous_index is not None and index <= previous_index:
-            raise ValueError(
-                f"frame indices must be strictly increasing, got {index} after {previous_index}"
-            )
-        previous_index = index
-
-        if not faces:
-            results.append((index, None, "no-face"))
-            continue
-        usable = [face for face in faces if face.score >= min_score]
-        if not usable:
-            results.append((index, None, "low-score"))
-            continue
-        chosen, fell_back = _choose(usable, previous_raw, subject_vector, spec.iou)
-        # the first chosen face is always the largest; that starts the track, it does not switch it
-        if fell_back and previous_raw is not None:
-            identity_switch = True
-        if chosen is None:
-            results.append((index, None, "no-subject-match"))
-            continue
-
-        raw = chosen.bbox
-        reported = chosen
-        if ema is not None and keep is not None:
-            if (
-                previous_smoothed is None
-                or previous_good_index is None
-                or index - previous_good_index > _SMOOTHING_MAX_GAP
-            ):
-                smoothed = raw
-            else:
-                smoothed = (
-                    ema * raw[0] + keep * previous_smoothed[0],
-                    ema * raw[1] + keep * previous_smoothed[1],
-                    ema * raw[2] + keep * previous_smoothed[2],
-                    ema * raw[3] + keep * previous_smoothed[3],
-                )
-                reported = dataclasses.replace(chosen, bbox=smoothed)
-            previous_smoothed = smoothed
-        previous_good_index = index
-        previous_raw = raw
-        results.append((index, reported, None))
-
-    return TrackResult(frames=results, identity_switch=identity_switch)
+        face, reason = tracker.step(index, faces)
+        results.append((index, face, reason))
+    return TrackResult(frames=results, identity_switch=tracker.identity_switch)
 
 
 def _check_strategy(strategy: str) -> None:

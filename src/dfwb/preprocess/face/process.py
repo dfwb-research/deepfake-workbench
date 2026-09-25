@@ -2,11 +2,22 @@
 
 :func:`process_video` is the per-video unit the runner (not part of this module) schedules across
 many videos and workers: it decodes the frames a profile asks for, tracks one face across them,
-crops and writes each one as a lossless PNG, and describes the whole clip in ``clip.json``. Output
-never appears half-written: everything is written into a private ``.tmp-<pid>`` sibling of the
-final directory and only renamed into place once every frame and ``clip.json`` are on disk, so a
-process killed partway through leaves nothing for a reader to see, and the very next call for the
-same video clears away whatever that crash left behind before it starts its own attempt.
+crops and writes each one as a lossless PNG, and describes the whole clip in ``clip.json``.
+
+Frames are decoded and processed in fixed-size windows (:data:`_WINDOW`), not all at once: a long,
+high-resolution video sampled with ``mode: all`` can have far more frames than fit comfortably in
+memory as raw pixel arrays, so at most one window's worth is ever held at a time, and only the
+small per-frame records (index, bbox, score, landmarks) that ``clip.json`` needs are kept for the
+whole clip. One :class:`~dfwb.preprocess.face.track.Tracker` is driven across every window in
+turn, so a face is followed exactly as it would be if the whole clip had been decoded at once.
+
+Output never appears half-written: every frame is written straight into a private ``.tmp-<pid>``
+sibling of the final directory, and a video whose result is not ``ok`` has that sibling removed
+rather than kept or renamed. A successful result replaces any previous ``out_dir`` through
+:func:`~dfwb.preprocess.face.store.recover_video_dir`'s two-step swap (the previous directory is
+renamed aside before the new one takes its place, and only deleted once that has succeeded), so a
+process killed mid-swap never leaves ``out_dir`` missing -- the next call for the same video
+restores it before doing any new work.
 
 Numpy and cv2 are only needed once real frames exist, so, matching the rest of this package, they
 are imported inside the functions that use them rather than at module scope.
@@ -15,10 +26,12 @@ are imported inside the functions that use them rather than at module scope.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import logging
 import os
 import shutil
 import weakref
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -30,7 +43,8 @@ from dfwb.preprocess.face.crop import crop_face, map_landmarks
 from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source
 from dfwb.preprocess.face.identity import cluster_subject
 from dfwb.preprocess.face.sampling import sample_indices
-from dfwb.preprocess.face.track import select_track
+from dfwb.preprocess.face.store import recover_video_dir, video_relpath
+from dfwb.preprocess.face.track import Tracker
 from dfwb.preprocess.face.types import Face
 
 if TYPE_CHECKING:
@@ -42,6 +56,12 @@ __all__ = ["process_video"]
 _log = logging.getLogger(__name__)
 
 _SUBJECT_SEARCH_FRAMES = 8
+
+# How many sampled frames are decoded, detected and (for identity-cluster) embedded together in
+# one batch. Bounds peak memory for a clip of any length to roughly one window's worth of raw
+# frames, rather than the whole clip's.
+_WINDOW = 32
+
 _EXTRA_HINT = 'pip install "deepfake-workbench[preprocess]"'
 
 # Backend instances that have already been warned once about missing head pose during
@@ -60,11 +80,6 @@ def _require_cv2() -> Any:
     return cv2
 
 
-def _relpath(record: InventoryRecord) -> str:
-    """The video's directory relative to the store root: ``<key>/<compression or "_">``."""
-    return f"{record.key}/{record.compression or '_'}"
-
-
 _FailureStatus = Literal["no_face", "decode_error", "too_short"]
 
 
@@ -75,20 +90,10 @@ def _failure(record: InventoryRecord, *, status: _FailureStatus, reason: str) ->
         status=status,
         n_frames=0,
         frame_indices=[],
-        relpath=_relpath(record),
+        relpath=video_relpath(record.key, record.compression),
         track=None,
         reason=reason,
     )
-
-
-def _clear_stale_tmp(out_dir: Path) -> None:
-    """Remove any ``<out_dir>.tmp-*`` sibling a previous, crashed attempt left behind."""
-    parent = out_dir.parent
-    if not parent.is_dir():
-        return
-    for candidate in parent.glob(f"{out_dir.name}.tmp-*"):
-        if candidate.is_dir():
-            shutil.rmtree(candidate, ignore_errors=True)
 
 
 def _warn_missing_pose_once(backend: FaceBackend) -> None:
@@ -107,8 +112,24 @@ def _warn_missing_pose_once(backend: FaceBackend) -> None:
     )
 
 
-def _decode(source: VideoSource, indices: list[int]) -> list[tuple[int, npt.NDArray[np.uint8]]]:
+def _decode_all(source: VideoSource, indices: list[int]) -> list[tuple[int, npt.NDArray[np.uint8]]]:
+    """Decode ``indices`` and hold every frame in memory at once.
+
+    Only for the identity-cluster subject search, which is fixed at
+    :data:`_SUBJECT_SEARCH_FRAMES` frames -- small enough that streaming it in windows would add
+    complexity for no benefit. The clip's own sampled frames go through :func:`_windows` instead.
+    """
     return list(source.read(indices))
+
+
+def _windows[T](iterator: Iterator[T], size: int) -> Iterator[list[T]]:
+    """``iterator``'s items, grouped into lists of at most ``size``, the last one possibly
+    shorter. Never buffers more than one group at a time."""
+    while True:
+        chunk = list(itertools.islice(iterator, size))
+        if not chunk:
+            return
+        yield chunk
 
 
 def _batch_detect(
@@ -147,10 +168,12 @@ def process_video(
 ) -> ProcessedRecord:
     """Decode, track, crop and write one video's chosen frames into ``out_dir``.
 
-    Writes into ``out_dir.tmp-<pid>`` and only renames it to ``out_dir`` once every frame and
-    ``clip.json`` are written; any previous ``out_dir`` is replaced, and any ``.tmp-*`` sibling
-    left by a crashed earlier attempt at this same video is cleared first. Nothing is written to
-    ``out_dir`` at all when the result is not ``ok``.
+    Writes every kept frame straight into ``out_dir``'s private ``.tmp-<pid>`` sibling as it is
+    produced, at most :data:`_WINDOW` decoded frames held in memory at a time, and only swaps that
+    sibling into ``out_dir``'s place once the whole clip has been processed and the result is
+    ``ok``; for any other result the sibling is removed and ``out_dir`` is left untouched. Any
+    ``.tmp-*``/``.old-*`` sibling a previous, interrupted attempt at this same video left behind
+    is resolved first (see :func:`~dfwb.preprocess.face.store.recover_video_dir`).
 
     Args:
         source_path: The video file, or a directory of already-extracted frame images.
@@ -162,16 +185,16 @@ def process_video(
 
     Returns:
         A :class:`ProcessedRecord` describing the outcome: ``status`` is ``"too_short"`` when the
-        source reports no frames at all, ``"decode_error"`` when it cannot be opened or read,
-        ``"no_face"`` when frames were decoded but none produced a usable, croppable face, and
-        ``"ok"`` otherwise (with ``reason`` set to ``"short: N of M"`` when fewer frames were
-        written than the profile asked for).
+        source reports no frames at all, ``"decode_error"`` when it cannot be opened or read (at
+        open, or partway through decoding), ``"no_face"`` when frames were decoded but none
+        produced a usable, croppable face, and ``"ok"`` otherwise (with ``reason`` set to
+        ``"short: N of M"`` when fewer frames were written than the profile asked for).
 
     Raises:
         ConfigError: the profile's track strategy is ``"identity-cluster"`` but ``backend`` has no
             ``embed`` method. Raised before any decoding happens.
     """
-    _clear_stale_tmp(out_dir)
+    recover_video_dir(out_dir)
 
     identity_cluster = profile.track.strategy == "identity-cluster"
     embed = getattr(backend, "embed", None)
@@ -197,7 +220,7 @@ def process_video(
         if identity_cluster:
             _warn_missing_pose_once(backend)
             subject_indices = sample_indices("uniform", total_frames, frames=_SUBJECT_SEARCH_FRAMES)
-            subject_frames = _decode(source, subject_indices)
+            subject_frames = _decode_all(source, subject_indices)
             subject_faces = _batch_detect(backend, subject_frames)
             subject_faces = _embed_all(embed, subject_frames, subject_faces)
             subject = cluster_subject([face for _, faces in subject_faces for face in faces])
@@ -211,42 +234,66 @@ def process_video(
             frames=profile.sampling.frames,
             stride=profile.sampling.stride,
         )
-        decoded = _decode(source, requested)
-        per_frame = _batch_detect(backend, decoded)
-        if identity_cluster:
-            per_frame = _embed_all(embed, decoded, per_frame)
     except DecodeError as exc:
         return _failure(record, status="decode_error", reason=str(exc))
 
     min_score = getattr(profile.backend, "min_score", 0.0)
-    track_result = select_track(per_frame, profile.track, min_score=min_score, subject=subject)
+    tracker = Tracker(profile.track, min_score=min_score, subject=subject)
 
-    frame_by_index = dict(decoded)
+    tmp_dir = out_dir.with_name(out_dir.name + f".tmp-{os.getpid()}")
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    frames_meta: list[dict[str, Any]] = []
     failed_frames: list[dict[str, Any]] = []
-    crops: list[tuple[int, npt.NDArray[np.uint8], tuple[int, int, int, int], float, Any]] = []
-    for index, face, reason in track_result.frames:
-        if face is None:
-            failed_frames.append({"index": index, "reason": reason})
-            continue
-        crop_result = crop_face(
-            frame_by_index[index], face.bbox, scale=profile.crop.scale, size=profile.crop.size
-        )
-        if crop_result is None:
-            failed_frames.append({"index": index, "reason": "crop-empty"})
-            continue
-        landmarks = None
-        if profile.extras.landmarks and face.landmarks5 is not None:
-            landmarks = [list(point) for point in map_landmarks(face.landmarks5, crop_result)]
-        crops.append((index, crop_result.image, crop_result.box, float(face.score), landmarks))
+    cv2 = None
+    try:
+        for window in _windows(source.read(requested), _WINDOW):
+            per_frame = _batch_detect(backend, window)
+            if identity_cluster:
+                per_frame = _embed_all(embed, window, per_frame)
+            frame_by_index = dict(window)
+            for index, faces in per_frame:
+                face, reason = tracker.step(index, faces)
+                if face is None:
+                    failed_frames.append({"index": index, "reason": reason})
+                    continue
+                crop_result = crop_face(
+                    frame_by_index[index],
+                    face.bbox,
+                    scale=profile.crop.scale,
+                    size=profile.crop.size,
+                )
+                if crop_result is None:
+                    failed_frames.append({"index": index, "reason": "crop-empty"})
+                    continue
+                landmarks = None
+                if profile.extras.landmarks and face.landmarks5 is not None:
+                    landmarks = [
+                        list(point) for point in map_landmarks(face.landmarks5, crop_result)
+                    ]
+                cv2 = cv2 or _require_cv2()
+                bgr = cv2.cvtColor(crop_result.image, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(
+                    str(tmp_dir / f"frame_{index:06d}.png"), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6]
+                )
+                frames_meta.append(
+                    {
+                        "index": index,
+                        "bbox": list(crop_result.box),
+                        "score": float(face.score),
+                        "landmarks5": landmarks,
+                    }
+                )
+    except DecodeError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _failure(record, status="decode_error", reason=str(exc))
 
-    if not crops:
+    if not frames_meta:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return _failure(record, status="no_face", reason="no frame produced a usable face")
 
     decoder = "frames" if Path(source_path).is_dir() else profile.decode.library
-    frames_meta = [
-        {"index": index, "bbox": list(box), "score": score, "landmarks5": landmarks}
-        for index, _, box, score, landmarks in crops
-    ]
     clip = {
         "key": record.key,
         "compression": record.compression,
@@ -261,39 +308,32 @@ def process_video(
         "failed_frames": failed_frames,
         "track": {
             "strategy": profile.track.strategy,
-            "identity_switch": track_result.identity_switch,
+            "identity_switch": tracker.identity_switch,
         },
     }
-
-    cv2 = _require_cv2()
-    tmp_dir = out_dir.with_name(out_dir.name + f".tmp-{os.getpid()}")
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    for index, image_rgb, _, _, _ in crops:
-        bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(tmp_dir / f"frame_{index:06d}.png"), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6])
     (tmp_dir / "clip.json").write_text(canonical_json(clip) + "\n", encoding="utf-8")
 
+    old_dir = out_dir.with_name(f"{out_dir.name}.old-{os.getpid()}")
     if out_dir.exists():
-        shutil.rmtree(out_dir)
+        out_dir.rename(old_dir)
     tmp_dir.rename(out_dir)
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
 
-    n_written = len(crops)
+    n_written = len(frames_meta)
     total_requested = (
         profile.sampling.frames if profile.sampling.frames is not None else len(requested)
     )
     reason = None if n_written >= total_requested else f"short: {n_written} of {total_requested}"
-    mean_confidence = sum(score for _, _, _, score, _ in crops) / n_written
+    mean_confidence = sum(meta["score"] for meta in frames_meta) / n_written
 
     return ProcessedRecord(
         key=record.key,
         compression=record.compression,
         status="ok",
         n_frames=n_written,
-        frame_indices=[index for index, _, _, _, _ in crops],
-        relpath=_relpath(record),
-        track=TrackStats(
-            mean_confidence=mean_confidence, identity_switch=track_result.identity_switch
-        ),
+        frame_indices=[meta["index"] for meta in frames_meta],
+        relpath=video_relpath(record.key, record.compression),
+        track=TrackStats(mean_confidence=mean_confidence, identity_switch=tracker.identity_switch),
         reason=reason,
     )

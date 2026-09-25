@@ -124,6 +124,8 @@ class _PyAVSource:
 
     def __init__(self, path: Path) -> None:
         av = _require_av()
+        self._av = av
+        self._path = path
         try:
             container = av.open(str(path))
         except av.error.FFmpegError as exc:
@@ -158,12 +160,15 @@ class _PyAVSource:
         target = next(wanted, None)
         if target is None:
             return
-        for index, frame in enumerate(self._container.decode(self._stream)):
-            if index == target:
-                yield index, frame.to_ndarray(format="rgb24")
-                target = next(wanted, None)
-                if target is None:
-                    return
+        try:
+            for index, frame in enumerate(self._container.decode(self._stream)):
+                if index == target:
+                    yield index, frame.to_ndarray(format="rgb24")
+                    target = next(wanted, None)
+                    if target is None:
+                        return
+        except (self._av.error.FFmpegError, ValueError, OSError) as exc:
+            raise DecodeError(f"{self._path}: decoding failed partway through ({exc})") from exc
 
 
 class _FrameDirectorySource:
