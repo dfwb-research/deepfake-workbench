@@ -43,7 +43,8 @@ from dfwb.preprocess.packbuild import (
 )
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.lint import lint_pack
-from dfwb.protocols.rules import BenchmarkSpec, Split, local_key
+from dfwb.protocols.materialization import materialize, needs_official
+from dfwb.protocols.rules import BenchmarkSpec, Split, assign_benchmark, local_key
 
 _MODULE = "tests.unit.preprocess.test_packbuild"
 PACKDEMO_TARGET = f"{_MODULE}:PackDemoBuilder"
@@ -154,6 +155,31 @@ class PackDemoCarveBuilder(PackDemoBuilder):
         return {key: split for key, split in official.items() if split != "val"}
 
 
+class PackDemoValOnlyBuilder(PackDemoBuilder):
+    """A release whose publisher labels only its val split (AV-Deepfake1M++ is one): no test."""
+
+    dataset_id = "packdemo-valonly"
+
+    def official_splits(self, root: Path, records: Sequence[InventoryRecord]) -> dict[str, Split]:
+        official = super().official_splits(root, records)
+        return {key: split for key, split in official.items() if split == "val"}
+
+
+class PackDemoNoOfficialBuilder(PackDemoBuilder):
+    """A release with no publisher's split at all: an identity carve and a benchmark only."""
+
+    dataset_id = "packdemo-noofficial"
+    metadata_files = ()
+    schemes = {
+        "ident-72-14-14": SchemeSpec("ident-72-14-14", "derived", rationale="identity carve"),
+        "benchmark": SchemeSpec("benchmark", "subset", rationale="a small balanced test set"),
+    }
+    default_scheme = "ident-72-14-14"
+
+    def official_splits(self, root: Path, records: Sequence[InventoryRecord]) -> dict[str, Split]:
+        raise AssertionError("a dataset without an official scheme never reads one")
+
+
 def make_packdemo_tree(folder: Path) -> Path:
     """The raw release: 10 reals, 10 fakes per method, and the official split file."""
     for index, identity in enumerate(_IDENTITIES):
@@ -202,6 +228,12 @@ def setup_packdemo(
         {
             "packdemo": (PACKDEMO_TARGET, "Pack Demo", "PackDemo"),
             "packdemo-carve": (f"{_MODULE}:PackDemoCarveBuilder", "Pack Demo Carve", "PackDemo"),
+            "packdemo-valonly": (f"{_MODULE}:PackDemoValOnlyBuilder", "Val Only", "PackDemo"),
+            "packdemo-noofficial": (
+                f"{_MODULE}:PackDemoNoOfficialBuilder",
+                "No Official",
+                "PackDemo",
+            ),
         },
         packs={PACK_NAME: pack} if register_pack else None,
     )
@@ -541,6 +573,54 @@ def test_a_carve_dataset_without_pairs_or_benchmark(demo):
     notice = (out / "NOTICE.md").read_text("utf-8")
     assert 'Paper: "A Synthetic Release" (Tests, 2026).' in notice
     assert "no homepage recorded" in notice
+
+
+def test_a_benchmark_draws_from_every_record_when_the_official_split_has_no_test(demo):
+    # The publisher labels val only: there is no official test to draw from, so the card says
+    # the pool is every record, and recomputing the scheme needs no official split.
+    inventory = build_inventory("packdemo-valonly").path
+    records = read_inventory("packdemo-valonly", demo["work"])
+    builder = get_builder("packdemo-valonly")
+
+    result = build_dataset("packdemo-valonly", out=demo["pack"] / "packdemo-valonly")
+
+    assert result.schemes["official"].counts == {"val": 6}
+    benchmark = result.schemes["benchmark"]
+    assert benchmark.params["pool"] == "all"
+    rows = read_split_tsv(demo["pack"] / "packdemo-valonly" / "splits" / "benchmark.tsv.gz")
+    expected = assign_benchmark(
+        records,
+        spec=builder.benchmark,
+        is_real=builder.is_real,
+        task_rank=builder.task_rank(),
+        pool_keys=None,
+    )
+    assert {(r.key, r.compression) for r in rows} == set(expected)
+    assert {local_key(r.key).partition("_")[0] for r in rows} - set(_OFFICIAL["test"])
+
+    # As a recipe, it is recomputed from the inventory alone.
+    add_to_pack_yaml(demo["pack"], "packdemo-valonly")
+    (demo["pack"] / "packdemo-valonly" / "splits" / "benchmark.tsv.gz").unlink()
+    assert needs_official("packdemo-valonly/benchmark") is False
+    materialized = materialize(
+        "packdemo-valonly/benchmark", inventory=inventory, official=None, work_root=demo["work"]
+    )
+    assert materialized.sha256 == benchmark.sha256
+
+
+def test_a_dataset_without_an_official_scheme_needs_no_folder(demo):
+    build_inventory("packdemo-noofficial")
+    records = read_inventory("packdemo-noofficial", demo["work"])
+    builder = get_builder("packdemo-noofficial")
+    (demo["raw"] / "PackDemo").rename(demo["raw"] / "Elsewhere")
+
+    assignment = assign_scheme(builder, "benchmark", records, dataset_dir=None)
+    result = build_dataset("packdemo-noofficial", out=demo["pack"] / "packdemo-noofficial")
+
+    assert result.schemes["benchmark"].params["pool"] == "all"
+    assert result.schemes["benchmark"].counts == {"test": 4}
+    assert len(assignment) == 4
+    assert set(result.schemes) == {"ident-72-14-14", "benchmark"}
 
 
 def test_a_stale_inventory_is_built_with_a_warning(demo, tmp_path, caplog):

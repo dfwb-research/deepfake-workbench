@@ -296,3 +296,36 @@ def test_benchmark_pools_are_checked():
     with pytest.raises(ContractError) as info:
         assign_rule("benchmark", params, [], official=None, is_real=lambda r: True)
     assert "unknown benchmark pool 'some'" in info.value.message
+
+
+def test_materialize_never_replaces_different_videos(built, tmp_path):
+    for scheme in ("all-test", "ident-72-14-14"):
+        (built["dataset"] / "splits" / f"{scheme}.tsv.gz").unlink()
+    materialize(
+        "packdemo/all-test", inventory=built["inventory"], official=None, work_root=built["work"]
+    )
+    materialized = built["work"] / "packdemo" / "materialized"
+    videos = materialized / "videos.jsonl.gz"
+    split = materialized / "splits" / "all-test.tsv.gz"
+    before = (videos.read_bytes(), videos.stat().st_mtime_ns, split.read_bytes())
+
+    # The same inventory again: the videos are left exactly as they are.
+    materialize(
+        "packdemo/ident-72-14-14",
+        inventory=built["inventory"],
+        official=None,
+        work_root=built["work"],
+    )
+    assert (videos.read_bytes(), videos.stat().st_mtime_ns, split.read_bytes()) == before
+
+    # An inventory whose split rows still hash right but whose records differ is refused.
+    rows = read_jsonl(built["inventory"], InventoryRecord)
+    changed = tmp_path / "changed.jsonl"
+    write_jsonl(changed, [dataclasses.replace(rows[0], method="Other"), *rows[1:]])
+    with pytest.raises(ContractError) as info:
+        materialize("packdemo/all-test", inventory=changed, official=None, work_root=built["work"])
+
+    assert str(videos) in info.value.message
+    assert "delete" in info.value.hint
+    assert "same inventory" in info.value.hint
+    assert (videos.read_bytes(), videos.stat().st_mtime_ns, split.read_bytes()) == before

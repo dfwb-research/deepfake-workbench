@@ -575,6 +575,23 @@ def test_build_cli_update_pack_yaml_needs_an_out_named_after_the_dataset(
     assert not (paths["pack"] / "demo").exists()
 
 
+def test_build_cli_update_pack_yaml_with_out_dot_inside_the_dataset_folder(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    out.mkdir()
+    monkeypatch.chdir(out)
+
+    result = run("protocols", "build", "packdemo", "--out", ".", "--update-pack-yaml", "--json")
+
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert data["out"] == str(out)
+    assert data["pack_yaml"] == {"path": str(paths["pack"] / "pack.yaml"), "added": True}
+    assert (out / "dataset.yaml").is_file()
+
+
 def test_build_cli_without_an_inventory_hints_inventory_build(run, monkeypatch, tmp_path):
     paths = setup_packdemo(monkeypatch, tmp_path)
     paths["inventory"].unlink()

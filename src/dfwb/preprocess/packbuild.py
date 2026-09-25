@@ -162,11 +162,26 @@ def _scheme_spec(builder: BaseBuilder, scheme: str) -> SchemeSpec:
         ) from None
 
 
-def _scheme_params(builder: BaseBuilder, spec: SchemeSpec) -> dict[str, Any]:
+def _official_test_exists(
+    records: Sequence[InventoryRecord], official: Callable[[], Mapping[str, Split]]
+) -> bool:
+    """Whether the publisher's split puts at least one of ``records`` in ``test``."""
+    split = official()
+    return any(split.get(record.key) == "test" for record in records)
+
+
+def _scheme_params(
+    builder: BaseBuilder,
+    spec: SchemeSpec,
+    records: Sequence[InventoryRecord],
+    official: Callable[[], Mapping[str, Split]],
+) -> dict[str, Any]:
     """The rule parameters a scheme card records: the builder's, plus a benchmark's full spec.
 
-    A benchmark is drawn from the official test when the dataset has an official scheme, and from
-    every record otherwise.
+    A benchmark is drawn from the official test when the dataset has an official scheme whose
+    split puts records in ``test``. It is drawn from every record when there is no official
+    scheme, or when the publisher labels no test (a release that publishes val only), and the
+    card then says so, so recomputing it never needs the official split.
     """
     if spec.rule != "benchmark":
         return dict(spec.params)
@@ -176,12 +191,13 @@ def _scheme_params(builder: BaseBuilder, spec: SchemeSpec) -> dict[str, Any]:
             hint="set the builder's benchmark attribute (a BenchmarkSpec)",
         )
     has_official = any(other.rule in OFFICIAL_RULES for other in builder.schemes.values())
+    from_official = has_official and _official_test_exists(records, official)
     return {
         **spec.params,
         **benchmark_params(
             builder.benchmark,
             task_order=[task.abbr for task in builder.tasks],
-            pool="official-test" if has_official else "all",
+            pool="official-test" if from_official else "all",
         ),
     }
 
@@ -193,7 +209,7 @@ def _assign(
     official: Callable[[], Mapping[str, Split]],
 ) -> tuple[Assignment, dict[str, Any]]:
     spec = _scheme_spec(builder, scheme)
-    params = _scheme_params(builder, spec)
+    params = _scheme_params(builder, spec, records, official)
     needed = official() if rule_needs_official(spec.rule, params) else None
     assignment = assign_rule(spec.rule, params, records, official=needed, is_real=builder.is_real)
     return assignment, params
@@ -212,7 +228,8 @@ def assign_scheme(
     publisher's split with ``builder.official_splits(dataset_dir, records)``; ``ident-72-14-14``
     and ``all-test`` need nothing else; ``benchmark`` uses the builder's benchmark spec, its
     visual real/fake label and its task order, and draws from the records the official split puts
-    in ``test`` when the dataset has an official scheme (from every record otherwise).
+    in ``test`` when the dataset has an official scheme (from every record when it has none, or
+    when that split has no test).
 
     Raises:
         UnknownKeyError: ``scheme`` is not one of the builder's schemes.

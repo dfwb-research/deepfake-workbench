@@ -190,12 +190,13 @@ def build(
     NOTICE and PROVENANCE.json into --out. Rebuilding from the same inventory gives the same bytes.
     """
     from dfwb.core.errors import ConfigError
+    from dfwb.core.paths import absolute
     from dfwb.preprocess.packbuild import PACK_YAML, add_to_pack_yaml, build_dataset
 
-    if update_pack_yaml and out.name != dataset:
+    if update_pack_yaml and absolute(out).name != dataset:
         raise ConfigError(
-            f"--update-pack-yaml lists {dataset!r} in the pack, but --out {out} is not named "
-            f"{dataset!r}",
+            f"--update-pack-yaml lists {dataset!r} in the pack, but --out {absolute(out)} is not "
+            f"named {dataset!r}",
             hint=f"build into <pack root>/{dataset}",
         )
     result = build_dataset(dataset, out=out, inventory=inventory, schemes=schemes or None)

@@ -279,6 +279,20 @@ def _read_records(inventory: Path, dataset: str) -> list[VideoRecord]:
     return sorted(records, key=lambda r: (r.key, r.compression or ""))
 
 
+def _check_same_videos(path: Path, records: Sequence[VideoRecord], dataset: str) -> None:
+    """Refuse to go on when ``path`` holds other records than ``records``."""
+    existing = read_jsonl(path, VideoRecord)
+    if existing != list(records):
+        raise ContractError(
+            f"{path} holds {len(existing)} videos written from another inventory, which differ "
+            f"from this inventory's {len(records)}; replacing them would change what the schemes "
+            "already materialized from it describe",
+            hint=f"delete {path} (and the split files next to it) and materialize again, or "
+            f"materialize from the same inventory that wrote it (dfwb inventory build {dataset} "
+            "rebuilds the default one)",
+        )
+
+
 def materialize(
     ref: str | ProtocolRef,
     *,
@@ -296,6 +310,11 @@ def materialize(
     :func:`~dfwb.protocols.protocol.load` then finds them. A mismatch writes nothing, so the work
     root is left exactly as it was.
 
+    Every materialized scheme of a dataset shares one ``videos.jsonl.gz``. An existing one that
+    holds exactly this inventory's records is left untouched; one that holds different records
+    (written from another inventory) is never replaced, because the schemes materialized with it
+    would then describe videos that are not there.
+
     ``official`` is the publisher's split (record key -> split) for the rules that need it (see
     :func:`needs_official`); ``None`` otherwise.
 
@@ -304,7 +323,8 @@ def materialize(
         ConfigError: there is no inventory at ``inventory``, or the rule needs ``official`` and it
             is ``None``.
         ContractError: the scheme's rule cannot be recomputed, a pin does not match, the
-            inventory repeats a video, or the recomputed rows do not hash to the published value.
+            inventory repeats a video, the recomputed rows do not hash to the published value,
+            or the materialized ``videos.jsonl.gz`` holds different records.
     """
     scheme = _resolve(ref)
     rule, params = scheme.card.rule, scheme.card.params
@@ -339,8 +359,12 @@ def materialize(
         )
 
     materialized = work_root / scheme.dataset / "materialized"
+    videos = materialized / "videos.jsonl.gz"
+    if videos.is_file():
+        _check_same_videos(videos, records, scheme.dataset)
     (materialized / "splits").mkdir(parents=True, exist_ok=True)
-    write_jsonl(materialized / "videos.jsonl.gz", records)
+    if not videos.is_file():
+        write_jsonl(videos, records)
     path = materialized / "splits" / f"{scheme.name}.tsv.gz"
     write_split_tsv(path, rows)
     return MaterializeResult(scheme.ref, path, sha256, True)
