@@ -102,14 +102,24 @@ def _datasets(roots: Mapping[RootName, ResolvedRoot]) -> list[dict[str, Any]]:
     return rows
 
 
-def _licenses() -> dict[str, dict[str, str]]:
-    """Every licence acknowledgement recorded on this machine, keyed by name."""
-    from dfwb.core import licenses
+def _licenses() -> tuple[dict[str, dict[str, str]], dict[str, str] | None]:
+    """Every licence acknowledgement recorded on this machine, keyed by name, and the problem
+    that stopped the store being read (``{"message", "hint"}``), if any.
 
+    A store that cannot be read is reported, not raised: the doctor is where to find out about it,
+    so it must still report everything else.
+    """
+    from dfwb.core import licenses
+    from dfwb.core.errors import ContractError
+
+    try:
+        accepted = licenses.all_accepted()
+    except ContractError as exc:
+        return {}, {"message": exc.message, "hint": exc.hint}
     return {
         name: {"license": entry.license, "accepted_at": entry.accepted_at}
-        for name, entry in sorted(licenses.all_accepted().items())
-    }
+        for name, entry in sorted(accepted.items())
+    }, None
 
 
 def collect() -> dict[str, Any]:
@@ -122,6 +132,7 @@ def collect() -> dict[str, Any]:
     roots = resolve_roots()
     report = load_plugins()
     env_file = last_applied()
+    accepted, licenses_error = _licenses()
     return {
         "dfwb": __version__,
         "python": platform.python_version(),
@@ -156,7 +167,8 @@ def collect() -> dict[str, Any]:
             for r in report.records
         ],
         "datasets": _datasets(roots),
-        "licenses": _licenses(),
+        "licenses": accepted,
+        "licenses_error": licenses_error,
     }
 
 
@@ -214,7 +226,10 @@ def doctor(as_json: bool) -> None:
                 click.echo(f"warning: {dataset['warning']}", err=True)
     click.echo("")
     click.echo("LICENCES")
-    if not data["licenses"]:
+    if data["licenses_error"] is not None:
+        click.echo(data["licenses_error"]["message"])
+        click.echo(f"hint: {data['licenses_error']['hint']}")
+    elif not data["licenses"]:
         click.echo("no licences acknowledged yet")
     else:
         licence_rows = [

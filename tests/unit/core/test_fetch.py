@@ -114,3 +114,39 @@ def test_fetch_raises_installation_error_on_connection_refused(tmp_path):
         fetch(f"http://127.0.0.1:{port}/model.bin", SHA256, dest)
     assert not dest.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.fixture
+def silent_server() -> Iterator[str]:
+    """A server that accepts connections and never answers."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        listener.close()
+
+
+def test_fetch_gives_up_on_a_server_that_never_answers(silent_server, tmp_path):
+    dest = tmp_path / "model.bin"
+    with pytest.raises(InstallationError, match="timed out") as caught:
+        fetch(f"{silent_server}/model.bin", SHA256, dest, timeout=0.5)
+    assert "network" in caught.value.hint
+    assert not dest.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_waits_sixty_seconds_by_default(server, tmp_path, monkeypatch):
+    import urllib.request
+
+    seen: list[object] = []
+    real_urlopen = urllib.request.urlopen
+
+    def spy(*args: object, **kwargs: object) -> object:
+        seen.append(kwargs.get("timeout"))
+        return real_urlopen(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(urllib.request, "urlopen", spy)
+    fetch(f"{server}/model.bin", SHA256, tmp_path / "model.bin")
+    assert seen == [60.0]
