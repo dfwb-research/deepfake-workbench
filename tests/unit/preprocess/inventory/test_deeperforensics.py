@@ -72,12 +72,18 @@ def _touch(folder: Path, *names: str) -> None:
         (folder / name).touch()
 
 
-def _write_split_csvs(root: Path, **lines: list[str]) -> None:
-    """The per-video split lists: one video path per line, no header."""
-    folder = root / ".official_files" / "official_splits"
+def _write_split_lists(root: Path, **lines: list[str]) -> None:
+    """The release's split lists: one face-swap file name per line."""
+    folder = root / ".official_files" / "lists" / "splits"
     folder.mkdir(parents=True, exist_ok=True)
     for split in ("train", "val", "test"):
-        (folder / f"{split}.csv").write_text("\n".join(lines.get(split, [])), encoding="utf-8")
+        text = "".join(f"{line}\n" for line in lines.get(split, []))
+        (folder / f"{split}.txt").write_text(text, encoding="utf-8")
+
+
+def _official(root: Path) -> dict[str, str]:
+    builder = DeeperForensicsBuilder()
+    return dict(builder.official_splits(root, collect_records(builder, root)))
 
 
 @pytest.fixture
@@ -217,73 +223,123 @@ def test_no_compression_can_be_requested(defo_root):
 # ------------------------------------------------------------------------------ official split
 
 
-def test_the_official_split_matches_each_video_by_its_file_stem(defo_root):
+def test_a_fake_takes_the_split_of_its_listed_file_name(defo_root):
     _touch(defo_root / "manipulated_content" / "end_to_end_level_1" / "videos", "000_M101.mp4")
-    _write_split_csvs(
+    _write_split_lists(
         defo_root,
-        train=[
-            "manipulated_videos/end_to_end/000_M101.mp4",
-            "",
-            "  source_videos/M101/light_down/contempt/camera_front/"
-            "M101_light_down_contempt_camera_front.mp4  ",
-        ],
-        val=["manipulated_videos/end_to_end/001_W006.mp4"],
-        test=["manipulated_videos/end_to_end/999_M101.mp4"],  # not on disk: ignored
+        train=["000_M101.mp4", "", "   "],
+        val=["  001_W006.mp4  "],
+        test=["999_M101.mp4"],  # not on disk: names no record, but still names an actor
     )
-    builder = DeeperForensicsBuilder()
-    official = builder.official_splits(defo_root, collect_records(builder, defo_root))
-    assert official == {
-        "SR/M101_light_down_contempt_camera_front": "train",
-        # One listed stem covers every distortion task that reuses it.
+    assert _official(defo_root) == {
+        # Every version of a listed face swap shares its file name, so all of them are listed.
         "FS_E2E/000_M101": "train",
         "FS_L1/000_M101": "train",
         "FS_E2E/001_W006": "val",
-        # W006's real is on no list, so it is left out.
+        # A real takes the split of its actor's fakes: M101 has a test fake (999), so test.
+        "SR/M101_light_down_contempt_camera_front": "test",
+        "SR/W006_light_uniform_neutral_camera_front": "val",
     }
 
 
-def test_the_first_split_in_train_val_test_order_wins(defo_root):
-    _write_split_csvs(
-        defo_root,
-        train=["a/001_W006.mp4"],
-        val=["b/000_M101.mp4", "c/001_W006.mp4"],
-        test=["d/000_M101.mp4"],
+def test_a_real_takes_its_actors_split_test_before_val_before_train(defo_root):
+    _write_split_lists(defo_root, train=["000_M101.mp4", "001_W006.mp4"], val=["002_W006.mp4"])
+    official = _official(defo_root)
+    assert official["SR/M101_light_down_contempt_camera_front"] == "train"
+    assert official["SR/W006_light_uniform_neutral_camera_front"] == "val"
+
+
+def test_a_fake_on_several_lists_takes_test_before_val_before_train(defo_root):
+    _write_split_lists(
+        defo_root, train=["000_M101.mp4", "001_W006.mp4"], val=["000_M101.mp4", "001_W006.mp4"]
     )
-    builder = DeeperForensicsBuilder()
-    official = builder.official_splits(defo_root, collect_records(builder, defo_root))
-    assert official == {"FS_E2E/001_W006": "train", "FS_E2E/000_M101": "val"}
+    official = _official(defo_root)
+    assert official["FS_E2E/000_M101"] == "val"
+    assert official["FS_E2E/001_W006"] == "val"
+    _write_split_lists(defo_root, train=["000_M101.mp4"], test=["000_M101.mp4"])
+    assert _official(defo_root)["FS_E2E/000_M101"] == "test"
+
+
+def test_a_real_whose_actor_has_no_listed_fake_is_left_out(defo_root):
+    _write_split_lists(defo_root, test=["001_W006.mp4"])
+    assert _official(defo_root) == {
+        "FS_E2E/001_W006": "test",
+        "SR/W006_light_uniform_neutral_camera_front": "test",
+        # M101 has fakes on disk, but none of them is on a list: its real has no split.
+    }
+
+
+def test_the_actor_of_a_listed_name_is_its_second_underscore_part(defo_root):
+    _touch(defo_root.joinpath(*E2E_DIR), "7_M101_extra.mp4")
+    _touch(defo_root.joinpath(*REAL_DIR, "W006"), "W006.mp4")
+    _write_split_lists(defo_root, val=["7_M101_extra.mp4", "lonely.mp4"], test=["x_W006.mp4"])
+    assert _official(defo_root) == {
+        "FS_E2E/7_M101_extra": "val",
+        # "7_M101_extra.mp4" names actor M101 (the part between the first two "_").
+        "SR/M101_light_down_contempt_camera_front": "val",
+        # A real's actor is the part of its file name before the first "_", extension
+        # included when there is no "_": "W006.mp4" is not actor W006.
+        "SR/W006_light_uniform_neutral_camera_front": "test",
+    }
+
+
+def test_only_mp4_files_are_listed_but_a_listed_stem_covers_any_file(defo_root):
+    fl1 = defo_root / "manipulated_content" / "end_to_end_level_1" / "videos"
+    _touch(fl1, "000_M101.avi")  # same stem as a listed .mp4: matched by its stem
+    _touch(defo_root.joinpath(*E2E_DIR), "003_M101.avi")  # listed, but not an .mp4
+    _touch(defo_root.joinpath(*REAL_DIR, "M101", "extra"), "M101_extra.MP4")  # not .mp4
+    _write_split_lists(defo_root, train=["000_M101.mp4", "003_M101.avi"])
+    official = _official(defo_root)
+    assert official["FS_L1/000_M101"] == "train"
+    assert "FS_E2E/003_M101" not in official
+    assert "SR/M101_extra" not in official
+    assert official["SR/M101_light_down_contempt_camera_front"] == "train"
+
+
+def test_a_stem_listed_in_two_splits_goes_to_the_first_in_train_val_test_order(defo_root):
+    # A real of actor W006 whose stem equals a listed fake's: the real is test (W006 has a test
+    # fake), the fake is train; the shared stem then goes to train for both.
+    _touch(defo_root.joinpath(*REAL_DIR, "W006"), "W006_M101.mp4")
+    _touch(defo_root.joinpath(*E2E_DIR), "W006_M101.mp4")
+    _write_split_lists(defo_root, train=["W006_M101.mp4"], test=["001_W006.mp4"])
+    official = _official(defo_root)
+    assert official["SR/W006_M101"] == "train"
+    assert official["FS_E2E/W006_M101"] == "train"
+    assert official["SR/W006_light_uniform_neutral_camera_front"] == "test"
 
 
 def test_the_official_scheme_assigns_the_listed_videos(defo_root):
-    _write_split_csvs(
-        defo_root,
-        train=["x/000_M101.mp4"],
-        test=["y/W006_light_uniform_neutral_camera_front.mp4", "y/001_W006.mp4"],
-    )
+    _write_split_lists(defo_root, train=["000_M101.mp4"], test=["001_W006.mp4"])
     builder = DeeperForensicsBuilder()
     records = collect_records(builder, defo_root)
     assert assign_official(records, builder.official_splits(defo_root, records)) == {
         ("FS_E2E/000_M101", None): "train",
+        ("SR/M101_light_down_contempt_camera_front", None): "train",
         ("SR/W006_light_uniform_neutral_camera_front", None): "test",
         ("FS_E2E/001_W006", None): "test",
     }
 
 
-def test_the_official_split_needs_every_list(defo_root):
-    _write_split_csvs(defo_root, train=["a/000_M101.mp4"])
-    (defo_root / ".official_files" / "official_splits" / "val.csv").unlink()
+def test_the_official_split_needs_every_release_list(defo_root):
+    _write_split_lists(defo_root, train=["000_M101.mp4"])
+    (defo_root / ".official_files" / "lists" / "splits" / "val.txt").unlink()
+    # Per-video lists made elsewhere are not read.
+    csv_dir = defo_root / ".official_files" / "official_splits"
+    csv_dir.mkdir(parents=True)
+    for split in ("train", "val", "test"):
+        (csv_dir / f"{split}.csv").write_text("manipulated_videos/end_to_end/000_M101.mp4")
     builder = DeeperForensicsBuilder()
     records = collect_records(builder, defo_root)
-    with pytest.raises(ConfigError, match=r"val\.csv") as caught:
+    with pytest.raises(ConfigError, match=r"val\.txt") as caught:
         builder.official_splits(defo_root, records)
-    assert ".official_files/official_splits" in caught.value.hint
+    assert ".official_files/lists/splits" in caught.value.hint
 
 
 def test_an_unreadable_list_is_a_contract_error(defo_root):
-    _write_split_csvs(defo_root)
-    (defo_root / ".official_files" / "official_splits" / "test.csv").write_bytes(b"\xff\xfe\x00")
+    _write_split_lists(defo_root)
+    (defo_root / ".official_files" / "lists" / "splits" / "test.txt").write_bytes(b"\xff\xfe\x00")
     builder = DeeperForensicsBuilder()
-    with pytest.raises(ContractError, match=r"test\.csv"):
+    with pytest.raises(ContractError, match=r"test\.txt"):
         builder.official_splits(defo_root, collect_records(builder, defo_root))
 
 
@@ -370,7 +426,7 @@ def test_schemes_and_benchmark():
     assert builder.pairing_rule == "identity-fanout"
     assert builder.pairing_fanout == 1
     assert builder.metadata_files == tuple(
-        f".official_files/official_splits/{split}.csv" for split in ("train", "val", "test")
+        f".official_files/lists/splits/{split}.txt" for split in ("train", "val", "test")
     )
     assert [t.recursive for t in builder.tasks] == [True] + [False] * len(FAKE_TASKS)
 
@@ -378,11 +434,8 @@ def test_schemes_and_benchmark():
 def test_the_benchmark_draws_every_task_from_the_official_test(defo_root):
     for _, _, folder in FAKE_TASKS[:2]:
         _touch(defo_root / "manipulated_content" / folder / "videos", "002_M101.mp4")
-    _write_split_csvs(
-        defo_root,
-        train=["m/000_M101.mp4"],
-        test=["m/002_M101.mp4", "m/001_W006.mp4", "s/M101_light_down_contempt_camera_front.mp4"],
-    )
+    # M101 has a test fake, so its real is test; W006 has only a train fake.
+    _write_split_lists(defo_root, train=["000_M101.mp4", "001_W006.mp4"], test=["002_M101.mp4"])
     builder = DeeperForensicsBuilder()
     records = collect_records(builder, defo_root)
     official = builder.official_splits(defo_root, records)
@@ -394,10 +447,9 @@ def test_the_benchmark_draws_every_task_from_the_official_test(defo_root):
         task_rank=builder.task_rank(),
         pool_keys=[key for key, split in official.items() if split == "test"],
     )
-    # Every test fake (fewer than 100 per task) and the one test real; 000_M101 is train.
+    # Every test fake (fewer than 100 per task) and the one test real.
     assert {key for key, _ in chosen} == {
         "FS_E2E/002_M101",
-        "FS_E2E/001_W006",
         "FS_L1/002_M101",
         "SR/M101_light_down_contempt_camera_front",
     }
@@ -431,7 +483,9 @@ def test_the_layout_names_the_nesting_and_the_split_lists():
     assert "'DeeperForensics-1.0'" in text
     assert "original_content/source_videos/videos/**/<video>" in text
     assert "manipulated_content/reenact_postprocess/videos/<video>" in text
-    assert ".official_files/official_splits/" in text
+    assert ".official_files/lists/splits/{train,val,test}.txt" in text
+    assert "official_splits" not in text
+    assert "test before val before train" in text
     assert "{cX}" not in text
 
 
