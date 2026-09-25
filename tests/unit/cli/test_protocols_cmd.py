@@ -459,6 +459,17 @@ def test_diff_cli_expect_bump_accepts_none_or_more_for_an_unchanged_pack(run, tm
         assert (data["required_bump"], data["expected_bump"]) == ("none", claim)
 
 
+def test_diff_cli_expect_bump_accepts_pre_release_versions(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "0.1.0a1", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "0.1.0a2", _diff_rows())
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "none", "--json")
+
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert (data["required_bump"], data["actual_bump"]) == ("none", "none")
+
+
 def test_diff_cli_expect_bump_none_fails_on_a_text_change(run, tmp_path):
     old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
     new = _write_diff_pack(tmp_path / "new", "1.0.0", _diff_rows())

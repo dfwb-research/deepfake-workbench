@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 from tests.unit.preprocess.test_packbuild import PACK_NAME, setup_packdemo
 from tests.unit.protocols.conftest import make_pack, register_packs
 
@@ -88,6 +89,25 @@ def test_materialize_matches_published_hash(built, scheme):
     assert sorted(served.split_rows(), key=_row_order) == sorted(rows, key=_row_order)
     assert served.records() == records
     assert read_split_tsv(result.path) == sorted(rows, key=_row_order)
+
+
+def test_a_stale_materialized_split_hints_to_materialize_again(built):
+    # The pack was upgraded after the scheme was materialized: its card now publishes another
+    # hash, and the materialized copy no longer matches it.
+    (built["dataset"] / "splits" / "all-test.tsv.gz").unlink()
+    materialize(
+        "packdemo/all-test", inventory=built["inventory"], official=None, work_root=built["work"]
+    )
+    card_path = built["dataset"] / "dataset.yaml"
+    card = yaml.safe_load(card_path.read_text("utf-8"))
+    card["schemes"]["all-test"]["sha256"] = "0" * 64
+    card_path.write_text(yaml.safe_dump(card, sort_keys=False), "utf-8")
+
+    with pytest.raises(ContractError) as info:
+        load("packdemo/all-test", work_root=built["work"])
+
+    assert "materialized" in info.value.message
+    assert "dfwb protocols materialize packdemo/all-test" in info.value.hint
 
 
 def test_materialize_defaults_to_the_card_default_scheme(built):

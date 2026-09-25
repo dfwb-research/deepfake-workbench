@@ -14,7 +14,6 @@ would have them checked out.
 from __future__ import annotations
 
 import filecmp
-import re
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +29,7 @@ from dfwb.core.records import (
     read_jsonl,
     read_split_tsv,
 )
+from dfwb.protocols._versions import PackVersion, parse_version
 from dfwb.protocols._yaml import read_card, read_labels, read_model
 
 __all__ = ["DiffResult", "SchemeDiff", "bump_rank", "diff_packs", "version_bump"]
@@ -76,44 +76,39 @@ class DiffResult:
     relabelled: list[str] = field(default_factory=list)
 
 
-# ``MAJOR.MINOR.PATCH``, with an optional SemVer pre-release suffix (``-rc1``, ``-alpha.2``): the
-# suffix is accepted but plays no part in the comparison, since it says nothing about the numeric
-# core two packs are actually ordered by.
-_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$")
-
-
-def _parse_semver_core(value: str) -> tuple[int, int, int]:
-    match = _SEMVER_RE.match(value)
-    if match is None:
+def _parse_version(value: str) -> PackVersion:
+    parsed = parse_version(value)
+    if parsed is None:
         raise ContractError(
-            f"pack.yaml version {value!r} is not MAJOR.MINOR.PATCH",
-            hint="use plain SemVer, e.g. 1.2.3 or 1.2.3-rc1",
+            f"pack.yaml version {value!r} is not MAJOR.MINOR.PATCH (with an optional PEP 440 "
+            "pre-, post- or dev-release suffix)",
+            hint="use e.g. 1.2.3, 1.2.3rc1, 1.2.3.post1 or 1.2.3.dev1",
         )
-    major, minor, patch = (int(part) for part in match.groups())
-    return major, minor, patch
+    return parsed
 
 
 def version_bump(old: str, new: str) -> Literal["major", "minor", "patch", "none"]:
-    """The highest-order SemVer component that differs between two ``X.Y.Z[-pre]`` versions.
+    """The highest-order ``MAJOR.MINOR.PATCH`` component that differs between two versions.
 
-    The pre-release suffix, if any, is accepted but ignored: two versions with the same numeric
-    core (``1.0.0`` and ``1.0.0-rc1``, or two packs at exactly the same version) give ``"none"``,
-    a bump level below ``"patch"``.
+    Versions may carry a PEP 440 pre-, post- or dev-release suffix (``0.1.0a2``, ``1.0.0rc1``,
+    ``1.0.0.post1``, ``1.0.0.dev3``). The suffix orders versions, as PEP 440 does, but is no
+    bump level of its own: two versions with the same ``MAJOR.MINOR.PATCH`` (``0.1.0a1`` and
+    ``0.1.0a2``, ``1.0.0rc1`` and ``1.0.0``, or the same version twice) give ``"none"``.
 
     Raises:
-        ContractError: either version is not ``MAJOR.MINOR.PATCH`` (with an optional pre-release
-            suffix), or ``new``'s numeric core is lower than ``old``'s (a downgrade).
+        ContractError: either version is not a pack version, or ``new`` is lower than ``old``
+            in PEP 440 order (a downgrade, e.g. ``1.0.0`` to ``1.0.0rc1``).
     """
-    old_core = _parse_semver_core(old)
-    new_core = _parse_semver_core(new)
-    if new_core < old_core:
+    old_version = _parse_version(old)
+    new_version = _parse_version(new)
+    if new_version.sort_key < old_version.sort_key:
         raise ContractError(
             f"pack.yaml version went from {old!r} to {new!r}, which is a downgrade",
             hint="the new pack's version must be the same as, or later than, the old pack's",
         )
     names: tuple[Literal["major", "minor", "patch"], ...] = ("major", "minor", "patch")
     for index, name in enumerate(names):
-        if old_core[index] != new_core[index]:
+        if old_version.release[index] != new_version.release[index]:
             return name
     return "none"
 

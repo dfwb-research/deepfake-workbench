@@ -2,8 +2,8 @@
 
 References name a dataset (optionally scoped to a pack, when the plain dataset id is ambiguous
 across installed packs), an optional scheme within it, and an optional pin: either a pack version
-(``@1.2.0``) or a scheme hash prefix (``@3f9a1c2e``), so score files and configs can record exactly
-what they ran against.
+(``@1.2.0``, or a PEP 440 pre-, post- or dev-release such as ``@0.1.0a2``) or a scheme hash prefix
+(``@3f9a1c2e``), so score files and configs can record exactly what they ran against.
 """
 
 from __future__ import annotations
@@ -12,12 +12,14 @@ import re
 from dataclasses import dataclass
 
 from dfwb.core.errors import ConfigError
+from dfwb.protocols._versions import VERSION_PATTERN
 
 __all__ = ["ProtocolRef", "parse_ref"]
 
 _KEBAB = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _SCHEME = r"[a-z0-9][a-z0-9+.-]*"
-_PIN = r"\d+\.\d+\.\d+|[0-9a-f]{6,64}"
+# A version always has dots and a hash never does, so the two never overlap.
+_PIN = VERSION_PATTERN + r"|[0-9a-f]{6,64}"
 _GRAMMAR = "[<pack>:]<dataset>[/<scheme>][@<version or hash>]"
 
 _REF = re.compile(

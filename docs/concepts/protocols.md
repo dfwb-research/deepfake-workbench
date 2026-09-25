@@ -20,8 +20,9 @@ Most `dfwb protocols` commands take a reference of the form:
   pack publishes the same dataset id and the plain id would be ambiguous.
 - `/<scheme>` names one of the dataset's split schemes explicitly, e.g. `ffpp/official`, instead
   of taking the dataset's default.
-- `@<pin>` pins the reference to an exact pack version (`@1.4.0`) or to a scheme's content hash,
-  given as its first six or more hex characters (`@3f9a1c2`). Score files and run configs record
+- `@<pin>` pins the reference to an exact pack version (`@1.4.0`, or a PEP 440 pre-, post- or
+  dev-release such as `@0.1.0a2`) or to a scheme's content hash, given as its first six or more
+  hex characters (`@3f9a1c2`). Score files and run configs record
   a pinned reference, so exactly what a run trained or evaluated against can be reproduced later.
 
 A few valid references:

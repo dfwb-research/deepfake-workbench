@@ -509,6 +509,30 @@ def test_version_bump_ignores_a_semver_prerelease_suffix():
     assert version_bump("1.0.0", "1.1.0-alpha.2") == "minor"
 
 
+def test_version_bump_orders_pep440_pre_post_and_dev_releases():
+    assert version_bump("0.1.0a1", "0.1.0a2") == "none"
+    assert version_bump("0.1.0a2", "0.1.0") == "none"
+    assert version_bump("0.1.0a2", "0.2.0.dev1") == "minor"
+    assert version_bump("1.0.0.dev1", "1.0.0a1") == "none"
+    assert version_bump("1.0.0rc1", "1.0.0.post1") == "none"
+    assert version_bump("1.0.0", "1.0.0.post1.dev1") == "none"
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("1.0.0", "1.0.0rc1"),
+        ("1.0.0a2", "1.0.0a1"),
+        ("1.0.0.post1", "1.0.0"),
+        ("1.0.0a1", "1.0.0.dev1"),
+        ("1.0.0.post1", "1.0.0.post1.dev1"),
+    ],
+)
+def test_version_bump_rejects_a_pep440_downgrade(old, new):
+    with pytest.raises(ContractError, match="downgrade"):
+        version_bump(old, new)
+
+
 def test_version_bump_rejects_a_version_with_too_few_parts():
     with pytest.raises(ContractError, match=r"is not MAJOR\.MINOR\.PATCH"):
         version_bump("1.0", "1.0.1")
