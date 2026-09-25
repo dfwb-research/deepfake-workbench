@@ -15,7 +15,8 @@ and its videos may stay where they are or be moved into the task folders above. 
 ``.official_files/LAV-DF/{train,dev,test}/`` takes the task its metadata row's ``modify_video``
 and ``modify_audio`` name, which is the folder moving it would put it in: neither is
 RealVideo-RealAudio, both FakeVideo-FakeAudio, the video alone FakeVideo-RealAudio and the audio
-alone RealVideo-FakeAudio. One without a row has no known task and is skipped.
+alone RealVideo-FakeAudio. One without a row, or whose row does not give both flags as true or
+false, has no known task and is skipped: it is never labelled by default.
 
 Every video is keyed by its file stem, a six-digit id unique across the release. Its attributes
 come from its row of the release's ``metadata.json`` (``metadata.min.json`` when the full file is
@@ -89,9 +90,9 @@ _COPIED: Final = (
 
 @dataclass(frozen=True, slots=True)
 class _Row:
-    """What a video takes from its metadata row."""
+    """What a video takes from its metadata row; ``task`` is None when a flag is missing."""
 
-    task: str
+    task: str | None
     pair_key: str | None
     attrs: Mapping[str, Any]
 
@@ -150,8 +151,14 @@ def _row(row: Mapping[str, Any]) -> _Row:
         "fake_periods": row.get("fake_periods", []),
         **{name: row.get(name) for name in _COPIED},
     }
+    video, audio = row.get("modify_video"), row.get("modify_audio")
+    task = (
+        _TASK_OF_FLAGS[(video, audio)]
+        if isinstance(video, bool) and isinstance(audio, bool)
+        else None
+    )
     return _Row(
-        task=_TASK_OF_FLAGS[(bool(row.get("modify_video")), bool(row.get("modify_audio")))],
+        task=task,
         pair_key=_stem(str(original)) if original else None,
         attrs=attrs,
     )
@@ -238,8 +245,9 @@ class LAVDFBuilder(BaseBuilder):
         "The release unpacks to a LAV-DF folder with train/, dev/ and test/ folders of videos "
         "beside metadata.json and metadata.min.json: keep it as .official_files/LAV-DF. Its "
         "videos may stay in .official_files/LAV-DF/{train,dev,test}/, where each takes the "
-        "category its metadata row's modify_video and modify_audio name (a video without a row "
-        "is skipped), or be moved by those two flags into the folders above: neither is "
+        "category its metadata row's modify_video and modify_audio name (a video without a row, "
+        "or whose row lacks either flag, is skipped), or be moved by those two flags into the "
+        "folders above: neither is "
         "RealVideo-RealAudio, both FakeVideo-FakeAudio, the video alone FakeVideo-RealAudio and "
         "the audio alone RealVideo-FakeAudio.\n"
         f"Attributes and pairs come from {_METADATA} ({_METADATA_MIN} when it is absent), by "
@@ -304,15 +312,15 @@ class LAVDFBuilder(BaseBuilder):
                 continue
             for path in scan_videos(copy / folder):
                 row = rows.get(path.stem)
-                if row is None:
+                if row is None or row.task is None:
                     skipped += 1
                     continue
                 relpath = f"{folder}/{path.name}"
                 yield self._record(tasks[row.task], path.stem, relpath, None, row)
         if skipped:
             _log.warning(
-                "lav-df: %d video(s) in the release's own folders have no metadata row, so no "
-                "known task; they are skipped",
+                "lav-df: %d video(s) in the release's own folders have no metadata row, or a "
+                "row without both modify flags, so no known task; they are skipped",
                 skipped,
             )
 

@@ -339,9 +339,24 @@ def test_schemes_and_benchmark():
 
 
 def test_the_benchmark_leaves_out_the_audio_only_tasks(idf_root):
+    # Five face swaps (one stratum, all kept under the cap of 5) and five visually real videos:
+    # the two pristine ones and one of each audio-only task. With as many reals as fakes every
+    # real would be kept, so an audio-only video in the draw can only be kept out by the
+    # exclusion, which drops those tasks before anything is drawn.
+    _touch(
+        idf_root / FACE_AM_TM / "id00/id00_03",
+        "id00_scene_0016_0_roop.mp4",
+        "id00_scene_0016_1_simswap.mp4",
+        "id00_scene_0017_0_infoswap.mp4",
+    )
     _touch(idf_root / RVC_TM / "id00/id00_03", "id00_scene_0010.mp3.mp4")
+    for task in ("tts_textgen", "tts_textmismatch"):
+        _touch(
+            idf_root / f"manipulated_content/{task}/videos/id00/id00_03", "id00_scene_0011-0.mp4"
+        )
     builder = IDForgeV1Builder()
     records = collect_records(builder, idf_root)
+    assert {task_of(r.key) for r in records} >= {"RVC_TM", "TTS_TG", "TTS_TM"}
     chosen = {
         key
         for key, _ in assign_benchmark(
@@ -352,11 +367,12 @@ def test_the_benchmark_leaves_out_the_audio_only_tasks(idf_root):
             pool_keys=None,
         )
     }
-    # Two face swaps (one stratum under the cap of 5), balanced by the two pristine videos;
-    # the audio-only video is dropped before anything is drawn.
     assert chosen == {
         "FS_AM_TM/id00_03__id00_scene_0015_0_infoswap",
         "FS_AM_TM/id00_03__id00_scene_0015_1_roop",
+        "FS_AM_TM/id00_03__id00_scene_0016_0_roop",
+        "FS_AM_TM/id00_03__id00_scene_0016_1_simswap",
+        "FS_AM_TM/id00_03__id00_scene_0017_0_infoswap",
         "REAL/id00_03__id00_scene_0012-0",
         "REAL/id00_03__id00_scene_0012-1",
     }

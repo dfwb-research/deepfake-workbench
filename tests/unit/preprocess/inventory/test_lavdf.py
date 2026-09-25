@@ -291,6 +291,35 @@ def test_the_release_as_unpacked_takes_each_task_from_the_metadata(tmp_path):
     assert set(fake.attrs) == ATTRS
 
 
+def test_a_release_row_without_both_modify_flags_gives_no_task(tmp_path, caplog):
+    root = _make_release_root(tmp_path)
+    rows = [
+        _row("000001", False, False, None, "train"),
+        _row("000002", True, True, "000001", "train"),
+        _row("000003", True, False, "000001", "dev"),
+        _row("000004", False, True, "000001", "test"),
+    ]
+    del rows[1]["modify_audio"]  # a flag missing altogether
+    rows[2]["modify_video"] = None  # a flag that is not true or false
+    _write_metadata(root, rows)
+    with caplog.at_level(logging.WARNING):
+        records = _records(root)
+    # Neither is labelled real by default: without both flags the category is unknown, so they
+    # are skipped like 000005, which has no row at all.
+    assert set(records) == {"RVRA/000001", "RVFA/000004"}
+    assert "3 video(s)" in caplog.text
+
+
+def test_a_row_without_modify_flags_still_describes_a_video_in_a_task_folder(lavdf_root):
+    # In a task folder the folder names the category, so the row only adds its attributes.
+    rows = [_row(*spec[:4]) for spec in _SPEC]
+    del rows[1]["modify_video"], rows[1]["modify_audio"]
+    _write_metadata(lavdf_root, rows)
+    rec = _records(lavdf_root)["FVFA/000002"]
+    assert rec.pair_key == "000001"
+    assert (rec.attrs["modify_video"], rec.attrs["modify_audio"]) == (None, None)
+
+
 def test_the_layout_dirs_are_the_task_folders_then_the_release_folders():
     assert LAVDFBuilder().layout_dirs() == (
         RVRA_DIR,
