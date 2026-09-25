@@ -4,6 +4,9 @@ pass-through."""
 from __future__ import annotations
 
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 
 from dfwb.data.collate import collate_clips

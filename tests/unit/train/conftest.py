@@ -15,6 +15,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("torch")
+
 from torch import nn
 
 from dfwb.core.detector import DETECTOR_CONTRACT_VERSION, DetectorMeta, InputSpec

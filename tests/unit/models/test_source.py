@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("torch")
+
 from dfwb.core.config.schema import ComponentSpec, ModelSection
 from dfwb.core.errors import ConfigError
 from dfwb.core.plugins import get_registry

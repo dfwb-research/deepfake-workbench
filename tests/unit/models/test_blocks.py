@@ -8,6 +8,10 @@ transformers model.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("torch")
+
 from torch import nn
 
 from dfwb.models.backbones._blocks import (

@@ -24,10 +24,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+pytest.importorskip("lightning")
+
 import cv2
 import lightning.pytorch as L
 import numpy as np
-import pytest
 import yaml
 from lightning.pytorch.callbacks import Callback
 from pydantic import BaseModel

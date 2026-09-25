@@ -11,6 +11,7 @@ from tests.unit.eval.conftest import make_meta, make_rows
 from dfwb.core.records import write_scores
 
 DFWB = Path(sys.executable).parent / "dfwb"  # the console script of this environment
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 TORCH_FREE = ("dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess", "dfwb.cli")
 
@@ -155,3 +156,18 @@ def test_eval_runs_with_torch_blocked(blocked, tmp_path):
     assert done.returncode == 0, done.stderr
     data = json.loads(done.stdout)
     assert data["exit_code"] == 0
+
+
+def test_pytest_collection_has_no_errors_with_torch_blocked(blocked):
+    """Pins the torch-free CI job's own outcome: collecting the whole suite with torch
+    unimportable must produce zero collection errors. A test module that needs torch (or one of
+    timm, transformers, peft, lightning) is expected to skip at collection, the way
+    ``pytest.importorskip`` at its top does; it must never blow up the run instead."""
+    done = blocked(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        block=("torch",),
+        cwd=_REPO_ROOT,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "errors during collection" not in done.stdout, done.stdout
+    assert "\nERROR " not in done.stdout, done.stdout

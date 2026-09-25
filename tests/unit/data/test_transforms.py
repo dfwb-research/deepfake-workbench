@@ -9,6 +9,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 from hypothesis import given, settings
 from hypothesis import strategies as st

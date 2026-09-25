@@ -13,6 +13,9 @@ import logging
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 
 from dfwb.core.detector import InputSpec

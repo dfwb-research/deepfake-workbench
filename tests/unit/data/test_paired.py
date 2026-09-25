@@ -12,6 +12,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 from tests.unit.data.conftest import processed_record, write_store_frames, write_store_index
 

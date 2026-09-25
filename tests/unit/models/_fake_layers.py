@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("torch")
+
 from torch import Tensor, nn
 
 

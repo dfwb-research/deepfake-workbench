@@ -10,6 +10,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 
 from dfwb.core.errors import ConfigError

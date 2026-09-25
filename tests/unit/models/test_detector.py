@@ -4,6 +4,9 @@ contract, and ``build_detector`` resolving a ``model:`` config through the regis
 from __future__ import annotations
 
 import pytest
+
+pytest.importorskip("torch")
+
 import torch
 from torch import nn
 
