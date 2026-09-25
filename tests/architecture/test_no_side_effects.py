@@ -5,16 +5,17 @@ numpy is excluded from that last check: it is a base, always-installed dependenc
 and rich, which are optional extras), and the layers that compute with it import it at module
 level like any other required library.
 
-torch, when it is installed, gets the same treatment as numpy: it is pre-imported, before the
-before/after snapshot is taken, so its own import-time warning-filter registrations (torch does
-several, unconditionally) are never mistaken for a side effect of importing dfwb. It is a required
-dependency of the torch layers (``dfwb.data``, ``dfwb.models``, ``dfwb.train``, ``dfwb.score``,
-``dfwb.zoo``), which import it at module level by design, not as a side effect. Those layers are
-only walked here when torch happens to be installed, so this test still runs (and still proves the
-torch-free layers are silent) in an environment without it. What it does *not* check is whether
-torch is *absent* from the torch-free layers (``dfwb.core``, ``dfwb.protocols``, ``dfwb.eval``,
-``dfwb.preprocess``) when it is not installed at all: that is ``test_torch_free.py``'s job, which
-runs those layers' imports with torch actively blocked."""
+torch and torchvision, when installed, get the same treatment as numpy: they are pre-imported,
+before the before/after snapshot is taken, so their own import-time warning-filter registrations
+(torch does several, unconditionally; torchvision pulls in one more through sympy) are never
+mistaken for a side effect of importing dfwb. They are required dependencies of the torch layers
+(``dfwb.data``, ``dfwb.models``, ``dfwb.train``, ``dfwb.score``, ``dfwb.zoo``), which import them
+at module level by design, not as a side effect. Those layers are only walked here when torch
+happens to be installed, so this test still runs (and still proves the torch-free layers are
+silent) in an environment without it. What it does *not* check is whether torch is *absent* from
+the torch-free layers (``dfwb.core``, ``dfwb.protocols``, ``dfwb.eval``, ``dfwb.preprocess``) when
+it is not installed at all: that is ``test_torch_free.py``'s job, which runs those layers' imports
+with torch actively blocked."""
 
 import json
 import os
@@ -43,6 +44,7 @@ def _is_torch_layer(name):
 torch_installed = _torch_installed()
 if torch_installed:
     import torch  # noqa: F401 -- pre-imported for the same reason as numpy above
+    import torchvision  # noqa: F401 -- ditto; only ever installed alongside torch
 
 env = dict(os.environ)
 handlers = list(logging.getLogger().handlers)
