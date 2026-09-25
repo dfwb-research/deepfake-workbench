@@ -180,6 +180,11 @@ markers = [
 ]
 xfail_strict = true
 pythonpath = ["."]
+filterwarnings = [
+  # Lightning's own pytree helper calls a torch API torch has deprecated; nothing here can change
+  # it, and it repeats on every training step. Matched by its message, so no other warning hides.
+  'ignore:`isinstance\(treespec, LeafSpec\)` is deprecated:FutureWarning',
+]
 
 [tool.coverage.run]
 source = ["dfwb"]

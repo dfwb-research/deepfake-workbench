@@ -104,6 +104,7 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Iterator[Server]:
     finally:
         httpd.shutdown()
         thread.join()
+        httpd.server_close()
 
 
 def _sha(data: bytes) -> str:
