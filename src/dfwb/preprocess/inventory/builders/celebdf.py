@@ -156,8 +156,15 @@ def _schemes(testing_list: str, benchmark_rationale: str) -> dict[str, SchemeSpe
 
 
 def _card(
-    name: str, aliases: list[str], release: str, homepage: str, key_rule: str
+    name: str,
+    aliases: list[str],
+    release: str,
+    homepage: str,
+    key_rule: str,
+    *,
+    project: str = "Celeb-DF",
 ) -> dict[str, object]:
+    """A release's card; ``project`` names whose repository and terms of use it comes under."""
     return {
         "name": name,
         "aliases": aliases,
@@ -165,11 +172,11 @@ def _card(
         "homepage": homepage,
         "license": {
             "spdx": None,
-            "summary": "the Celeb-DF terms of use: non-commercial research only",
+            "summary": f"the {project} terms of use: non-commercial research only",
             "url": None,
         },
         "access": "request the download from the authors through the form linked from the "
-        "Celeb-DF repository; dfwb never distributes media",
+        f"{project} repository; dfwb never distributes media",
         "modalities": ["video"],
         "compressions": None,
         "key_rule": key_rule,
@@ -367,6 +374,7 @@ class CelebDFv3Builder(_CelebDFBuilder):
         "real: CR/<id>_<rec> or YTR/<n>; face swap and reenactment: "
         "<task>/<target>_<source>_<rec>; talking face: <task>/<target>_<rec>_test_<ref> "
         "(the file stem)",
+        project="Celeb-DF++",
     )
     layout_notes = (
         "Fakes sit in one folder per method under manipulated_content/{FaceSwap,FaceReenact,"
