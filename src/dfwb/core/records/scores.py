@@ -26,6 +26,7 @@ __all__ = [
     "OPTIONAL_COLUMNS",
     "REQUIRED_COLUMNS",
     "SCORE_SCHEMA",
+    "CalibrationInfo",
     "ScoreFile",
     "ScoreMeta",
     "ScoreRow",
@@ -146,6 +147,14 @@ class GitState(RecordModel):
     dirty: bool | None = None
 
 
+class CalibrationInfo(RecordModel):
+    """Provenance of a post-hoc calibration: which method, fit on what, with which parameters."""
+
+    method: Literal["temperature", "platt", "isotonic"]
+    fit_file_sha256: Sha256
+    params: dict[str, Any]
+
+
 class ScoreMeta(RecordModel):
     """``<name>.scores.meta.json``: everything the scores depend on."""
 
@@ -164,6 +173,7 @@ class ScoreMeta(RecordModel):
     git: GitState | None = None
     command: str | None = None
     created: AwareDatetime
+    calibration: CalibrationInfo | None = None
 
 
 @dataclass(frozen=True)

@@ -28,10 +28,18 @@ from dfwb.core.records.protocol import (
     SplitRow,
     VideoRecord,
 )
-from dfwb.core.records.scores import ScoreFile, ScoreMeta, ScoreRow, read_scores, write_scores
+from dfwb.core.records.scores import (
+    CalibrationInfo,
+    ScoreFile,
+    ScoreMeta,
+    ScoreRow,
+    read_scores,
+    write_scores,
+)
 
 __all__ = [
     "BuilderRef",
+    "CalibrationInfo",
     "DatasetCard",
     "InventoryRecord",
     "LabelVocab",

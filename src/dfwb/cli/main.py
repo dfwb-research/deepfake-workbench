@@ -25,6 +25,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "completion": ("dfwb.cli.completion:completion", "Print the shell completion snippet."),
     "config": ("dfwb.cli.config:config", "Compose, show and validate configs."),
     "doctor": ("dfwb.cli.doctor:doctor", "Check Python, roots, extras and plugins."),
+    "eval": (
+        "dfwb.cli.eval:eval",
+        "Evaluate, compare, calibrate and import score files.",
+    ),
     "plugins": ("dfwb.cli.plugins:plugins", "List and inspect plugins and their components."),
     "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),

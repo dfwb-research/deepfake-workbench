@@ -11,3 +11,4 @@ dfwb-protocols = "dfwb-protocols"
 [imports]
 rich = "rich"
 scipy = "eval"
+matplotlib = "eval"

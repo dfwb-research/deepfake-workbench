@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.unit.eval.conftest import make_meta, make_rows
+
+from dfwb.core.records import write_scores
 
 DFWB = Path(sys.executable).parent / "dfwb"  # the console script of this environment
 
@@ -95,3 +98,17 @@ def test_protocols_verify_runs_with_torch_blocked(blocked, tmp_path):
     done = blocked([str(DFWB), "protocols", "verify", "nope"], block=("torch",), cwd=tmp_path)
     assert done.returncode == 2, done.stderr
     assert "hint: " in done.stderr
+
+
+def test_eval_runs_with_torch_blocked(blocked, tmp_path):
+    rows = make_rows(15, 15)
+    meta = make_meta(coverage={"expected": 30, "ok": 30, "missing": 0, "error": 0})
+    path, _ = write_scores(tmp_path / "a.scores.csv", rows, meta)
+    done = blocked(
+        [str(DFWB), "eval", str(path), "--metrics", "auc", "--bootstrap", "10", "--json"],
+        block=("torch",),
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr
+    data = json.loads(done.stdout)
+    assert data["exit_code"] == 0

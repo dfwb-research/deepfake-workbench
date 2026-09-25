@@ -31,7 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rich = ["rich>=13"]
-eval = ["scipy>=1.11"]
+eval = ["scipy>=1.11", "matplotlib>=3.8"]
 
 [project.scripts]
 dfwb = "dfwb.cli.main:main"
@@ -62,6 +62,7 @@ dev = [
   "import-linter",
   "scikit-learn",
   "scipy",
+  "matplotlib",
   "pre-commit",
   "types-PyYAML",
 ]

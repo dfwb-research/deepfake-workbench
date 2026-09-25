@@ -20,6 +20,38 @@
       "title": "Aggregation",
       "type": "object"
     },
+    "CalibrationInfo": {
+      "additionalProperties": false,
+      "description": "Provenance of a post-hoc calibration: which method, fit on what, with which parameters.",
+      "properties": {
+        "fit_file_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fit File Sha256",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "temperature",
+            "platt",
+            "isotonic"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "method",
+        "fit_file_sha256",
+        "params"
+      ],
+      "title": "CalibrationInfo",
+      "type": "object"
+    },
     "Coverage": {
       "additionalProperties": false,
       "properties": {
@@ -221,6 +253,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Aggregation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "calibration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CalibrationInfo"
             },
             {
               "type": "null"
