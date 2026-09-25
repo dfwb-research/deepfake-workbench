@@ -63,6 +63,17 @@ def test_compare_handles_a_key_with_both_a_null_and_a_named_compression(tmp_path
     assert result.comparisons[0].n == 3
 
 
+def test_compare_with_no_bootstrap_reports_the_delta_without_an_interval(tmp_path):
+    # --bootstrap 0 means "no confidence intervals", as in dfwb eval, never a crash
+    a = _write(tmp_path, "a.scores.csv", [f"d,k{i},,{i % 2},{0.1 + 0.05 * i},ok" for i in range(6)])
+    b = _write(tmp_path, "b.scores.csv", [f"d,k{i},,{i % 2},{0.2 + 0.1 * i},ok" for i in range(6)])
+    result = compare([a, b], metrics=["auc"], bootstrap=0)
+    row = result.comparisons[0].metrics["auc"]
+    assert row["delta"] == pytest.approx(row["b"] - row["a"])
+    assert row["delta_lo"] is None
+    assert row["delta_hi"] is None
+
+
 def test_compare_empty_intersection_raises_a_clear_error(tmp_path):
     a = _write(tmp_path, "a.scores.csv", ["d,k0,,0,0.1,ok", "d,k1,,1,0.9,ok"])
     b = _write(tmp_path, "b.scores.csv", ["d,k2,,0,0.2,ok", "d,k3,,1,0.8,ok"])

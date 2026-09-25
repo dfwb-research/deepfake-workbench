@@ -136,13 +136,16 @@ def delong_test(y: IntArray, p_a: FloatArray, p_b: FloatArray) -> tuple[float, f
 
 def _paired_bootstrap_delta(
     metric: str, y: IntArray, p_a: FloatArray, p_b: FloatArray, *, n_boot: int, seed: int
-) -> tuple[float, float]:
-    """The paired-bootstrap CI of ``metric(y, p_b) - metric(y, p_a)``.
+) -> tuple[float | None, float | None]:
+    """The paired-bootstrap CI of ``metric(y, p_b) - metric(y, p_a)``; ``(None, None)`` when
+    ``n_boot`` is 0 (no resampling, so no interval).
 
     The metric's spec is resolved once, before the resample loop (see
     :func:`~dfwb.eval.bootstrap.bootstrap_ci`); ``"auc"`` additionally uses the same ``O(n)``
     per-resample formula that module uses, prepared once for each of ``p_a`` and ``p_b``.
     """
+    if n_boot == 0:
+        return None, None
     rng = np.random.default_rng(seed)
     deltas = np.empty(n_boot, dtype=np.float64)
     name, params = parse_metric_spec(metric)
@@ -172,7 +175,7 @@ class PairComparison:
     a: str
     b: str
     n: int
-    metrics: dict[str, dict[str, float]] = field(default_factory=dict)
+    metrics: dict[str, dict[str, float | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -236,7 +239,7 @@ def compare(
         y = np.asarray([ok_rows[i][k].label for k in common], dtype=np.int64)
         p_a = np.asarray([ok_rows[i][k].score for k in common], dtype=np.float64)
         p_b = np.asarray([ok_rows[j][k].score for k in common], dtype=np.float64)
-        metric_rows: dict[str, dict[str, float]] = {}
+        metric_rows: dict[str, dict[str, float | None]] = {}
         for metric in metrics:
             try:
                 value_a = compute(metric, y, p_a)
