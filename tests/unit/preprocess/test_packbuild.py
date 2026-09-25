@@ -447,6 +447,42 @@ def test_the_notice_terms_follow_a_decided_distribution(distribution, notes, exp
     assert expected in notice
 
 
+def test_a_rebuild_keeps_the_terms_review_already_recorded(demo):
+    # The distribution and terms are the maintainer's decision, recorded in the card after a
+    # build; rebuilding (say, after a builder fix) must not quietly reset them to undecided.
+    out = demo["pack"] / "packdemo"
+    build_dataset("packdemo", out=out)
+    card = yaml.safe_load((out / "dataset.yaml").read_text("utf-8"))
+    card["distribution"] = "recipe"
+    card["terms"] = {
+        "source": "https://example.org/packdemo/terms",
+        "reviewed": "2026-09-01",
+        "notes": "Key lists may not be shared.",
+    }
+    (out / "dataset.yaml").write_text(yaml.safe_dump(card), "utf-8")
+
+    build_dataset("packdemo", out=out)
+
+    rebuilt = read_card(out)
+    assert rebuilt.distribution == "recipe"
+    assert rebuilt.terms.source == "https://example.org/packdemo/terms"
+    assert str(rebuilt.terms.reviewed) == "2026-09-01"
+    assert rebuilt.terms.notes == "Key lists may not be shared."
+    notice = (out / "NOTICE.md").read_text("utf-8")
+    assert "distribution: recipe" in notice
+    assert "Key lists may not be shared." in notice
+
+
+def test_a_rebuild_over_an_unreadable_card_is_refused_and_leaves_it_alone(demo):
+    out = demo["pack"] / "packdemo"
+    build_dataset("packdemo", out=out)
+    (out / "dataset.yaml").write_text("distribution: [not, a, card\n", "utf-8")
+
+    with pytest.raises(ContractError, match=r"dataset\.yaml"):
+        build_dataset("packdemo", out=out)
+    assert (out / "dataset.yaml").read_text("utf-8") == "distribution: [not, a, card\n"
+
+
 def test_scheme_selection_writes_only_those_schemes(demo):
     out = demo["pack"] / "packdemo"
     build_dataset("packdemo", out=out)
