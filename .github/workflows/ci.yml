@@ -22,5 +22,22 @@ jobs:
     with:
       python-versions: '["3.12", "3.14"]'
       torch-versions: "[]"
+      # The torch-only packages are not exercised in this torch-free job; the separate coverage
+      # config leaves them out of this job's 90% gate so their absence here does not fail it. The
+      # train job below measures them with the default config.
+      pytest-args: "-n auto --cov-config=.coveragerc-torchfree"
+      coverage-min: 90
+  test-train:
+    uses: dfwb-research/.github/.github/workflows/python-test.yml@v1
+    with:
+      extras: "train preprocess"
+      python-versions: '["3.12", "3.14"]'
+      # The reusable workflow names each coverage artifact after its OS, Python and torch version.
+      # The job above runs with torch-versions "[]" (matrix torch "none"), so leaving this at "[]"
+      # too would give both jobs' artifacts the same names within this one workflow run and they
+      # would collide on upload. Naming this job's own torch version instead avoids that, and since
+      # `uv sync --locked` above already installed exactly this build (from the extras, off the
+      # pytorch-cpu index), the workflow's own "install the torch CPU wheel" step is a no-op.
+      torch-versions: '["2.14"]'
       pytest-args: "-n auto"
       coverage-min: 90

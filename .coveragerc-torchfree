@@ -1,0 +1,24 @@
+# Coverage config for the torch-free CI job only.
+#
+# That job's 90% coverage floor is measured against the whole `dfwb` package with the default
+# config in pyproject.toml. Once the torch-only packages below exist, none of their code runs in
+# a torch-free environment, so counting them here would fail the gate for reasons that have
+# nothing to do with the torch-free job itself. They are measured instead by the job that installs
+# the `train` extra, which uses the default config. As of this change these packages do not exist
+# yet in this tree; the omit patterns are forward-looking so nothing has to change here when they
+# land.
+[run]
+source = dfwb
+branch = True
+omit =
+    src/dfwb/data/*
+    src/dfwb/models/*
+    src/dfwb/train/*
+
+[report]
+show_missing = True
+skip_covered = True
+exclude_also =
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    @overload

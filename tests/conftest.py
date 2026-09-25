@@ -16,3 +16,9 @@ def _clean_plugins(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     plugins.reset()
     yield
     plugins.reset()
+
+
+@pytest.fixture
+def requires_torch():
+    """Skip cleanly where torch is not installed; give back the ``torch`` module where it is."""
+    return pytest.importorskip("torch")
