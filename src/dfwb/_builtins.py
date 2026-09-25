@@ -51,6 +51,12 @@ INVENTORY_BUILDERS: tuple[tuple[str, str, str, str], ...] = (
         "AV-Deepfake1M++",
         "AV-Deepfake1M++",
     ),
+    (
+        "talkingheadbench",
+        "talkingheadbench:TalkingHeadBenchBuilder",
+        "TalkingHeadBench",
+        "TalkingHeadBench",
+    ),
 )
 
 
