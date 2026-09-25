@@ -9,6 +9,8 @@ inventory and protocol pack fixtures ``status`` is tested against below.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from tests.unit.preprocess.face.test_runner import PROFILE, _run, _store_path
 
@@ -152,6 +154,92 @@ def test_merge_leaves_no_temporary_file_behind(tmp_path):
     assert [p.name for p in store.iterdir() if p.name.startswith(".")] == []
 
 
+def test_merge_heals_a_stale_shard_file_left_beside_an_already_merged_index(tmp_path):
+    # A crash between the index rename and the shard-file deletes: the shard's row is already
+    # folded into index.jsonl, but the shard file itself is still sitting there. A second merge
+    # must give the same index and finish removing it.
+    store = tmp_path / "store"
+    store.mkdir()
+    write_jsonl(store / "index.jsonl", [_rec("a/1"), _rec("a/2")])
+    write_jsonl(store / "index.shard-0-of-1.jsonl", [_rec("a/2")])
+
+    summary = merge(store)
+
+    assert summary == MergeSummary(store=store, n_records=2, n_shards=1)
+    assert [r.key for r in read_jsonl(store / "index.jsonl", ProcessedRecord)] == ["a/1", "a/2"]
+    assert not (store / "index.shard-0-of-1.jsonl").exists()
+
+
+def test_merge_is_idempotent(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    write_jsonl(store / "index.shard-0-of-2.jsonl", [_rec("a/1")])
+    write_jsonl(store / "index.shard-1-of-2.jsonl", [_rec("a/2")])
+
+    first = merge(store)
+    assert first == MergeSummary(store=store, n_records=2, n_shards=2)
+    first_index = (store / "index.jsonl").read_bytes()
+
+    second = merge(store)
+
+    assert second == MergeSummary(store=store, n_records=2, n_shards=0)
+    assert (store / "index.jsonl").read_bytes() == first_index
+
+
+# ------------------------------------------------------------------------------- live shard runs
+
+
+def _write_marker(store, index: int, count: int, *, host: str = "host-1", pid: int = 4242):
+    store.mkdir(parents=True, exist_ok=True)
+    marker = store / f"index.shard-{index}-of-{count}.jsonl.running"
+    marker.write_text(json.dumps({"host": host, "pid": pid, "started_at": "2026-01-01T00:00:00"}))
+    return marker
+
+
+def test_merge_refuses_while_a_shard_run_marker_exists(tmp_path):
+    store = tmp_path / "store"
+    marker = _write_marker(store, 0, 1, host="worker-3", pid=9999)
+    write_jsonl(store / "index.shard-0-of-1.jsonl", [_rec("a/1")])
+
+    with pytest.raises(ContractError, match="worker-3") as caught:
+        merge(store)
+
+    assert "9999" in str(caught.value)
+    assert "delete the marker" in caught.value.hint
+    assert not (store / "index.jsonl").exists()
+    assert (store / "index.shard-0-of-1.jsonl").is_file()  # nothing touched
+    assert marker.is_file()
+
+
+def test_merge_refuses_even_with_nothing_else_to_merge(tmp_path):
+    store = tmp_path / "store"
+    _write_marker(store, 0, 1)
+
+    with pytest.raises(ContractError, match="live"):
+        merge(store)
+
+
+def test_merge_names_an_unreadable_markers_host_and_pid_as_unknown(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    marker = store / "index.shard-0-of-1.jsonl.running"
+    marker.write_text("not json")
+
+    with pytest.raises(ContractError, match="unknown"):
+        merge(store)
+
+
+def test_merge_proceeds_once_the_marker_is_gone(tmp_path):
+    store = tmp_path / "store"
+    marker = _write_marker(store, 0, 1)
+    write_jsonl(store / "index.shard-0-of-1.jsonl", [_rec("a/1")])
+    marker.unlink()
+
+    summary = merge(store)
+
+    assert summary == MergeSummary(store=store, n_records=1, n_shards=1)
+
+
 # ------------------------------------------------------------------------------------ status
 
 
@@ -199,10 +287,46 @@ def test_status_is_read_only(env):
     assert not (env.work / "demo" / "processed").exists()
 
 
-def test_status_does_not_fold_in_an_unmerged_shard_file(env):
-    _run(shard=(0, 1))  # every video, into index.shard-0-of-1.jsonl, never merged
+def test_status_folds_index_jsonl_and_every_shard_file(env):
+    # index.jsonl holds the REAL videos; the FS_SWAP ones are only in an unmerged shard file.
+    _run(where={"task": "REAL"})
+    _run(where={"task": "FS_SWAP"}, shard=(0, 1))
+    store = _store_path(env.work)
+    assert (store / "index.jsonl").is_file()
+    assert (store / "index.shard-0-of-1.jsonl").is_file()
+
     table = status("demo", PROFILE)
-    assert {row.status for row in table.rows} == {"not-processed"}
+
+    assert set(table.rows) == {
+        StatusRow(task="REAL", split=None, status="ok", count=5),
+        StatusRow(task="FS_SWAP", split=None, status="ok", count=2),
+    }
+
+
+def test_status_uses_merges_own_precedence_ok_over_a_failing_shard_row(env):
+    store = _store_path(env.work)
+    store.mkdir(parents=True)
+    write_jsonl(store / "index.jsonl", [_rec("REAL/000", compression="c23", status="ok")])
+    write_jsonl(
+        store / "index.shard-0-of-1.jsonl",
+        [_rec("REAL/000", compression="c23", status="decode_error")],
+    )
+
+    table = status("demo", PROFILE)
+
+    real_counts = {row.status: row.count for row in table.rows if row.task == "REAL"}
+    assert real_counts == {"ok": 1, "not-processed": 4}
+
+
+def test_status_works_while_a_shard_run_marker_exists(env):
+    _run(shard=(0, 1))
+    store = _store_path(env.work)
+    marker = _write_marker(store, 0, 1)
+
+    table = status("demo", PROFILE)
+
+    assert sum(row.count for row in table.rows if row.status == "ok") == 7
+    assert marker.is_file()  # status never touches it
 
 
 def test_status_propagates_scoping_errors_like_run(env):

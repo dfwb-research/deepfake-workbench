@@ -694,8 +694,12 @@ def run(
     the videos that found no face. A sharded run appends to its own
     ``index.shard-<i>-of-<n>.jsonl`` instead of ``index.jsonl``, so two machines can each process
     their shard without one overwriting the other's rows; its skip decision reads the union of
-    that file and ``index.jsonl``, the latest row winning. :func:`~dfwb.preprocess.face.shard.merge`
-    combines every shard file (and any ``index.jsonl``) back into one ``index.jsonl`` afterwards.
+    that file and ``index.jsonl``, the latest row winning. For as long as it may still append to
+    that file, it also holds a ``.running`` marker next to it (see
+    :meth:`~dfwb.preprocess.face.store.Store.running`), removed however the run ends; while one
+    exists, :func:`~dfwb.preprocess.face.shard.merge` refuses to run.
+    :func:`~dfwb.preprocess.face.shard.merge` combines every shard file (and any ``index.jsonl``)
+    back into one ``index.jsonl`` afterwards.
 
     A failing video is recorded and the run goes on. A video whose file is not found in any copy
     of the dataset folder is recorded as ``decode_error`` with reason ``"source not found"``; one
@@ -770,51 +774,52 @@ def run(
         _accept_licence(backend_name)
     backend = _build_backend(backend_name, backend_params, device)
     unclosed: FaceBackend | None = backend
-    try:
-        check_backend(processing, backend)
-        prepare = getattr(backend, "prepare", None)
-        if prepare is not None:
-            prepare()
-        store.cleanup_partial()
-        store.write_profile(_backend_record(backend))
-        if workers:
-            _close(backend)  # each worker builds its own
-            unclosed = None
-
-        with _progress(len(to_do), f"{dataset_id} {processing.profile_id()}") as advance:
-            recorder = _Recorder(store, advance)
-            jobs: list[_Job] = []
-            missing: list[InventoryRecord] = []
-            for record in to_do:
-                try:
-                    source = resolve_video_path(record, copies, datasets_roots=resolved)
-                except ConfigError as exc:
-                    _log.debug("%s", exc.message)
-                    missing.append(record)
-                    recorder.add(_Outcome(_failed(record, _NOT_FOUND)))
-                    continue
-                out_dir = store.root / video_relpath(record.key, record.compression)
-                jobs.append(_Job(source, record, out_dir))
-            if missing:
-                _log.warning(
-                    "%s: %d video(s) were not found in any copy of the dataset folder, the first "
-                    "%s; recorded as decode_error (%s)",
-                    dataset_id,
-                    len(missing),
-                    _video(missing[0]),
-                    _NOT_FOUND,
-                )
-
+    with store.running():
+        try:
+            check_backend(processing, backend)
+            prepare = getattr(backend, "prepare", None)
+            if prepare is not None:
+                prepare()
+            store.cleanup_partial()
+            store.write_profile(_backend_record(backend))
             if workers:
-                settings = _Settings(processing, backend_name, backend_params, device)
-                _run_pool(jobs, workers=workers, settings=settings, recorder=recorder)
-            else:
-                for job in jobs:
-                    recorder.add(_attempt(job, processing, lambda: backend))
-                    recorder.check()
-    finally:
-        if unclosed is not None:
-            _close(unclosed)
+                _close(backend)  # each worker builds its own
+                unclosed = None
+
+            with _progress(len(to_do), f"{dataset_id} {processing.profile_id()}") as advance:
+                recorder = _Recorder(store, advance)
+                jobs: list[_Job] = []
+                missing: list[InventoryRecord] = []
+                for record in to_do:
+                    try:
+                        source = resolve_video_path(record, copies, datasets_roots=resolved)
+                    except ConfigError as exc:
+                        _log.debug("%s", exc.message)
+                        missing.append(record)
+                        recorder.add(_Outcome(_failed(record, _NOT_FOUND)))
+                        continue
+                    out_dir = store.root / video_relpath(record.key, record.compression)
+                    jobs.append(_Job(source, record, out_dir))
+                if missing:
+                    _log.warning(
+                        "%s: %d video(s) were not found in any copy of the dataset folder, the "
+                        "first %s; recorded as decode_error (%s)",
+                        dataset_id,
+                        len(missing),
+                        _video(missing[0]),
+                        _NOT_FOUND,
+                    )
+
+                if workers:
+                    settings = _Settings(processing, backend_name, backend_params, device)
+                    _run_pool(jobs, workers=workers, settings=settings, recorder=recorder)
+                else:
+                    for job in jobs:
+                        recorder.add(_attempt(job, processing, lambda: backend))
+                        recorder.check()
+        finally:
+            if unclosed is not None:
+                _close(unclosed)
     counts = recorder.counts
     return RunSummary(
         counts_by_status={status: counts[status] for status in STATUSES if counts[status]},

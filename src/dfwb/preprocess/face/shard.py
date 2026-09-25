@@ -4,13 +4,17 @@ A sharded :func:`~dfwb.preprocess.face.runner.run` writes each shard's outcomes 
 ``index.shard-<i>-of-<n>.jsonl`` (see ``shard=`` on :class:`~dfwb.preprocess.face.store.Store`),
 so that two machines processing different shards of one dataset never write the same file at once.
 :func:`merge` folds every shard file of one store back into a single ``index.jsonl``, after which
-the store reads exactly as an unsharded run's would.
+the store reads exactly as an unsharded run's would; it refuses while any shard's run may still be
+appending to its file (a ``.running`` marker, see :meth:`~dfwb.preprocess.face.store.Store.running`
+and :func:`~dfwb.preprocess.face.store.running_markers`).
 
 :func:`status` reports, for a dataset and profile, how many videos in scope hold each outcome --
 including videos in scope that hold no row at all (``"not-processed"``) -- without writing
 anything. It reuses :func:`~dfwb.preprocess.face.runner.in_scope`, the same scoping
 :func:`~dfwb.preprocess.face.runner.run` uses for a protocol split or a ``where`` filter, so its
-counts always describe exactly the videos a matching ``run`` would touch.
+counts always describe exactly the videos a matching ``run`` would touch, and it folds in every
+shard file the same way :func:`merge` would (:func:`_combined_records`, the two functions' shared
+combining logic), so a still-sharded, not-yet-merged store is reported accurately too.
 """
 
 from __future__ import annotations
@@ -26,7 +30,13 @@ from dfwb.core.records.io import read_jsonl, write_jsonl
 from dfwb.core.records.local import ProcessedRecord
 from dfwb.preprocess.face import runner
 from dfwb.preprocess.face.profiles import load_profile
-from dfwb.preprocess.face.store import INDEX_FILE, Store, parse_shard_filename
+from dfwb.preprocess.face.store import (
+    INDEX_FILE,
+    Store,
+    parse_shard_filename,
+    read_running_marker,
+    running_markers,
+)
 from dfwb.preprocess.inventory.runner import read_inventory
 from dfwb.protocols.rules import task_of
 
@@ -88,16 +98,61 @@ def _resolve(old: ProcessedRecord | None, new: ProcessedRecord) -> ProcessedReco
     return new
 
 
+def _combined_records(store: Path) -> dict[Key, ProcessedRecord]:
+    """``index.jsonl`` folded with every current shard file, one row per video: an ``ok`` row
+    already in ``index.jsonl`` wins over a failing shard row, otherwise the shard's (later) row
+    wins. The same precedence :func:`merge` writes out, computed here without touching the store
+    -- :func:`status` reads it this way too, so it reports a still-sharded store accurately."""
+    combined: dict[Key, ProcessedRecord] = {}
+    index_path = store / INDEX_FILE
+    if index_path.is_file():
+        for record in read_jsonl(index_path, ProcessedRecord):
+            combined[(record.key, record.compression)] = record
+
+    for path, _, _ in _shard_files(store):
+        shard_latest: dict[Key, ProcessedRecord] = {}
+        for record in read_jsonl(path, ProcessedRecord):
+            shard_latest[(record.key, record.compression)] = record
+        for key, record in shard_latest.items():
+            combined[key] = _resolve(combined.get(key), record)
+
+    return combined
+
+
+def _check_no_live_shard_runs(store: Path) -> None:
+    """Refuse to go on while any shard's ``.running`` marker says its run may still be appending
+    to its file: merging now could read that file mid-write, or race its own removal once the run
+    finishes and calls :func:`merge` itself.
+
+    Raises:
+        ContractError: naming the host, pid and marker file of the first live run found.
+    """
+    markers = running_markers(store)
+    if not markers:
+        return
+    marker = markers[0]
+    info = read_running_marker(marker)
+    host = info.get("host", "an unknown host")
+    pid = info.get("pid", "an unknown pid")
+    raise ContractError(
+        f"{store}: a sharded run is still live on {host} (pid {pid}, {marker.name})",
+        hint="wait for it to finish and merge again; if it crashed, delete the marker file and "
+        "merge again",
+    )
+
+
 def merge(store: Path) -> MergeSummary:
     """Combine every shard file of ``store`` with any existing ``index.jsonl`` into
     ``index.jsonl``, then remove the shard files.
 
-    One line per video, sorted by ``(key, compression or "")``. Across duplicates -- a video
-    ``index.jsonl`` already held a row for, that a shard also processed -- an ``ok`` row wins over
-    a failing one; otherwise the shard's row wins, since it is always the later attempt. The write
-    is atomic (a temporary file renamed into place); the shard files are removed only once it has
-    succeeded, so a merge interrupted partway leaves either the old ``index.jsonl`` and every shard
-    file untouched, or the new ``index.jsonl`` and no shard files -- never a mix.
+    One line per video, sorted by ``(key, compression or "")``, combined by
+    :func:`_combined_records` (an ``ok`` row already in ``index.jsonl`` wins over a failing shard
+    row; otherwise the shard's row wins, since it is always the later attempt). The write is
+    atomic (a temporary file renamed into place); the shard files are removed only once it has
+    succeeded. A crash between that rename and finishing the shard-file removals can leave the new
+    ``index.jsonl`` in place with one or more shard files not yet deleted -- their rows are
+    already folded into that index, so running ``merge`` again is safe: it writes the same result
+    and finishes removing them.
 
     Args:
         store: A processed store's directory (``<work root>/<dataset>/processed/<profile id>/``),
@@ -107,9 +162,12 @@ def merge(store: Path) -> MergeSummary:
         How many videos the merged index now holds, and how many shard files were combined.
 
     Raises:
-        ContractError: the shard files in ``store`` do not all share the same ``n`` (e.g. some
-            ``-of-2`` and some ``-of-3``); nothing is changed.
+        ContractError: a shard's run may still be appending to its file (its ``.running`` marker
+            exists), naming the host and pid; or the shard files in ``store`` do not all share
+            the same ``n`` (e.g. some ``-of-2`` and some ``-of-3``). Nothing is changed.
     """
+    _check_no_live_shard_runs(store)
+
     shards = _shard_files(store)
     counts = {count for _, _, count in shards}
     if len(counts) > 1:
@@ -123,18 +181,7 @@ def merge(store: Path) -> MergeSummary:
     if not shards and not index_path.is_file():
         return MergeSummary(store=store, n_records=0, n_shards=0)
 
-    combined: dict[Key, ProcessedRecord] = {}
-    if index_path.is_file():
-        for record in read_jsonl(index_path, ProcessedRecord):
-            combined[(record.key, record.compression)] = record
-
-    for path, _, _ in shards:
-        shard_latest: dict[Key, ProcessedRecord] = {}
-        for record in read_jsonl(path, ProcessedRecord):
-            shard_latest[(record.key, record.compression)] = record
-        for key, record in shard_latest.items():
-            combined[key] = _resolve(combined.get(key), record)
-
+    combined = _combined_records(store)
     ordered = [combined[key] for key in sorted(combined, key=lambda k: (k[0], k[1] or ""))]
     write_jsonl(index_path, ordered)
     for path, _, _ in shards:
@@ -176,9 +223,12 @@ def status(
 
     Scope is exactly what a matching :func:`~dfwb.preprocess.face.runner.run` would process (see
     :func:`~dfwb.preprocess.face.runner.in_scope`): every inventory video, or a protocol split's,
-    with ``task`` the key's prefix before ``/``. A video in scope with no row yet in the store's
-    ``index.jsonl`` counts as ``"not-processed"``. This never writes to the store, and does not
-    fold in a sharded run's not-yet-merged shard files -- run :func:`merge` first to include them.
+    with ``task`` the key's prefix before ``/``. A video in scope with no row yet counts as
+    ``"not-processed"``. The store's ``index.jsonl`` is folded with every current shard file
+    (:func:`_combined_records`, the same combining :func:`merge` would do -- an ``ok`` row wins
+    over a failing one, otherwise the latest), so a sharded run's outcomes show up here even
+    before anyone runs :func:`merge`. This never writes to the store, and reads happily while a
+    shard's run is still live (a ``.running`` marker existing only stops :func:`merge`).
 
     Args:
         dataset: The dataset, whose inventory must already be built.
@@ -202,7 +252,7 @@ def status(
     store = Store(
         work_root / dataset / "processed" / processing.profile_id(), processing, roots=resolved
     )
-    latest = {(record.key, record.compression): record.status for record in store.records()}
+    latest = {key: record.status for key, record in _combined_records(store.root).items()}
 
     with_split = protocol is not None
     counts: Counter[tuple[str, str | None, str]] = Counter()

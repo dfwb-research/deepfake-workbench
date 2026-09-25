@@ -448,6 +448,30 @@ def test_a_sharded_rerun_skips_what_its_own_shard_file_already_holds(env):
     assert second == RunSummary(counts_by_status={}, n_skipped=n_first, store=first.store)
 
 
+def test_a_sharded_runs_marker_is_removed_after_it_finishes(env):
+    _run(shard=(0, 1))
+    store = _store_path(env.work)
+    assert not (store / "index.shard-0-of-1.jsonl.running").exists()
+
+
+def test_a_sharded_runs_marker_is_removed_even_when_the_run_raises(env):
+    # identity-cluster needs embeddings, which the center backend does not provide: check_backend
+    # raises after the marker has been written (the backend is already built by then).
+    profile = _write_profile(
+        env.tmp, "center", track={"iou": 0.5, "strategy": "identity-cluster", "ema": None}
+    )
+    with pytest.raises(ConfigError, match="identity-cluster"):
+        _run(profile=profile, shard=(0, 1))
+    store = _store_path(env.work, profile)
+    assert not (store / "index.shard-0-of-1.jsonl.running").exists()
+
+
+def test_an_unsharded_run_never_writes_a_running_marker(env):
+    _run()
+    store = _store_path(env.work)
+    assert not list(store.glob("*.running"))
+
+
 def test_the_shards_of_a_limited_run_add_up_to_the_limited_run(env):
     # The limit picks the videos first; sharding only divides them up.
     store = _store_path(env.work)
@@ -465,6 +489,8 @@ def test_the_shards_of_a_limited_run_add_up_to_the_limited_run(env):
 def test_shard_merge_equals_single_run(env):
     single = _run()
     single_lines = set(_index_lines(single.store))
+    single_copy = env.tmp / "single-store"
+    shutil.copytree(single.store, single_copy)
     shutil.rmtree(single.store)
 
     store = _store_path(env.work)
@@ -479,6 +505,13 @@ def test_shard_merge_equals_single_run(env):
     assert summary.n_records == len(single_lines)
     assert summary.n_shards == count
     assert not list(store.glob("index.shard-*-of-*.jsonl"))
+    # Every frame and clip.json is byte-identical too, not just the index (whose rows may have
+    # landed in a different order: same lines, same total size, so the same (path, size) tree).
+    assert _tree(store) == _tree(single_copy)
+    for path in single_copy.rglob("*"):
+        if path.is_file() and path.name != "index.jsonl":
+            twin = store / path.relative_to(single_copy)
+            assert twin.read_bytes() == path.read_bytes(), path
 
 
 @pytest.mark.parametrize("shard", [(3, 3), (-1, 2), (0, 0), (1, -2)])

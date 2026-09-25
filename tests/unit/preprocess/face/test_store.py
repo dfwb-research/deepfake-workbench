@@ -9,7 +9,9 @@ datasets-root refusal is exercised on purpose, not by accident of the machine ru
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from pathlib import Path
 
 import pytest
@@ -30,8 +32,11 @@ from dfwb.core.records.local import (
 from dfwb.preprocess.face.store import (
     Store,
     parse_shard_filename,
+    read_running_marker,
     recover_video_dir,
+    running_markers,
     shard_index_filename,
+    shard_running_filename,
     video_relpath,
 )
 
@@ -140,6 +145,65 @@ def test_an_unsharded_store_ignores_a_shard_file_left_next_to_it(tmp_path):
     plain = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
     assert plain.records() == []
     assert plain.index_path == root / "index.jsonl"
+
+
+def test_running_writes_a_marker_with_host_pid_and_started_at_then_removes_it(tmp_path):
+    root = tmp_path / "store"
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    marker = root / "index.shard-0-of-2.jsonl.running"
+
+    with store.running():
+        assert marker.is_file()
+        info = json.loads(marker.read_text("utf-8"))
+        assert info["pid"] == os.getpid()
+        assert info["host"]
+        assert info["started_at"]
+
+    assert not marker.exists()
+
+
+def test_running_removes_the_marker_even_when_the_block_raises(tmp_path):
+    root = tmp_path / "store"
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    marker = root / "index.shard-0-of-2.jsonl.running"
+
+    def _raise() -> None:
+        assert marker.is_file()
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError), store.running():
+        _raise()
+
+    assert not marker.exists()
+
+
+def test_running_is_a_no_op_for_an_unsharded_store(tmp_path):
+    root = tmp_path / "store"
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT)
+
+    with store.running():
+        pass
+
+    assert not root.exists()  # nothing written at all
+
+
+def test_running_markers_and_read_running_marker(tmp_path):
+    root = tmp_path / "store"
+    assert running_markers(root) == []  # store not created yet
+
+    store = Store(root, _profile(), roots=_NO_DATASETS_ROOT, shard=(0, 2))
+    with store.running():
+        markers = running_markers(root)
+        assert markers == [root / "index.shard-0-of-2.jsonl.running"]
+        info = read_running_marker(markers[0])
+        assert info["pid"] == os.getpid()
+
+    assert running_markers(root) == []
+    assert read_running_marker(root / "index.shard-0-of-2.jsonl.running") == {}
+
+
+def test_shard_running_filename():
+    assert shard_running_filename(0, 2) == "index.shard-0-of-2.jsonl.running"
 
 
 def test_append_writes_one_line_per_record_and_flushes(tmp_path):

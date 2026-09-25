@@ -9,6 +9,8 @@ A store is one directory per hashed profile, holding:
 - ``index.shard-<i>-of-<n>.jsonl``, the same, for one shard of a sharded run (see ``shard=`` on
   :class:`Store`); :func:`~dfwb.preprocess.face.shard.merge` folds every one of these, and any
   ``index.jsonl``, back into a single ``index.jsonl``;
+- ``index.shard-<i>-of-<n>.jsonl.running``, present only while that shard's run may still be
+  appending to its file (see :meth:`Store.running`); ``merge`` refuses to run while one exists;
 - one output directory per video, ``<key>/<compression or "_">/`` (keys carry a ``/``, so this
   nests one directory per task inside one per dataset), holding its frames and ``clip.json``.
 
@@ -19,13 +21,16 @@ nothing is ever written under a datasets root: raw data is read-only.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import datetime
 import json
 import logging
 import os
 import re
 import shutil
-from collections.abc import Mapping, Sequence
+import socket
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +44,11 @@ __all__ = [
     "INDEX_FILE",
     "Store",
     "parse_shard_filename",
+    "read_running_marker",
     "recover_video_dir",
+    "running_markers",
     "shard_index_filename",
+    "shard_running_filename",
     "video_relpath",
 ]
 
@@ -51,6 +59,7 @@ _PROFILE_FILE = "profile.json"
 _TMP_SUFFIX = re.compile(r"\.tmp-\d+$")
 _OLD_SUFFIX = re.compile(r"\.old-\d+$")
 _SHARD_FILE = re.compile(r"^index\.shard-(\d+)-of-(\d+)\.jsonl$")
+_RUNNING_SUFFIX = ".running"
 
 Key = tuple[str, str | None]
 
@@ -67,6 +76,30 @@ def parse_shard_filename(name: str) -> tuple[int, int] | None:
     if match is None:
         return None
     return int(match.group(1)), int(match.group(2))
+
+
+def shard_running_filename(index: int, count: int) -> str:
+    """The marker :meth:`Store.running` writes while shard ``index`` of ``count`` may still be
+    appending to its own file: ``index.shard-<index>-of-<count>.jsonl.running``."""
+    return f"{shard_index_filename(index, count)}{_RUNNING_SUFFIX}"
+
+
+def running_markers(store_root: Path) -> list[Path]:
+    """Every live-shard-run marker under ``store_root`` (see :meth:`Store.running`), sorted;
+    empty when ``store_root`` does not exist or nothing is running."""
+    if not store_root.is_dir():
+        return []
+    return sorted(store_root.glob(f"index.shard-*-of-*.jsonl{_RUNNING_SUFFIX}"))
+
+
+def read_running_marker(path: Path) -> Mapping[str, Any]:
+    """The ``{"host", "pid", "started_at"}`` a live shard run's marker holds, or ``{}`` if it
+    cannot be read (already removed by the run finishing, or corrupt)."""
+    try:
+        data: Any = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def video_relpath(key: str, compression: str | None) -> str:
@@ -198,6 +231,33 @@ class Store:
         shard's own file (never another shard's)."""
         merged = self.root / INDEX_FILE
         return (merged, self.index_path) if self.shard is not None else (merged,)
+
+    @contextlib.contextmanager
+    def running(self) -> Iterator[None]:
+        """Mark this shard as live for as long as the ``with`` block runs: a no-op for an
+        unsharded store.
+
+        Writes :func:`shard_running_filename`, holding this host's name, this process's id and
+        the current time, so :func:`~dfwb.preprocess.face.shard.merge` can refuse to run while
+        this shard's file might still gain rows. The marker is removed in a ``finally``, so it is
+        gone once the block exits, however it exits (normally, or by raising).
+        """
+        if self.shard is None:
+            yield
+            return
+        index, count = self.shard
+        path = self.root / shard_running_filename(index, count)
+        self.root.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "started_at": datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat(),
+        }
+        _write_json_atomic(path, payload)
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
 
     def video_dir(self, record: ProcessedRecord) -> Path:
         """``<root>/<key>/<compression or "_">/``, the directory ``record`` is (or would be)
