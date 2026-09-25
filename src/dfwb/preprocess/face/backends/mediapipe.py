@@ -95,8 +95,9 @@ def _to_face(detection: Any) -> Face:
 class MediaPipeBackend:
     """BlazeFace face detection with MediaPipe.
 
-    Building the backend only checks its parameters; the model is found (or downloaded) and
-    loaded on the first :meth:`detect`, and released by :meth:`close`.
+    Building the backend only checks its parameters; the model is found (or downloaded) by
+    :meth:`prepare` or on the first :meth:`detect`, loaded on the first :meth:`detect`, and
+    released by :meth:`close`.
 
     Args:
         min_score: Faces scoring below this are not returned.
@@ -112,6 +113,8 @@ class MediaPipeBackend:
     version = "1"
     license = "Apache-2.0"
     has_pose = False
+    license_gate: str | None = None
+    license_terms: str | None = None
 
     def __init__(
         self, *, min_score: float = 0.5, model: str = "short-range", device: str = "cpu"
@@ -164,6 +167,19 @@ class MediaPipeBackend:
             faces.append([_to_face(detection) for detection in result.detections])
         return faces
 
+    def prepare(self) -> None:
+        """Find, or download, and verify the model file, without opening a detector.
+
+        Meant to be called once, before work is spread over several processes, so that none of
+        them has to download the model itself.
+
+        Raises:
+            InstallationError: The model is not in the cache and cannot be downloaded
+                (``DFWB_OFFLINE`` is set, or the request failed).
+            ContractError: The download does not hash as expected.
+        """
+        self._model_path()
+
     def close(self) -> None:
         """Release the detector. Calling it again, or before any detection, does nothing; a
         later :meth:`detect` opens a new detector."""
@@ -171,14 +187,18 @@ class MediaPipeBackend:
         if detector is not None:
             detector.close()
 
+    def _model_path(self) -> Path:
+        file_name, url, sha256 = MODELS[self._model]
+        directory = models_dir()
+        path = find_verified(file_name, sha256, [directory])
+        if path is None:
+            _log.info("downloading the mediapipe %s face model from %s", self._model, url)
+            path = fetch(url, sha256, directory / file_name)
+        return path
+
     def _load(self, mediapipe: Any) -> Any:
         if self._detector is None:
-            file_name, url, sha256 = MODELS[self._model]
-            directory = models_dir()
-            path = find_verified(file_name, sha256, [directory])
-            if path is None:
-                _log.info("downloading the mediapipe %s face model from %s", self._model, url)
-                path = fetch(url, sha256, directory / file_name)
+            path = self._model_path()
             vision = mediapipe.tasks.vision
             options = vision.FaceDetectorOptions(
                 base_options=mediapipe.tasks.BaseOptions(model_asset_path=str(path)),

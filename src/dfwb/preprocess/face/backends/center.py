@@ -33,6 +33,8 @@ class CenterBackend:
     version = "1"
     license = "MIT"
     has_pose = False
+    license_gate: str | None = None
+    license_terms: str | None = None
 
     def __init__(self, *, device: str = "cpu") -> None:
         parse_device(device)
