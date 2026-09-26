@@ -135,10 +135,12 @@ def test_a_tampered_cache_hit_offline_raises_naming_the_path(server, isolated, m
 
 
 def test_load_weights_reads_a_safetensors_file(tmp_path):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
     from safetensors.torch import save_file
 
     path = tmp_path / "weights.safetensors"
-    save_file({"w": __import__("torch").zeros(3)}, str(path))
+    save_file({"w": torch.zeros(3)}, str(path))
     spec = WeightSpec(
         id="default", url="x://x", sha256="a" * 64, format="safetensors", bytes=path.stat().st_size
     )
@@ -149,7 +151,7 @@ def test_load_weights_reads_a_safetensors_file(tmp_path):
 
 
 def test_load_weights_reads_a_torch_checkpoint_under_weights_only(tmp_path):
-    import torch
+    torch = pytest.importorskip("torch")
 
     path = tmp_path / "weights.pt"
     torch.save({"w": torch.zeros(3)}, path)
@@ -165,7 +167,7 @@ class _NotATensor:
 
 
 def test_load_weights_refuses_a_pickle_holding_a_non_tensor_object(tmp_path):
-    import torch
+    torch = pytest.importorskip("torch")
 
     path = tmp_path / "weights.pt"
     torch.save({"w": _NotATensor()}, path)
