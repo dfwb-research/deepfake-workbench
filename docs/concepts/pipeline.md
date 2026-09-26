@@ -42,8 +42,11 @@ hand-copied second one.
   format an `InventoryBuilder` produces locally (`InventoryRecord`) before it is checked against a
   pack. See [Protocols](./protocols.md) and [Adding a dataset](../guides/add-a-dataset.md).
 - **C4 -- Detector and adapter metadata.** The `Detector` protocol itself (`meta`, `to()`,
-  `predict()`), its `InputSpec` and `DetectorMeta`, and the zoo `AdapterCard` schema that wraps a
-  published third-party detector. See [Detectors](detectors.md).
+  `predict()`), and its `InputSpec` and `DetectorMeta` -- the two types `dfwb schema export c4`
+  and [Contracts](../reference/contracts/c4.md) publish. The zoo `AdapterCard`
+  (`dfwb.zoo.card.AdapterCard`, a separate, plain-YAML schema for wrapping a published
+  third-party detector) is not part of that export; its own `input` field is a smaller card-only
+  shape that converts into a full C4 `InputSpec`. See [Detectors](detectors.md).
 - **C5 -- Score file.** `schema: dfwb.scores/1`: a CSV of per-video scores plus a meta JSON file
   recording exactly what produced them. What `dfwb score` writes and `dfwb eval` reads; see
   [Score files](score-files.md).

@@ -6,14 +6,15 @@ A module with no ``__all__`` at all -- a CLI
 subcommand module, or a bare re-export ``__init__.py`` -- names nothing of its own to document and
 is skipped; :mod:`dfwb.cli.main` is the one CLI module that does define one.
 
-**Rulings:**
+Two groups of modules are left out on top of that general rule, both named explicitly below
+(``_EXCLUDED_PREFIXES``, ``_EXCLUDED_EXACT``):
 
 - the per-dataset inventory builder modules (``dfwb.preprocess.inventory.builders.*``, one class
-  each, ~20 of them) are excluded here even though each defines a one-name ``__all__``. They would
-  otherwise dominate the ``preprocess`` page with near-identical entries; each one is already
-  documented from its own data by the generated ``datasets/*.md`` pages, and the base class they
-  all share (``BaseBuilder``) is documented once, in full, right here.
-- ``dfwb.core.config.schema`` is excluded from the ``core`` page: its models are the experiment
+  each, ~20 of them), even though each defines a one-name ``__all__``. Including them would
+  dominate the ``preprocess`` page with near-identical entries; each one is already documented
+  from its own data by the generated ``datasets/*.md`` pages, and the base class they all share
+  (``BaseBuilder``) is documented once, in full, right here.
+- ``dfwb.core.config.schema``, left out of the ``core`` page: its models are the experiment
   config, documented in full (every section, not only ``__all__``) by the dedicated
   ``reference/config.md`` (``docs/gen_config.py``) instead. Rendering it on both pages gave every
   shared class two "primary" URLs, which ``mkdocs-autorefs`` rightly refuses to pick between.
@@ -39,7 +40,7 @@ _LAYERS: dict[str, str] = {
     "data": "Torch datasets that join protocol splits with a processed store.",
     "eval": "Metrics, aggregation, uncertainty, suites and reports over score files.",
     "preprocess": "Inventory builders and the face pipeline.",
-    "protocols": "Protocol packs: loading, querying, verification, materializing, building.",
+    "protocols": "Protocol packs: loading, querying, verification, materialising, building.",
     "core": "Contracts, registries, plugins, config, paths and run metadata.",
 }
 

@@ -21,5 +21,6 @@ or tag you actually used.
 ## Related projects
 
 If you also use [`dfwb-protocols`](ecosystem.md#dfwb-protocols) or a package from
-[`dfwb-torch`](ecosystem.md#dfwb-torch), cite that project too, from its own `CITATION.cff` --
-each is released and versioned independently of dfwb itself.
+[`dfwb-torch`](ecosystem.md#dfwb-torch), cite that project too, from its own `CITATION.cff` once it
+has one -- both are versioned independently of dfwb itself, but neither is released yet (see
+[Ecosystem](ecosystem.md)).

@@ -59,7 +59,7 @@ skips it cleanly -- `skipped`, not `failed`.
 ```bash
 dfwb plugins list                 # every registered component: registry/key, provider, summary
 dfwb plugins list --all           # also plugins that failed or were skipped, and why
-dfwb plugins info layers/srm      # one component's target, provider, requirements, params model
+dfwb plugins info backbones/timm  # one component's target, provider, requirements, params model
 ```
 
 `dfwb plugins list`'s component rows are contract C1's `Entry` records; `dfwb plugins list --all`'s

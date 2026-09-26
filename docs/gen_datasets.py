@@ -94,7 +94,7 @@ def _page(builder: BaseBuilder) -> str:
     return "\n".join(lines)
 
 
-def _index(rows: list[tuple[str, str]]) -> str:
+def _index(rows: list[tuple[str, str, str]]) -> str:
     lines = [
         "# Datasets",
         "",
@@ -106,19 +106,20 @@ def _index(rows: list[tuple[str, str]]) -> str:
         "| Dataset | Folder |",
         "|---|---|",
     ]
-    for dataset_id, name in rows:
-        lines.append(f"| [{name}]({dataset_id}.md) | `{dataset_id}` |")
+    for dataset_id, name, expected_folder in rows:
+        lines.append(f"| [{name}]({dataset_id}.md) | `{expected_folder}` |")
     lines.append("")
     return "\n".join(lines)
 
 
 def generate() -> None:
     entries = get_registry("inventory_builders").entries()
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str, str]] = []
     for entry in entries:
         builder = get_registry("inventory_builders").build(entry.qualified_key)
         assert isinstance(builder, BaseBuilder)
-        rows.append((builder.dataset_id, str(builder.card_info.get("name", builder.dataset_id))))
+        name = str(builder.card_info.get("name", builder.dataset_id))
+        rows.append((builder.dataset_id, name, builder.expected_folder))
         with mkdocs_gen_files.open(f"datasets/{builder.dataset_id}.md", "w") as handle:
             handle.write(_page(builder))
     rows.sort(key=lambda row: row[0])

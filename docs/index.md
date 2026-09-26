@@ -5,8 +5,8 @@
 
 `dfwb` is a uniform, plugin-driven workbench for deepfake detection research: raw dataset →
 verified inventory → face clips → trained detector → score file → evaluation report, with every
-stage pluggable and every result traceable to a protocol version, a processing profile and a
-config fingerprint.
+stage pluggable and every score file recording the protocol version it covers and how it was
+produced -- for a trained run, the processing profile and the config fingerprint too.
 
 !!! note "Pre-release"
     `dfwb` is at `0.1.0b2`. Nothing is published on PyPI yet -- install from a clone (see
@@ -16,8 +16,9 @@ config fingerprint.
 
 - **Never media.** dfwb works with identifiers, labels and splits only; every dataset still comes
   from its own owner, under the owner's own terms.
-- **Reproducible and traceable.** Every score file and every trained run carries a protocol
-  version, a processing profile and a config fingerprint, so it can always be traced back to
+- **Reproducible and traceable.** Every score file records the protocol version and scheme hash it
+  covers, and how it was produced: for a trained run, the processing profile, the config
+  fingerprint, the checkpoint's hash and the training seed. A result can always be traced back to
   exactly what produced it.
 - **Progressive installs.** The base install pulls no PyTorch at all: browsing protocols, building
   inventories and evaluating score files all work from it. Extras (`preprocess`, `train`, `zoo`)
