@@ -3,7 +3,7 @@ import json
 import pytest
 
 from dfwb.core import licenses
-from dfwb.core.errors import ContractError
+from dfwb.core.errors import ContractError, InstallationError
 
 
 def test_unaccepted_licence_is_not_accepted(tmp_path, monkeypatch):
@@ -89,3 +89,19 @@ def test_corrupt_store_error_names_the_file_and_hints_the_fix(tmp_path, monkeypa
     assert excinfo.value.hint == (
         "fix or delete the file; accept the licence again with --accept-license"
     )
+
+
+def test_require_accepted_raises_installation_error_until_accepted(tmp_path, monkeypatch):
+    monkeypatch.setenv("DFWB_STATE_DIR", str(tmp_path))
+    with pytest.raises(InstallationError) as caught:
+        licenses.require_accepted("fake-weights", terms="the fake weights are for testing only")
+    assert caught.value.exit_code == 5
+    assert "fake-weights" in caught.value.message
+    assert "--accept-license" in caught.value.hint
+    assert "the fake weights are for testing only" in caught.value.hint
+
+
+def test_require_accepted_is_silent_once_accepted(tmp_path, monkeypatch):
+    monkeypatch.setenv("DFWB_STATE_DIR", str(tmp_path))
+    licenses.accept("fake-weights", license="the fake weights are for testing only")
+    licenses.require_accepted("fake-weights", terms="the fake weights are for testing only")

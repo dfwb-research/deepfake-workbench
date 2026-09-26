@@ -1,14 +1,14 @@
 """The licence gate: a card whose licence needs an explicit acknowledgement blocks use until
-``dfwb.core.licenses`` records it; a card that needs none never asks."""
+``dfwb.core.licenses`` records it; a card that needs none never asks. Zoo cards go through the
+same gate (``dfwb.core.licenses.require_accepted``) the face backends use, so the shape of the
+error is identical: ``InstallationError``, exit code 5, a hint naming ``--accept-license``."""
 
 from __future__ import annotations
-
-import re
 
 import pytest
 
 from dfwb.core import licenses
-from dfwb.core.errors import ContractError
+from dfwb.core.errors import InstallationError
 from dfwb.zoo.adapter import require_license_accepted
 from dfwb.zoo.card import parse_card
 
@@ -39,8 +39,9 @@ def test_a_card_needing_no_acknowledgement_never_raises(isolated):
 def test_a_gated_card_raises_until_accepted(isolated):
     card = parse_card(_GATED_CARD)
 
-    with pytest.raises(ContractError) as info:
+    with pytest.raises(InstallationError) as info:
         require_license_accepted(card)
+    assert info.value.exit_code == 5
     assert "gend" in info.value.message
     assert "--accept-license" in info.value.hint
 
@@ -48,10 +49,11 @@ def test_a_gated_card_raises_until_accepted(isolated):
     require_license_accepted(card)  # now accepted: must not raise
 
 
-def test_the_gate_checks_the_weights_licence_first_when_there_is_one(isolated):
+def test_the_gate_names_the_weights_licence_first_when_there_is_one(isolated):
     card = parse_card(_GATED_CARD)
-    with pytest.raises(ContractError, match=re.escape("LicenseRef-CC-BY-NC-4.0")):
+    with pytest.raises(InstallationError) as info:
         require_license_accepted(card)
+    assert "LicenseRef-CC-BY-NC-4.0" in info.value.hint
 
 
 def test_acceptance_is_isolated_by_dfwb_state_dir(isolated, tmp_path, monkeypatch):
@@ -60,5 +62,5 @@ def test_acceptance_is_isolated_by_dfwb_state_dir(isolated, tmp_path, monkeypatc
     require_license_accepted(card)
 
     monkeypatch.setenv("DFWB_STATE_DIR", str(tmp_path / "elsewhere"))
-    with pytest.raises(ContractError):
+    with pytest.raises(InstallationError):
         require_license_accepted(card)

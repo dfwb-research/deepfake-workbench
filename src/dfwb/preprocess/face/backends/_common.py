@@ -1,4 +1,6 @@
-"""What the shipped face backends share: argument checks, the licence gate and model files.
+"""What the shipped face backends share: argument checks, model files, and the licence gate
+(``require_accepted``, re-exported here from :mod:`dfwb.core.licenses`, which owns the one
+implementation shared with the zoo).
 
 numpy is imported inside the frame checks rather than at module scope, as in the rest of the face
 pipeline.
@@ -11,9 +13,9 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
-from dfwb.core.errors import ConfigError, InstallationError
+from dfwb.core.errors import ConfigError
 from dfwb.core.hashing import sha256_file
-from dfwb.core.licenses import is_accepted
+from dfwb.core.licenses import require_accepted
 from dfwb.core.paths import require_root, resolve_roots
 
 __all__ = [
@@ -83,28 +85,6 @@ def check_frame(frame: object) -> None:
     ):
         raise ValueError(
             f"a frame must be a uint8 RGB array of shape [H, W, 3], got {_describe(frame)}"
-        )
-
-
-def require_accepted(gate: str, *, terms: str) -> None:
-    """Refuse to go on until the licence named ``gate`` has been acknowledged on this machine.
-
-    Model weights whose licence is stricter than dfwb's own call this before touching any model
-    file. The acknowledgement is recorded once (``--accept-license``) in
-    :mod:`dfwb.core.licenses`.
-
-    Args:
-        gate: The name the acknowledgement is recorded under, e.g. ``"insightface-buffalo_l"``.
-        terms: The licence terms in a few words, shown to the user.
-
-    Raises:
-        InstallationError: The licence has not been acknowledged (exit code 5).
-    """
-    if not is_accepted(gate):
-        raise InstallationError(
-            f"{gate}: these model weights need a one-time licence acknowledgement before first use",
-            hint=f"{terms}; if your use fits those terms, re-run with --accept-license "
-            "(this machine will not ask again)",
         )
 
 

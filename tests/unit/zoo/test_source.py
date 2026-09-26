@@ -12,7 +12,7 @@ from tests.unit.zoo._fixtures import WeightedTestAdapter
 
 from dfwb.core import licenses
 from dfwb.core.detector import DetectorMeta
-from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
+from dfwb.core.errors import ConfigError, InstallationError, UnknownKeyError
 from dfwb.core.plugins import get_registry
 from dfwb.score.sources import resolve_detector
 from dfwb.zoo.card import parse_card
@@ -172,12 +172,19 @@ def test_a_gated_adapter_is_blocked_until_its_licence_is_accepted(server, isolat
     )
     monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
 
-    with pytest.raises(ContractError):
+    with pytest.raises(InstallationError) as info:
         resolve_detector("zoo:weighted-test")
+    assert info.value.exit_code == 5
+    # Gated before anything is touched: no request made, nothing cached yet.
+    assert server.requests == []
+    from dfwb.zoo.weights import cache_dir
+
+    assert not cache_dir("weighted-test", SHA256).exists()
 
     licenses.accept(card.name, license=card.license.code)
     detector = resolve_detector("zoo:weighted-test")
     assert detector.checkpoint_sha256 == SHA256
+    assert server.requests == ["/w.safetensors"]
 
 
 # ------------------------------------------------------------------------------- seed threading

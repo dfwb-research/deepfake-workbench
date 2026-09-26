@@ -19,9 +19,17 @@ from typing import Any
 
 import platformdirs
 
-from dfwb.core.errors import ContractError
+from dfwb.core.errors import ContractError, InstallationError
 
-__all__ = ["STATE_DIR_ENV", "Acceptance", "accept", "all_accepted", "is_accepted", "state_file"]
+__all__ = [
+    "STATE_DIR_ENV",
+    "Acceptance",
+    "accept",
+    "all_accepted",
+    "is_accepted",
+    "require_accepted",
+    "state_file",
+]
 
 STATE_DIR_ENV = "DFWB_STATE_DIR"
 _FILE_NAME = "licenses.json"
@@ -112,3 +120,26 @@ def accept(name: str, *, license: str) -> None:
 def all_accepted() -> dict[str, Acceptance]:
     """Every acknowledgement recorded on this machine, keyed by name."""
     return _read()
+
+
+def require_accepted(name: str, *, terms: str) -> None:
+    """Refuse to go on until the licence named ``name`` has been acknowledged on this machine.
+
+    The single implementation of the licence gate: anything that must not touch a gated file
+    (model weights whose terms are stricter than dfwb's own, a zoo adapter or its weights that
+    declare ``requires_ack``) calls this first. The acknowledgement is recorded once
+    (``--accept-license``) and never asked again on the same machine.
+
+    Args:
+        name: The name the acknowledgement is recorded under, e.g. ``"insightface-buffalo_l"``.
+        terms: The licence terms in a few words, shown to the user.
+
+    Raises:
+        InstallationError: The licence has not been acknowledged (exit code 5).
+    """
+    if not is_accepted(name):
+        raise InstallationError(
+            f"{name}: these model weights need a one-time licence acknowledgement before first use",
+            hint=f"{terms}; if your use fits those terms, re-run with --accept-license "
+            "(this machine will not ask again)",
+        )
