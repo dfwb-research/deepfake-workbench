@@ -122,7 +122,7 @@ def all_accepted() -> dict[str, Acceptance]:
     return _read()
 
 
-def require_accepted(name: str, *, terms: str) -> None:
+def require_accepted(name: str, *, terms: str, what: str = "these model weights") -> None:
     """Refuse to go on until the licence named ``name`` has been acknowledged on this machine.
 
     The single implementation of the licence gate: anything that must not touch a gated file
@@ -133,13 +133,17 @@ def require_accepted(name: str, *, terms: str) -> None:
     Args:
         name: The name the acknowledgement is recorded under, e.g. ``"insightface-buffalo_l"``.
         terms: The licence terms in a few words, shown to the user.
+        what: What needs the acknowledgement, a few words fitting "a one-time licence
+            acknowledgement is needed before ``<what>`` can be used" -- the default reads
+            correctly for model weights; a caller gating something else (a pinned clone's own
+            code, say) names it instead.
 
     Raises:
         InstallationError: The licence has not been acknowledged (exit code 5).
     """
     if not is_accepted(name):
         raise InstallationError(
-            f"{name}: these model weights need a one-time licence acknowledgement before first use",
+            f"{name}: a one-time licence acknowledgement is needed before {what} can be used",
             hint=f"{terms}; if your use fits those terms, re-run with --accept-license "
             "(this machine will not ask again)",
         )

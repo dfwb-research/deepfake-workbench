@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from dfwb import __version__ as _FRAMEWORK_VERSION
 from dfwb.core.detector import DetectorMeta
+from dfwb.core.errors import InstallationError
 from dfwb.core.licenses import require_accepted
 from dfwb.zoo.card import AdapterCard, read_card
 
@@ -39,25 +40,22 @@ class Adapter(Protocol):
     An adapter with weights loads them with :func:`dfwb.zoo.weights.load_weights` (safetensors or
     ``torch.load(weights_only=True)`` only, dispatched from the card's own weight format), never
     its own ad hoc pickle or checkpoint loading.
+
+    A ``code_strategy: pinned-clone`` adapter's own ``load()`` additionally declares a
+    ``code_root: Path | None = None`` keyword -- :mod:`dfwb.zoo.source` passes it (the pinned
+    clone directory, from :func:`dfwb.zoo.strategies.ensure_clone`) only to such an adapter, and
+    the adapter imports its entry point from it with
+    :func:`dfwb.zoo.strategies.import_pinned_entry`. This is not part of the base signature below:
+    every other strategy's adapter never receives it, and never has to know about a keyword that
+    would mean nothing for it.
     """
 
     card: AdapterCard
 
-    def load(
-        self,
-        weights: Path | None,
-        device: str,
-        *,
-        seed: int | None = None,
-        code_root: Path | None = None,
-    ) -> Detector:
+    def load(self, weights: Path | None, device: str, *, seed: int | None = None) -> Detector:
         """Build the detector, from a verified local weights file (``None`` for an adapter with
         no weights) and the device it should end up on. ``seed`` is given whenever a caller named
-        one explicitly (``score(..., seed=...)``, or its own default); most adapters ignore it.
-        ``code_root`` is the adapter's own pinned clone (``code_strategy: pinned-clone``, set by
-        :func:`dfwb.zoo.strategies.ensure_clone`), ``None`` for every other strategy; an adapter
-        that uses it imports its entry point with
-        :func:`dfwb.zoo.strategies.import_pinned_entry`."""
+        one explicitly (``score(..., seed=...)``, or its own default); most adapters ignore it."""
         ...
 
 
@@ -79,13 +77,28 @@ def meta_from_card(card: AdapterCard, *, version: str | None = None, source: str
 def require_license_accepted(card: AdapterCard) -> None:
     """Gate use of ``card`` on its own licence terms -- the same gate the face backends use
     (:func:`dfwb.core.licenses.require_accepted`), so there is exactly one implementation of
-    "has this licence been acknowledged" in the framework.
+    "has this licence been acknowledged" in the framework. When ``card.code_strategy`` is
+    ``"pinned-clone"``, the gate is framed as being about the adapter's *code* licence (the usual
+    reason a card would use that strategy at all); otherwise it is framed as being about its
+    weights, as for every other strategy.
 
     Raises:
         InstallationError: ``card.license.requires_ack`` is set and ``card.name`` has not yet
-            been acknowledged (exit code 5).
+            been acknowledged (exit code 5); the hint names the exact command to run.
     """
     if not card.license.requires_ack:
         return
-    licence = card.license.weights or card.license.code
-    require_accepted(card.name, terms=f"licensed under {licence}")
+    if card.code_strategy == "pinned-clone":
+        what = "this adapter's code licence"
+        licence = card.license.code
+    else:
+        what = "these model weights"
+        licence = card.license.weights or card.license.code
+    try:
+        require_accepted(card.name, terms=f"licensed under {licence}", what=what)
+    except InstallationError as exc:
+        raise InstallationError(
+            exc.message,
+            hint=f"licensed under {licence}; run `dfwb zoo fetch {card.name} "
+            "--accept-license` once (this machine will not ask again)",
+        ) from None

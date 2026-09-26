@@ -60,14 +60,7 @@ class RandomAdapter:
 
     card = read_builtin_card(_NAME)
 
-    def load(
-        self,
-        weights: Path | None,
-        device: str,
-        *,
-        seed: int | None = None,
-        code_root: Path | None = None,
-    ) -> RandomDetector:
+    def load(self, weights: Path | None, device: str, *, seed: int | None = None) -> RandomDetector:
         effective_seed = DEFAULT_SEED if seed is None else seed
         meta = meta_from_card(self.card, source=f"zoo:{self.card.name}")
         return RandomDetector(meta, seed=effective_seed)
