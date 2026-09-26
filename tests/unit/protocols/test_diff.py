@@ -615,6 +615,7 @@ def test_a_changed_pair_list_between_key_free_recipes_is_reported(tmp_path):
 
     result = diff_packs(old, new)
 
+    assert result.now_key_free == []  # it shipped no key lists before either
     assert result.lists_changed == [f"{DATASET_ID}/pairs"]
     # As for a pack that ships its pairs: a changed pair list is a changed file, a patch.
     assert result.required_bump == "patch"
@@ -631,7 +632,9 @@ def test_publishing_a_list_dataset_as_a_key_free_recipe_changes_no_records(tmp_p
 
     assert result.lists_changed == []
     assert result.relabelled == []
-    assert result.required_bump == "patch"  # the card and the files left out, nothing else
+    # Users who installed the lists must now materialise them: more than a patch.
+    assert result.now_key_free == [DATASET_ID]
+    assert result.required_bump == "minor"
 
 
 def test_publishing_a_list_dataset_as_a_recipe_with_a_relabel_requires_a_major_bump(tmp_path):
@@ -659,4 +662,5 @@ def test_a_list_side_is_hashed_even_when_its_card_records_no_hashes(tmp_path):
     result = diff_packs(old, new)
 
     assert result.lists_changed == []
-    assert result.required_bump == "patch"
+    assert result.now_key_free == [DATASET_ID]
+    assert result.required_bump == "minor"

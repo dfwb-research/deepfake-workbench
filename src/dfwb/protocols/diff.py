@@ -70,7 +70,9 @@ class DiffResult:
     ``method`` changed, as ``<dataset>/<key>|<compression>`` (the compression empty when there
     is none). ``lists_changed`` lists, sorted, the video and pair lists found changed by their
     hashes alone, as ``<dataset>/videos`` or ``<dataset>/pairs``: those of a dataset one of the
-    packs ships without its key lists, so no video can be named.
+    packs ships without its key lists, so no video can be named. ``now_key_free`` lists, sorted,
+    the datasets the old pack shipped with their key lists and the new one ships without them,
+    which users must now materialise.
     """
 
     schemes: list[SchemeDiff]
@@ -79,6 +81,7 @@ class DiffResult:
     required_bump: Bump
     relabelled: list[str] = field(default_factory=list)
     lists_changed: list[str] = field(default_factory=list)
+    now_key_free: list[str] = field(default_factory=list)
 
 
 def _parse_version(value: str) -> PackVersion:
@@ -347,9 +350,11 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
     ``videos_sha256`` and ``pairs_sha256`` for a pack without the lists, the hash of the shipped
     lists for one with them. A changed video list is a major change, since a relabel cannot be
     told apart from any other change to it; a changed pair list is reported like a changed pairs
-    file. Both are listed in :attr:`DiffResult.lists_changed`. With nothing major or minor, any
-    other change to a pack file (or to ``pack.yaml`` beyond its version) needs a patch release;
-    none at all needs no release (``"none"``).
+    file. Both are listed in :attr:`DiffResult.lists_changed`. A dataset the new pack ships
+    without the key lists the old one shipped is at least a minor change, since its users must
+    now materialise it, and is listed in :attr:`DiffResult.now_key_free`. With nothing major or
+    minor, any other change to a pack file (or to ``pack.yaml`` beyond its version) needs a patch
+    release; none at all needs no release (``"none"``).
     """
     old_card = read_model(old / "pack.yaml", PackCard)
     new_card = read_model(new / "pack.yaml", PackCard)
@@ -362,6 +367,7 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
     labels_added: list[str] = []
     relabelled: list[str] = []
     lists_changed: list[str] = []
+    now_key_free: list[str] = []
     major = bool(old_all - new_all) or bool(old_published - new_published)
     minor = bool(new_all - old_all) or bool(new_published - old_published)
 
@@ -391,6 +397,9 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
             lists_changed.extend(
                 _lists_changed(old, new, dataset_id, old_dataset_card, new_dataset_card)
             )
+            if _ships_lists(old, dataset_id) and not _ships_lists(new, dataset_id):
+                now_key_free.append(dataset_id)
+                minor = True
 
     major = major or bool(relabelled) or any(name.endswith("/videos") for name in lists_changed)
     required_bump: Bump
@@ -409,4 +418,5 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
         required_bump=required_bump,
         relabelled=relabelled,
         lists_changed=sorted(lists_changed),
+        now_key_free=sorted(now_key_free),
     )

@@ -455,7 +455,8 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
 
     A recipe dataset that either pack ships without its key lists is compared by the hashes of
     its video and pair lists; a changed video list requires a major bump, since a relabel cannot
-    be told apart from any other change to it.
+    be told apart from any other change to it, and a dataset that now ships no key lists requires
+    at least a minor one, since its users must now materialise it.
 
     With ``--expect-bump``, the value is the bump the pack author claims for the release: the
     command exits 4, naming both, when that claim is smaller than the bump the changes require --
@@ -492,6 +493,7 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
             "relabelled": relabelled,
             "relabelled_count": len(result.relabelled),
             "lists_changed": result.lists_changed,
+            "now_key_free": result.now_key_free,
             "required_bump": result.required_bump,
         }
         if expect_bump is not None:
@@ -517,6 +519,8 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         click.echo(
             "lists changed (compared by hash, no video named): " + ", ".join(result.lists_changed)
         )
+    for dataset in result.now_key_free:
+        click.echo(f"{dataset} now ships no key lists: users must materialise it")
     click.echo(f"required bump: {result.required_bump}")
     if expect_bump is not None:
         click.echo(f"expected bump: {expect_bump}")

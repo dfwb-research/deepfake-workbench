@@ -591,6 +591,19 @@ def test_diff_cli_names_the_lists_of_a_recipe_that_changed_by_hash(run, tmp_path
     assert data["required_bump"] == "major"
 
 
+def test_diff_cli_says_which_datasets_users_must_now_materialise(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _diff_rows())
+    _publish_without_lists(new)
+
+    text = run("protocols", "diff", str(old), str(new))
+    data = json.loads(run("protocols", "diff", str(old), str(new), "--json").out)
+
+    assert "diffcli now ships no key lists: users must materialise it" in text.out
+    assert "required bump: minor" in text.out
+    assert data["now_key_free"] == ["diffcli"]
+
+
 def test_diff_cli_expect_bump_exits_4_on_a_version_downgrade(run, tmp_path):
     old = _write_diff_pack(tmp_path / "old", "1.2.0", _diff_rows())
     new = _write_diff_pack(tmp_path / "new", "1.1.0", _diff_rows())
