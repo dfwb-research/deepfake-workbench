@@ -205,6 +205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.exit_code
     except click.Abort:
         click.echo("aborted", err=True)
+        click.echo("hint: re-run the command to try again", err=True)
         return 1
     except Exception as exc:
         from dfwb.core.errors import DFWBError

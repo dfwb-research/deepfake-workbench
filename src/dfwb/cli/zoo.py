@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from dfwb.cli._output import emit_json, json_option, table
+from dfwb.cli._output import emit_json, hint_line, json_option, table
 from dfwb.core.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -276,6 +276,8 @@ def verify(name: str, as_json: bool) -> int:
 
     if as_json:
         emit_json({"name": card.name, "ok": ok, "weights": weight_rows, "code": code_row})
+        if not ok:
+            hint_line(f"re-run `dfwb zoo fetch {card.name}` to re-download")
         return 0 if ok else 4
 
     click.echo(f"{card.name}: {'ok' if ok else 'problems found'}")
@@ -286,6 +288,8 @@ def verify(name: str, as_json: bool) -> int:
         click.echo(f"  code: {code_row['status']} ({code_row['path']})")
     if not weight_rows and code_row is None:
         click.echo("  nothing to verify (no weights, no pinned-clone code)")
+    if not ok:
+        hint_line(f"re-run `dfwb zoo fetch {card.name}` to re-download")
     return 0 if ok else 4
 
 
@@ -413,6 +417,11 @@ def parity(
             "the overlay was not written",
             hint="process the missing videos (`dfwb preprocess`) so the parity set is scored "
             "whole, or pass a lower --min-coverage",
+        )
+    if not ok:
+        hint_line(
+            "check --tolerance and --weights, and whether the adapter card's reported numbers "
+            "are still accurate"
         )
     return 0 if ok else 4
 

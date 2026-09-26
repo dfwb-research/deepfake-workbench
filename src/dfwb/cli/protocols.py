@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from dfwb.cli._output import emit_json, json_option, table
+from dfwb.cli._output import emit_json, hint_line, json_option, table
 
 
 @click.group()
@@ -105,6 +105,17 @@ def info(ref: str, as_json: bool) -> None:
     click.echo(table(["SPLIT", "COMPRESSION", "LABEL", "COUNT"], rows))
 
 
+def _verify_hint(dataset: str, exit_code: int) -> str:
+    if exit_code == 4:
+        return (
+            f"the local inventory disagrees with the pack about a video's label; re-run "
+            f"`dfwb inventory build {dataset}` against the pack this inventory was built for"
+        )
+    return (
+        f"process the missing videos, then re-run `dfwb inventory build {dataset}` to pick them up"
+    )
+
+
 @protocols.command("verify")
 @click.argument("ref")
 @click.option(
@@ -139,6 +150,8 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
 
     if as_json:
         emit_json({**report.to_json(), "report_path": str(report_path)})
+        if report.exit_code:
+            hint_line(_verify_hint(report.dataset, report.exit_code))
         return report.exit_code
 
     click.echo(f"{report.dataset}/{report.scheme}  (pack {report.pack} {report.pack_version})")
@@ -150,6 +163,8 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
     for warning in report.warnings:
         click.echo(f"warning: {warning}")
     click.echo(f"report written to {report_path}")
+    if report.exit_code:
+        hint_line(_verify_hint(report.dataset, report.exit_code))
     return report.exit_code
 
 
@@ -316,6 +331,7 @@ def lint(pack: Path, release: bool, as_json: bool) -> int:
     from dfwb.protocols.lint import lint_pack
 
     issues = lint_pack(pack, release=release)
+    errors = [issue for issue in issues if issue.severity == "error"]
 
     if as_json:
         emit_json([_lint_issue_row(issue) for issue in issues])
@@ -325,7 +341,9 @@ def lint(pack: Path, release: bool, as_json: bool) -> int:
         for issue in issues:
             click.echo(f"{issue.severity}: {issue.where}: {issue.message}")
 
-    return 4 if any(issue.severity == "error" for issue in issues) else 0
+    if errors:
+        hint_line("fix each error above, then run `dfwb protocols lint` again")
+    return 4 if errors else 0
 
 
 @protocols.command("new-pack")
@@ -367,6 +385,11 @@ def _scheme_diff_row(scheme_diff: Any) -> dict[str, Any]:
 _RELABELLED_SHOWN = 20
 
 
+def _report_bump_shortfall(error_line: str, required_bump: str) -> None:
+    click.echo(error_line, err=True)
+    hint_line(f"bump the version to at least {required_bump!r}")
+
+
 @protocols.command("diff")
 @click.argument("old", type=click.Path(path_type=Path, file_okay=False, exists=True))
 @click.argument("new", type=click.Path(path_type=Path, file_okay=False, exists=True))
@@ -396,12 +419,17 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
 
     exit_code = 0
     actual_bump: str | None = None
+    bump_error: str | None = None
     if expect_bump is not None:
         old_card = read_model(old / "pack.yaml", PackCard)
         new_card = read_model(new / "pack.yaml", PackCard)
         actual_bump = version_bump(old_card.version, new_card.version)
         if bump_rank(expect_bump) < bump_rank(result.required_bump):
             exit_code = 4
+            bump_error = (
+                f"error: --expect-bump {expect_bump!r} does not cover these changes, which "
+                f"require {result.required_bump!r}"
+            )
 
     relabelled = result.relabelled[:_RELABELLED_SHOWN]
     if as_json:
@@ -417,6 +445,8 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
             payload["expected_bump"] = expect_bump
             payload["actual_bump"] = actual_bump
         emit_json(payload)
+        if bump_error is not None:
+            _report_bump_shortfall(bump_error, result.required_bump)
         return exit_code
 
     rows = [[s.dataset, s.scheme, s.status, s.added, s.removed, s.moved] for s in result.schemes]
@@ -434,10 +464,6 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
     if expect_bump is not None:
         click.echo(f"expected bump: {expect_bump}")
         click.echo(f"pack.yaml version change: {actual_bump}")
-        if exit_code:
-            click.echo(
-                f"error: --expect-bump {expect_bump!r} does not cover these changes, which "
-                f"require {result.required_bump!r}",
-                err=True,
-            )
+        if bump_error is not None:
+            _report_bump_shortfall(bump_error, result.required_bump)
     return exit_code

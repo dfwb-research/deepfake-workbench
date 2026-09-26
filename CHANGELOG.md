@@ -19,6 +19,14 @@ All notable changes to this project are documented here. The format follows
 - `examples/`: runnable scripts mirroring the toyfake quickstart, importing foreign score files,
   and scoring a detector of your own -- each exercised by its own test, in a temporary directory.
 
+### Changed
+
+- Every failing `dfwb` command now ends with a `hint: ` line explaining the remedy, including the
+  commands that report a non-zero exit themselves rather than raising: `dfwb eval` under
+  `--min-coverage`, `dfwb protocols verify`, `dfwb protocols lint`, `dfwb protocols diff
+  --expect-bump`, `dfwb zoo verify` and `dfwb zoo parity`. A command aborted mid-run (Ctrl+C, or
+  input hitting EOF) also prints a hint alongside `aborted`.
+
 ## [0.1.0b2] - 2026-09-26
 
 ### Added

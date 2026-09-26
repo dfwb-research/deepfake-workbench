@@ -16,7 +16,7 @@ from typing import Any
 
 import click
 
-from dfwb.cli._output import emit_json, json_option, table
+from dfwb.cli._output import emit_json, hint_line, json_option, table
 from dfwb.core.errors import ConfigError, InstallationError
 from dfwb.core.hashing import sha256_file
 
@@ -320,6 +320,8 @@ def run(
         click.echo(table(headers, rows))
     else:
         click.echo(_render(effective_fmt, result.tables, result.metrics))
+    if result.exit_code:
+        hint_line("process the missing videos, or lower --min-coverage")
     return result.exit_code
 
 
