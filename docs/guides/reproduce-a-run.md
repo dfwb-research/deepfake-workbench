@@ -10,7 +10,7 @@ what makes two score files from two different runs actually comparable.
 ```
 runs/<run.name>/<YYYYmmdd-HHMMSS>-s<seed>/
   config.resolved.yaml   # the exact, fully-resolved config this run trained
-  fingerprint.txt        # that config's fingerprint (same for every seed of the experiment)
+  fingerprint.txt        # that config's fingerprint (shared by every seed in its run.seeds)
   env.json                # seed, dfwb/python/torch versions, device, git state, the command run
   data.json               # per source: protocol ref, pack version, split hash, profile, counts
   checkpoints/best/{model.safetensors, detector.json}
@@ -56,10 +56,12 @@ The resulting score file's meta records the checkpoint's exact identity:
 ```
 
 `source` is `run:<config fingerprint>` — the same fingerprint `fingerprint.txt` and `dfwb runs
-list` show, identifying the *experiment* (every seed of it), not one particular checkpoint file.
-`checkpoint_sha256` is the sha256 of the exact `model.safetensors` that was scored, so two score
-files that share it were unquestionably produced from the same weights, whatever their `source`
-fingerprint says.
+list` show, identifying the *experiment config* (every seed listed in its `run.seeds`), not one
+particular checkpoint file. `run.seeds` is itself part of the fingerprint: a seed trained as a
+separate job, from a config or override that names only that seed, gets a fingerprint of its own
+(see the seeds table below). `checkpoint_sha256` is the sha256 of the exact `model.safetensors`
+that was scored, so two score files that share it were unquestionably produced from the same
+weights, whatever their `source` fingerprint says.
 
 ## `training_seed`: the score file records the run's seed, not the scoring command's
 
@@ -78,11 +80,17 @@ invocation.
   is (`n`) — comparing across different splits or datasets is possible, but only ever as
   meaningful as the videos the two files actually share.
 - **The "same run, another seed" table** (`dfwb eval`'s automatic `seeds` breakdown) is stricter:
-  two files only fold together when their `detector.source`, `protocol.id`, `protocol.split` and
-  `where` all agree and only `meta.seed` differs — exactly two runs of the same experiment
-  (`run.seeds` in the config) scored the same way. This is also why `run:`'s `source` fingerprint
-  identifies the *experiment*: two seeds of one `run.name` share it, and are recognised as
-  "the same run, another seed" once both are scored and evaluated together.
+  two files fold together only when their `detector.source`, `protocol.id`, `protocol.split`,
+  `where`, `labels`, `aggregation` and `processing_profile` all agree and their `seed` differs —
+  two runs of one experiment config, scored the same way. The table groups the seeds of **one
+  experiment config**: `run:`'s `source` is the config fingerprint, and `run.seeds` is part of
+  that fingerprint, so **list every seed in one config's `run.seeds`** (one `dfwb train` trains
+  them all) to get it. Seeds trained as separate jobs, each from a config or override naming only
+  its own seed, have different fingerprints and never fold together; compare their files with
+  `dfwb eval compare` instead.
+- **Two files with the same identity and the same seed** — a run's `#best` and `#last`
+  checkpoints, say — are not two seeds. The seeds table keeps the first of them given on the
+  command line, and a warning names the one it ignored.
 - **A suite entry** matches a file by `protocol.id`, `protocol.split` and `where` alone
   (`docs/guides/cross-dataset-eval.md`), regardless of which detector produced it — so a suite
   aggregate genuinely compares different detectors on identical splits.

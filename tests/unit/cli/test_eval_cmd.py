@@ -166,6 +166,65 @@ def test_eval_compare_json(run, tmp_path):
     assert data["comparisons"][0]["n"] == 40
 
 
+def _one_class_file(tmp_path, name):
+    from dfwb.core.records import ScoreRow
+
+    rows = [ScoreRow("d", f"fake/{i:04d}", None, 1, 0.8, "ok") for i in range(10)]
+    meta = make_meta(seed=None, coverage={"expected": 10, "ok": 10, "missing": 0, "error": 0})
+    return _write(tmp_path, name, rows, meta)
+
+
+@pytest.mark.parametrize("fmt", ["md", "csv", "latex"])
+def test_eval_shows_an_undefined_metric_as_an_undefined_cell(run, score_file, tmp_path, fmt):
+    one_class = _one_class_file(tmp_path, "fakes.scores.csv")
+    out_dir = tmp_path / "report"
+
+    result = run(
+        "eval",
+        str(score_file),
+        str(one_class),
+        "--metrics",
+        "auc",
+        "--bootstrap",
+        "0",
+        "--format",
+        fmt,
+        "--out",
+        str(out_dir),
+    )
+
+    assert result.code == 0, result.err
+    assert "undefined" in result.out
+    data = json.loads((out_dir / "metrics.json").read_text())
+    rows = {row["file"]: row for row in data["tables"]["files"]}
+    cell = rows["fakes.scores.csv"]["metrics"]["auc"]
+    assert cell["value"] is None
+    assert "every label is 'fake'" in cell["undefined"]
+
+
+def test_eval_json_reports_an_undefined_metric_as_null_with_a_reason(run, score_file, tmp_path):
+    one_class = _one_class_file(tmp_path, "fakes.scores.csv")
+
+    result = run(
+        "eval", str(score_file), str(one_class), "--metrics", "auc", "--bootstrap", "0", "--json"
+    )
+
+    assert result.code == 0
+    rows = {row["file"]: row for row in json.loads(result.out)["tables"]["files"]}
+    assert rows["a.scores.csv"]["metrics"]["auc"]["value"] > 0.5
+    assert rows["fakes.scores.csv"]["metrics"]["auc"]["value"] is None
+
+
+def test_eval_exits_4_only_when_no_metric_is_defined_for_any_file(run, tmp_path):
+    one_class = _one_class_file(tmp_path, "fakes.scores.csv")
+
+    result = run("eval", str(one_class), "--metrics", "auc,eer", "--bootstrap", "0")
+
+    assert result.code == 4
+    assert "no requested metric" in result.err
+    assert "hint: " in result.err
+
+
 def _strict_json(text):
     def _refuse(constant):
         raise ValueError(f"not valid JSON: {constant}")

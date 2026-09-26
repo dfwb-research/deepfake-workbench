@@ -66,6 +66,11 @@ or `--json` to see the aggregate itself:
 | cross     | auc    | mean | 0.7143 | 1         | 1          |
 ```
 
+A metric that is undefined for a file — a two-class metric such as `auc` on a file whose rows
+are all one class — is an `undefined` cell (in JSON, a `null` value with the reason in
+`undefined`) rather than an error, so one such file never hides every other file's numbers. The
+command exits `4` only when no requested metric is defined for any file.
+
 `--by method|family|compression|label_key` breaks each file down further, using the pack's own
 `labels.yaml`; for a fake-side dimension a method's group is evaluated against every real row of
 the same dataset(s) too (the usual per-method-AUC convention), not against no reals at all.

@@ -80,6 +80,15 @@ A row is never silently left out of the file, so a score file's own row count ne
 run detector, `zoo:<name>` or `zoo:<name>@<weights id>` for a zoo adapter, and
 `py:<module>:<factory>` for a `py:` detector that never overrides it.
 
+`seed` is the seed the weights were trained with when the detector has one (a `run:` detector's
+own seed), otherwise the scoring command's `--seed`. `dfwb eval` folds files that differ only in
+`seed` into a seeds table (mean and standard deviation across seeds) — but a `run:` detector's
+`source` is its config's fingerprint, and the config's `run.seeds` is part of that fingerprint.
+So the seeds table groups the seeds of one experiment config: list every seed in one config's
+`run.seeds` to get it. Seeds trained as separate jobs, each from a config naming only its own
+seed, have different `source` values and are never folded together
+(`docs/guides/reproduce-a-run.md`).
+
 `coverage` is always recomputed from the rows when the file is written or read, never taken on
 faith, so it can never drift from what the CSV actually says. `calibration` is set only on a file
 `dfwb eval calibrate` produced (method, what it was fit on, and its parameters).

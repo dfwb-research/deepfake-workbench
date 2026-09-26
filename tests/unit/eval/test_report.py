@@ -332,3 +332,126 @@ def test_evaluate_suite_matches_a_list_where_whatever_its_order(tmp_path):
     (row,) = result.tables["suite"]
     assert row["n_entries"] == 1
     assert row["value"] == pytest.approx(result.tables["files"][0]["metrics"]["auc"]["value"])
+
+
+# ------------------------------------------------------------------------- undefined metric cells
+
+
+def _all_fake_rows(n):
+    return [ScoreRow("d", f"fake/{i:04d}", None, 1, 0.8, "ok") for i in range(n)]
+
+
+def test_a_single_class_file_gets_undefined_cells_not_an_abort(tmp_path):
+    good = _write(
+        tmp_path,
+        "good.scores.csv",
+        make_rows(10, 10),
+        make_meta(seed=None, coverage={"expected": 20, "ok": 20, "missing": 0, "error": 0}),
+    )
+    one_class = _write(
+        tmp_path,
+        "fakes.scores.csv",
+        _all_fake_rows(10),
+        make_meta(seed=None, coverage={"expected": 10, "ok": 10, "missing": 0, "error": 0}),
+    )
+
+    result = evaluate([good, one_class], metrics=["auc", "brier"], bootstrap=0)
+
+    assert result.exit_code == 0
+    rows = {row["file"]: row for row in result.tables["files"]}
+    assert rows["good.scores.csv"]["metrics"]["auc"]["value"] == pytest.approx(1.0)
+    undefined = rows["fakes.scores.csv"]["metrics"]["auc"]
+    assert undefined["value"] is None
+    assert undefined["ci_lo"] is None
+    assert undefined["ci_hi"] is None
+    assert "every label is 'fake'" in undefined["undefined"]
+    # a metric that is defined on one class is still reported for the same file
+    assert rows["fakes.scores.csv"]["metrics"]["brier"]["value"] is not None
+    json.loads(json.dumps(result.to_json(), allow_nan=False))
+
+
+def test_an_undefined_metric_is_left_out_of_the_seed_and_suite_numbers(tmp_path):
+    cov = {"expected": 20, "ok": 20, "missing": 0, "error": 0}
+    path_a = _write(tmp_path, "s0.scores.csv", make_rows(10, 10), make_meta(seed=0, coverage=cov))
+    path_b = _write(
+        tmp_path,
+        "s1.scores.csv",
+        _all_fake_rows(20),
+        make_meta(seed=1, coverage=cov),
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert "seeds" not in result.tables  # only one seed has a defined auc
+
+
+def test_evaluate_raises_only_when_no_metric_is_defined_for_any_file(tmp_path):
+    from dfwb.eval.metrics import MetricUndefined
+
+    cov = {"expected": 10, "ok": 10, "missing": 0, "error": 0}
+    path_a = _write(
+        tmp_path, "a.scores.csv", _all_fake_rows(10), make_meta(seed=None, coverage=cov)
+    )
+    path_b = _write(
+        tmp_path, "b.scores.csv", _all_fake_rows(10), make_meta(seed=None, coverage=cov)
+    )
+
+    with pytest.raises(MetricUndefined, match="no requested metric") as info:
+        evaluate([path_a, path_b], metrics=["auc", "eer"], bootstrap=0)
+
+    assert info.value.exit_code == 4
+    assert "every label is 'fake'" in info.value.message
+
+
+# ------------------------------------------------------------------ the seeds table's identity
+
+
+def test_two_files_with_one_identity_and_seed_warn_and_keep_the_first(tmp_path, caplog):
+    """``#best`` and ``#last`` of one run share the detector source and the seed; folding both
+    into the seeds table as if they were two seeds would be wrong, and so is silently dropping
+    one. The first file given is kept, and a warning says which was ignored."""
+    import logging
+
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    best = _write(tmp_path, "best.scores.csv", make_rows(20, 20), make_meta(seed=0, coverage=cov))
+    last = _write(
+        tmp_path,
+        "last.scores.csv",
+        make_rows(20, 20, fake_score=0.1),  # an AUC of 0.0: easy to tell apart from best's 1.0
+        make_meta(seed=0, coverage=cov),
+    )
+    other_seed = _write(
+        tmp_path, "s1.scores.csv", make_rows(20, 20), make_meta(seed=1, coverage=cov)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        result = evaluate([best, last, other_seed], metrics=["auc"], bootstrap=0)
+
+    (seed_row,) = result.tables["seeds"]
+    assert seed_row["seeds"] == [0, 1]
+    assert seed_row["values"] == pytest.approx([1.0, 1.0])  # best's value, not last's
+    warnings = [m for m in caplog.messages if "last.scores.csv" in m]
+    assert len(warnings) == 1
+    assert "best.scores.csv" in warnings[0]
+    assert "keeping" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"labels": "family"},
+        {"aggregation": {"clip_to_video": "max", "clips_per_video": 1}},
+        {"processing_profile": {"id": "other-00000000", "sha256": "f" * 64}},
+    ],
+    ids=["labels", "aggregation", "processing_profile"],
+)
+def test_files_scored_differently_are_not_seeds_of_one_run(tmp_path, change):
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    path_a = _write(tmp_path, "s0.scores.csv", make_rows(20, 20), make_meta(seed=0, coverage=cov))
+    path_b = _write(
+        tmp_path, "s1.scores.csv", make_rows(20, 20), make_meta(seed=1, coverage=cov, **change)
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert "seeds" not in result.tables

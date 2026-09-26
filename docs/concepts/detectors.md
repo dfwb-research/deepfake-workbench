@@ -160,7 +160,7 @@ after the upstream model is removed.
 ```
 runs/<run.name>/<YYYYmmdd-HHMMSS>-s<seed>/
   config.resolved.yaml          # the resolved config
-  fingerprint.txt                # the config's fingerprint (same for every run of the experiment)
+  fingerprint.txt                # the config's fingerprint (shared by every seed in run.seeds)
   env.json                       # seed, versions, device, git state, command, plugin providers
   data.json                      # per source: protocol, pack version, split hash, profile, counts
   checkpoints/best/model.safetensors
