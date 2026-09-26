@@ -19,6 +19,6 @@ def materialized_dir(work_root: Path, dataset: str) -> Path:
 
 
 def materialize_command(ref: ProtocolRef) -> str:
-    """The command that materializes every list of ``ref``'s dataset (keeping any pack scope)."""
+    """The command that materialises every list of ``ref``'s dataset (keeping any pack scope)."""
     scope = f"{ref.pack}:" if ref.pack else ""
     return f"dfwb protocols materialize {scope}{ref.dataset}"

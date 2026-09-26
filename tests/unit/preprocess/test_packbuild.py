@@ -1008,3 +1008,18 @@ def test_a_card_without_the_list_hashes_says_so_before_comparing_pairing_rules(d
     assert "videos_sha256 or pairs_sha256" in info.value.message
     assert "dfwb protocols build" in info.value.hint
     assert "pairing" not in info.value.message
+
+
+def test_a_card_with_pairs_but_no_pairing_rule_asks_for_a_rebuild(demo):
+    out = demo["pack"] / "packdemo"
+    build_dataset("packdemo", out=out)
+    add_to_pack_yaml(demo["pack"], "packdemo")
+    _strip_to_recipe(out, pairing_rule=None)
+
+    with pytest.raises(ContractError) as info:
+        materialize_recipe("packdemo")
+
+    assert "pairing_rule" in info.value.message
+    assert "the card lacks its pairing rule" in info.value.hint
+    assert "dfwb protocols build" in info.value.hint
+    assert "install" not in info.value.hint

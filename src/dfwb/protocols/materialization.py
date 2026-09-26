@@ -436,7 +436,7 @@ def materialize(
         UnknownKeyError: the dataset, pack or scheme is unknown.
         ConfigError: the pack ships no ``videos.jsonl.gz`` for the dataset (use
             :func:`materialize_dataset`), there is no inventory at ``inventory``, the rule needs
-            ``official`` and it is ``None``, or the materialized folder would be inside a
+            ``official`` and it is ``None``, or the ``materialized/`` folder would be inside a
             datasets root.
         ContractError: the scheme's rule cannot be recomputed, a pin does not match, the
             inventory repeats a video, the recomputed rows do not hash to the published value,
@@ -503,8 +503,8 @@ def check_recipe_card(card: DatasetCard) -> None:
     """Check that a recipe card holds everything its lists are rebuilt and checked with.
 
     Raises:
-        ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, or a scheme's rule
-            cannot be recomputed from an inventory.
+        ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, publishes pairs but
+            no ``pairing_rule``, or a scheme's rule cannot be recomputed from an inventory.
     """
     missing = [name for name in ("videos_sha256", "pairs_sha256") if getattr(card, name) is None]
     if missing:
@@ -513,6 +513,13 @@ def check_recipe_card(card: DatasetCard) -> None:
             "inventory could not be checked",
             hint="the pack was built before a recipe dataset could ship without its key lists; "
             "rebuild it with dfwb protocols build, which records these hashes",
+        )
+    if card.pairing_rule is None and card.pairs_sha256 not in (None, records_sha256(())):
+        raise ContractError(
+            f"{card.id}: its card publishes pairs (pairs_sha256) but names no pairing_rule to "
+            "draw them with",
+            hint="the card lacks its pairing rule: rebuild the dataset with dfwb protocols build, "
+            "which records it",
         )
     for name, scheme in sorted(card.schemes.items()):
         if scheme.rule not in RULES:
@@ -759,7 +766,7 @@ def materialize_dataset(
     Raises:
         UnknownKeyError: the dataset, pack or scheme is unknown.
         ConfigError: there is no inventory at ``inventory``, a rule needs ``official`` and it is
-            ``None``, the materialized folder would be inside a datasets root, or it cannot be
+            ``None``, the ``materialized/`` folder would be inside a datasets root, or it cannot be
             written (no permission, no space left).
         ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, a scheme's rule
             cannot be recomputed, a pin does not match, ``pairs`` were drawn by another rule than
