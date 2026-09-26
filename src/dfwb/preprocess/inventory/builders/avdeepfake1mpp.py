@@ -277,6 +277,13 @@ class AVDeepfake1MPPBuilder(BaseBuilder):
         "set, with the release's val_metadata.json giving each video's manipulation, generators "
         "and fake segments",
         "homepage": "https://huggingface.co/datasets/ControlNet/AV-Deepfake1M-PlusPlus",
+        "paper": {
+            "title": "AV-Deepfake1M++: A Large-Scale Audio-Visual Deepfake Benchmark with "
+            "Real-World Perturbations",
+            "venue": "ACM MM",
+            "year": 2025,
+            "doi": "10.1145/3746027.3761979",
+        },
         "license": {
             "spdx": None,
             "summary": "the AV-Deepfake1M++ EULA, signed when registering for the 2025 "

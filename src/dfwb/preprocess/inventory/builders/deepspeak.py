@@ -227,6 +227,8 @@ _CARD_LICENSE: Final = {
     "for a fee to others, with attribution; the terms need review",
     "url": None,
 }
+# The paper describing every DeepSpeak release, as the project's own README says.
+_CARD_PAPER: Final = {"title": "The DeepSpeak Dataset", "venue": "CVPR Findings", "year": 2026}
 _CARD_ACCESS: Final = (
     "accept the conditions on the dataset's Hugging Face page to download it; dfwb never "
     "distributes media"
@@ -263,6 +265,7 @@ class DeepSpeakV1Builder(_DeepSpeakBuilder):
         "actors and 6,796 fakes from five engines (FaceFusion, FaceFusion GAN, FaceFusion Live, "
         "ReTalking and Wav2Lip), with the release's annotation and split-definition files",
         "homepage": "https://huggingface.co/datasets/faridlab/deepspeak_v1_1",
+        "paper": _CARD_PAPER,
         "license": _CARD_LICENSE,
         "access": _CARD_ACCESS,
         "modalities": ["video", "audio"],
@@ -386,6 +389,7 @@ class DeepSpeakV2Builder(_DeepSpeakBuilder):
         "actors and 7,209 fakes from six engines (Diff2Lip, FaceFusion, HelloMeme, LatentSync, "
         "LivePortrait and Memo), with the release's annotation and split-definition files",
         "homepage": "https://huggingface.co/datasets/faridlab/deepspeak_v2",
+        "paper": _CARD_PAPER,
         "license": _CARD_LICENSE,
         "access": _CARD_ACCESS,
         "modalities": ["video", "audio"],

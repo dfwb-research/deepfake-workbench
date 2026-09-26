@@ -364,7 +364,13 @@ def test_dataset_card():
     assert card.compressions is None
     assert builder.known_compressions == ()
     assert card.default_scheme == "official+ident-80-20"
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "WildDeepfake: A Challenging Real-World Dataset for Deepfake Detection",
+        "ACM MM",
+        2020,
+        "10.1145/3394171.3413769",
+    )
     assert card.license.spdx is None
     assert card.license.summary == (
         "access is gated by the authors; the release's README front matter declares "

@@ -183,7 +183,23 @@ def test_dataset_card():
     assert card.compressions is None
     assert builder.known_compressions == ()
     assert card.default_scheme == "all-test"
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "Exposing Deep Fakes Using Inconsistent Head Poses",
+        "ICASSP",
+        2019,
+        "10.1109/ICASSP.2019.8683164",
+    )
+    assert card.homepage is None
+    # The owners' agreement form is the only way to the release.
+    form = (
+        "https://docs.google.com/forms/d/e/"
+        "1FAIpQLScKPoOv15TIZ9Mn0nGScIVgKRM9tFWOmjh9eHKx57Yp-XcnxA/viewform"
+    )
+    assert f"({form});" in card.access
+    assert card.license.summary == (
+        "the Terms to use UADFV, agreed in the owners' agreement form; the terms need review"
+    )
 
 
 def test_the_layout_names_both_folders():

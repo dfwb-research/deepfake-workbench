@@ -398,7 +398,13 @@ def test_dataset_card():
     assert card.compressions is None
     assert builder.known_compressions == ()
     assert card.default_scheme == "official+ident-80-20"
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "The Deepfake Detection Challenge (DFDC) Preview Dataset",
+        "arXiv",
+        2019,
+        None,
+    )
 
 
 def test_the_layout_names_the_nesting_and_the_metadata():

@@ -404,7 +404,13 @@ def test_dataset_card():
     assert card.compressions == ["raw", "c23", "c40"]
     assert card.default_scheme == "official"
     assert card.license.spdx is None
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "FaceForensics++: Learning to Detect Manipulated Facial Images",
+        "ICCV",
+        2019,
+        "10.1109/ICCV.2019.00009",
+    )
     assert list(builder.known_compressions) == card.compressions
 
 

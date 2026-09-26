@@ -163,6 +163,12 @@ class WildDeepfakeBuilder(BaseBuilder):
         "fake), released as 224x224 face crops rather than videos: 3,409 real and 3,099 fake "
         "train sequences, 396 real and 410 fake test sequences",
         "homepage": "https://huggingface.co/datasets/xingjunm/WildDeepfake",
+        "paper": {
+            "title": "WildDeepfake: A Challenging Real-World Dataset for Deepfake Detection",
+            "venue": "ACM MM",
+            "year": 2020,
+            "doi": "10.1145/3394171.3413769",
+        },
         "license": {
             "spdx": None,
             "summary": "access is gated by the authors; the release's README front matter declares "

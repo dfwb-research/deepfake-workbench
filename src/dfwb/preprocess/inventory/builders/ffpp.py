@@ -147,6 +147,12 @@ class FaceForensicsBuilder(BaseBuilder):
         "release": "1,000 YouTube sequences, each manipulated with Deepfakes, Face2Face, "
         "FaceShifter, FaceSwap and NeuralTextures",
         "homepage": "https://github.com/ondyari/FaceForensics",
+        "paper": {
+            "title": "FaceForensics++: Learning to Detect Manipulated Facial Images",
+            "venue": "ICCV",
+            "year": 2019,
+            "doi": "10.1109/ICCV.2019.00009",
+        },
         "license": {
             "spdx": None,
             "summary": "the FaceForensics terms of use: non-commercial research only",
