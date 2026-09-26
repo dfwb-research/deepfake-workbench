@@ -190,6 +190,18 @@ def test_input_mismatch_exits_4(cli, score_roots):
     assert "hint: " in result.err
 
 
+def test_input_mismatch_names_a_shipped_profile_that_would_serve(cli, score_roots):
+    # The CLI (never dfwb.score itself) knows about the face pipeline's shipped profiles, and
+    # passes them in: fake:'s default spec (a face crop at scale 1.3) is exactly what the shipped
+    # face-256-1.3x-64f profile provides.
+    write_toy_store(score_roots, toy_profile("toy-full", backend="center", scale=1.0))
+
+    result = cli("score", "--detector", "fake:", "--protocol", PROTOCOL, "--split", "test")
+
+    assert result.code == 4
+    assert "face-256-1.3x-64f" in result.err
+
+
 def test_allow_input_mismatch_recovers(cli, score_roots):
     write_toy_store(score_roots, toy_profile("toy-full", backend="center", scale=1.0))
 

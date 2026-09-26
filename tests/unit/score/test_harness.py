@@ -433,6 +433,26 @@ def test_allow_input_mismatch_records_it_in_meta(score_roots, tmp_path):
     assert {row.status for row in scored.rows} == {"ok"}
 
 
+def test_input_mismatch_names_a_shipped_profile_that_would_serve(score_roots, tmp_path):
+    # No local store is a face crop at all, so the refusal falls back to naming the shipped
+    # profiles that would serve -- passed in exactly as the CLI passes them (dfwb.score never
+    # imports the face pipeline that owns them).
+    write_toy_store(score_roots, toy_profile("toy-full", backend="center", scale=1.0))
+    shipped = [toy_profile("shipped-face", backend="insightface", scale=1.3)]
+
+    with pytest.raises(ContractError) as info:
+        _score(tmp_path, shipped_profiles=shipped)  # default fake: crop="face", scale=1.3
+    assert "shipped-face" in info.value.message
+
+
+def test_with_no_shipped_profiles_the_refusal_names_none(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-full", backend="center", scale=1.0))
+
+    with pytest.raises(ContractError) as info:
+        _score(tmp_path)  # shipped_profiles defaults to ()
+    assert "shipped-face" not in info.value.message
+
+
 # ---------------------------------------------------------------------------------------- caching
 
 

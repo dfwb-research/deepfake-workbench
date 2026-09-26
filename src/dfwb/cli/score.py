@@ -16,6 +16,14 @@ if TYPE_CHECKING:
     from dfwb.score.harness import ScoreResult
 
 
+def _shipped_profiles() -> list[Any]:
+    """Every processing profile dfwb ships, for an input-mismatch refusal to name those that
+    would serve the detector (``dfwb.score`` never imports the face pipeline that owns them)."""
+    from dfwb.preprocess.face.profiles import builtin_profiles, load_profile
+
+    return [load_profile(name) for name in builtin_profiles()]
+
+
 @dataclass(frozen=True, slots=True)
 class _Entry:
     """One thing to score: an explicit protocol/split/where, or one entry of a ``--suite``."""
@@ -146,6 +154,7 @@ def score(
 
     from dfwb.score.harness import score as run_score
 
+    shipped = _shipped_profiles()
     rows: list[dict[str, Any]] = []
     for entry in entries:
         result = run_score(
@@ -165,6 +174,7 @@ def score(
             force=force,
             seed=seed,
             frames=frames,
+            shipped_profiles=shipped,
         )
         rows.append(_row(entry, result))
 

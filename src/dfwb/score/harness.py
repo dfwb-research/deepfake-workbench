@@ -456,6 +456,7 @@ def score(
     force: bool = False,
     seed: int = 0,
     frames: bool = False,
+    shipped_profiles: Sequence[ProcessingProfile] = (),
 ) -> ScoreResult:
     """Score every video of ``protocol``'s ``split`` with the detector named by ``detector_uri``.
 
@@ -470,6 +471,12 @@ def score(
 
     ``frames=True`` additionally writes ``<name>.frames.parquet``; see the module docstring for
     exactly when, and :attr:`ScoreResult.frames_path`.
+
+    ``shipped_profiles`` is the processing profiles the installed framework ships (``dfwb.score``
+    never imports the face pipeline that owns them, so a caller that may -- the CLI -- passes them
+    in, the same way ``dfwb train`` does): when no local, compatible processing profile exists, the
+    ``ContractError`` below also names the shipped profiles that would serve the detector once data
+    is processed with one of them.
 
     Raises:
         ConfigError: ``precision``/``aggregate`` is not one of the values below, ``device`` names
@@ -511,7 +518,11 @@ def score(
         dataset=loaded_protocol.dataset, requested=profile, spec=spec, candidates=candidates
     )
     adaptation: AdaptResult = adapt_input(
-        spec, chosen_profile, allow_mismatch=allow_input_mismatch, candidates=candidates
+        spec,
+        chosen_profile,
+        allow_mismatch=allow_input_mismatch,
+        candidates=candidates,
+        shipped=shipped_profiles,
     )
     if adaptation.mismatch:
         _log.warning("%s: input mismatch allowed: %s", loaded_protocol.ref, adaptation.reason)
