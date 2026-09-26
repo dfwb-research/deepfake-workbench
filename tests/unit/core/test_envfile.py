@@ -34,7 +34,8 @@ def test_parse_the_supported_grammar(tmp_path, monkeypatch):
         ("A=${NOPE}\n", ".env:1: unknown variable 'NOPE'"),
         ('A="open\n', ".env:1: unterminated quote"),
         ("A='value'x\n", ".env:1: unexpected text after the closing quote"),
-        ('A="value" # note\n', ".env:1: unexpected text after the closing quote"),
+        ('A="value"x\n', ".env:1: unexpected text after the closing quote"),
+        ('A="value" trailing\n', ".env:1: unexpected text after the closing quote"),
     ],
 )
 def test_parse_errors_name_the_line(tmp_path, text, message):
@@ -44,6 +45,20 @@ def test_parse_errors_name_the_line(tmp_path, text, message):
 
 def test_trailing_whitespace_after_a_closing_quote_is_fine(tmp_path):
     assert parse_env_file(write(tmp_path, "A='value'   \n")) == {"A": "value"}
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        ('A="value" # note\n', "value"),
+        ("A='v'   #x\n", "v"),
+        ("A='value' #trailing\n", "value"),
+    ],
+)
+def test_a_comment_after_a_closing_quote_is_dropped(tmp_path, text, value):
+    # Same style as an unquoted value's own trailing `` #`` comment (and python-dotenv's own
+    # behaviour): whitespace then `#` drops the rest of the line, it is not an error.
+    assert parse_env_file(write(tmp_path, text)) == {"A": value}
 
 
 def test_a_leading_byte_order_mark_does_not_break_line_1(tmp_path):

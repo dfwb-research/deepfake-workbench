@@ -9,8 +9,9 @@ The supported grammar is a small, well-defined subset of a shell environment fil
 - An unquoted value is trimmed, and an inline `` #`` starts a comment.
 - A ``'single'``-quoted value is literal.
 - A ``"double"``-quoted value supports the escapes ``\\n``, ``\\"`` and ``\\\\``.
-- Nothing but blank space may follow a quoted value's closing quote (not even a comment): trailing
-  text there is a :class:`ConfigError`, never silently dropped.
+- After a quoted value's closing quote, only blank space, or blank space then an inline `` #``
+  comment (dropped, exactly like an unquoted value's own trailing comment), may follow. Any other
+  trailing text is a :class:`ConfigError`, never silently dropped.
 - ``${NAME}`` inside an unquoted or double-quoted value expands, first from the process
   environment and then from keys earlier in the same file: a key the shell sets wins over the
   file's value, both for itself and in every expansion. An unknown name is a
@@ -58,15 +59,23 @@ def _fail(path: Path, lineno: int, message: str, *, hint: str) -> ConfigError:
     return ConfigError(f"{path}:{lineno}: {message}", hint=hint)
 
 
+_TRAILING_COMMENT_RE = re.compile(r"^[ \t]+#.*\Z")
+
+
 def _check_no_trailing_text(path: Path, lineno: int, rest: str) -> None:
-    """Raise unless ``rest`` (everything after a quoted value's closing quote) is blank."""
-    if rest.strip():
-        raise _fail(
-            path,
-            lineno,
-            f"unexpected text after the closing quote: {rest.strip()!r}",
-            hint="remove the text after the closing quote, or quote the whole value",
-        )
+    """After a quoted value's closing quote: blank, or blank then a `` #`` comment, is fine.
+
+    ``rest`` is everything after the closing quote. Anything else is a :class:`ConfigError`: a
+    typo, or text that looks like it continues the value, must never be silently dropped.
+    """
+    if not rest.strip() or _TRAILING_COMMENT_RE.match(rest):
+        return
+    raise _fail(
+        path,
+        lineno,
+        f"unexpected text after the closing quote: {rest.strip()!r}",
+        hint="remove the text after the closing quote, or quote the whole value",
+    )
 
 
 def _unquote_single(path: Path, lineno: int, text: str) -> str:
