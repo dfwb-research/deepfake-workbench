@@ -80,3 +80,22 @@ def test_every_generated_command_shows_the_h_alias(monkeypatch):
     text = _generated_text(monkeypatch)
     assert "| `-h, --help`" in text
     assert "| `--help`" not in text, "a child context that lost -h is missing the root's alias"
+
+
+def test_multi_paragraph_help_renders_as_paragraphs_not_a_code_block(monkeypatch):
+    """A command's later docstring paragraphs must render as ordinary text, not an indented code
+    block.
+
+    Click stores a command's ``help`` as the raw, un-dedented docstring: only its first line has no
+    leading whitespace, every later line keeps its original source indentation (four spaces, from
+    the function body). A plain ``.strip()`` only trims the ends of the whole string, so those later
+    lines stay four-space indented -- which Markdown renders as a literal code block, not a
+    paragraph. ``dfwb train``'s own docstring has exactly this shape.
+    """
+    text = _generated_text(monkeypatch)
+    assert "Every config problem is reported before any data is read." in text
+    assert "\n    Every config problem is reported before any data is read." not in text, (
+        "a docstring's later paragraphs must be dedented, not left at their source indentation"
+    )
+    assert "<pre>" not in text
+    assert "```" not in text

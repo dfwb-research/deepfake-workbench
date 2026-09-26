@@ -15,6 +15,8 @@ the way down, exactly as it is for the live CLI -- not just at the root, which a
 
 from __future__ import annotations
 
+import inspect
+
 import click
 import mkdocs_gen_files
 
@@ -98,8 +100,13 @@ def _walk(
     heading = "#" * min(depth + 2, 6)
     lines.append(f"{heading} {heading_override or f'`{path}`'}")
     lines.append("")
+    # `command.help` is the raw docstring: only its first line has no leading whitespace, every
+    # later line keeps the source's own indentation. `inspect.cleandoc` is what click itself uses
+    # to turn that into displayable text (see `Command.format_help_text`) -- it dedents every line
+    # consistently and drops the surrounding blank lines, so a later paragraph reads as a paragraph
+    # here too, not as a four-space-indented block that Markdown would render as a code block.
     help_text = command.help or command.get_short_help_str() or "*(no help text)*"
-    lines.append(_escape(help_text.strip()))
+    lines.append(_escape(inspect.cleandoc(help_text)))
     arguments = _arguments_line(command, ctx)
     if arguments:
         lines.append("")
