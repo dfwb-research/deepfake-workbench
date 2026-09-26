@@ -18,6 +18,23 @@ All notable changes to this project are documented here. The format follows
   inventory builder for.
 - `examples/`: runnable scripts mirroring the toyfake quickstart, importing foreign score files,
   and scoring a detector of your own -- each exercised by its own test, in a temporary directory.
+- **Recipe datasets without key lists.** A dataset whose card says `distribution: recipe` can be
+  published with no key list at all: its pack ships only `dataset.yaml`, `labels.yaml`,
+  `NOTICE.md` and `PROVENANCE.json`. `dfwb protocols materialize DATASET` rebuilds the video, pair
+  and split lists from the local inventory (the pairs with the dataset's inventory builder),
+  checks every one against the hash the card publishes, and only then writes them to
+  `<work root>/<dataset>/materialized/`; a mismatch exits 4, names every list that differs, and
+  writes nothing. Every command that loads a protocol (`protocols info` and `verify`, `preprocess
+  run`, `train`, `score`, `eval`) then reads the materialised copy, and until there is one it
+  stops with a hint naming the command to run. `dfwb protocols lint` accepts such a dataset when
+  its card holds everything materialising needs.
+- Three optional dataset card fields (contract C3, backward compatible: a card without them loads
+  and lints as before): `videos_sha256` and `pairs_sha256`, the hashes of the video and pair lists,
+  and `pairing_rule`, the rule the pairs are drawn by. `dfwb protocols build` records them for every
+  dataset, so a built dataset can later be published as a recipe without a rebuild, and
+  `dfwb protocols lint` checks them against the lists a dataset ships.
+  `dfwb.core.records.records_sha256` computes the hashes: the sha256 of a list's JSONL lines,
+  sorted.
 
 ### Changed
 
@@ -26,6 +43,9 @@ All notable changes to this project are documented here. The format follows
   `--min-coverage`, `dfwb protocols verify`, `dfwb protocols lint`, `dfwb protocols diff
   --expect-bump`, `dfwb zoo verify` and `dfwb zoo parity`. A command aborted mid-run (Ctrl+C, or
   input hitting EOF) also prints a hint alongside `aborted`.
+- The `NOTICE.md` that `dfwb protocols build` writes for a recipe dataset says that the published
+  pack holds no key list, only the rules and hashes `dfwb protocols materialize` rebuilds and
+  checks the lists with.
 
 ## [0.1.0b2] - 2026-09-26
 

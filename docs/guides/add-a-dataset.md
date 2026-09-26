@@ -198,6 +198,38 @@ Once the pack is installed in the same environment as dfwb (e.g. `uv pip install
 my-dataset-protocols`), `dfwb protocols list` shows its schemes, and `dfwb protocols verify
 my-dataset` checks any local inventory against it.
 
+### List or recipe
+
+A fresh build records `distribution: undecided` in the dataset card, and a released pack must
+leave an undecided dataset out (`dfwb protocols lint --release` reports one as an error unless
+`pack.yaml` lists it under `withheld`). Once you have read the dataset's terms, record the decision
+in `dataset.yaml`, along with where the terms are (`terms.source`) and when you reviewed them
+(`terms.reviewed`), then run `dfwb protocols build` again: a rebuild keeps the decision and
+rewrites `NOTICE.md` to match it.
+
+- **`distribution: list`** when the terms allow the key lists to be redistributed. The pack ships
+  exactly what the build wrote.
+- **`distribution: recipe`** when they do not. The folder you publish then leaves out every key
+  list, `videos.jsonl.gz`, `pairs.jsonl.gz` and `splits/`, and ships only `dataset.yaml`,
+  `labels.yaml`, `NOTICE.md` and `PROVENANCE.json`. The card already holds everything a user
+  needs, because every build records the hashes of the video and pair lists (`videos_sha256`,
+  `pairs_sha256`) and the pairing rule in it, next to each scheme's rule, parameters and hash.
+  Lint the folder you publish (the build output with those files taken out) with `dfwb protocols
+  lint --release`.
+
+A user of a recipe dataset installs your inventory builder and the pack, then rebuilds the lists
+from their own copy of the dataset:
+
+```bash
+dfwb inventory build my-dataset
+dfwb protocols materialize my-dataset
+```
+
+`materialize` checks every rebuilt list against the hashes in your card, writes them under the
+work root only when all of them match, and every other command then reads them from there (see
+`docs/concepts/protocols.md`). Because the pairs are rebuilt by your builder's `pairing_rule` and
+`pair_candidates`, a change to either changes the pack: rebuild it and release a new version.
+
 ## See also
 
 - `docs/concepts/protocols.md` — protocol references, split schemes, verify buckets and exit

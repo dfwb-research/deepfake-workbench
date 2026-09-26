@@ -220,7 +220,7 @@ this release, no real third-party adapters.
 | `dfwb doctor` | Checks Python, the roots, the installed extras and the plugins, and where each dataset was found |
 | `dfwb datasets` | Lists the supported datasets and shows the folder layout each expects; `synth` generates toyfake |
 | `dfwb inventory` | Builds and summarises a dataset's inventory |
-| `dfwb protocols` | Lists, inspects and verifies installed protocols, and materialises recipe schemes; builds, lints and diffs protocol packs, and scaffolds a new one |
+| `dfwb protocols` | Lists, inspects and verifies installed protocols, and materialises recipe datasets and schemes; builds, lints and diffs protocol packs, and scaffolds a new one |
 | `dfwb preprocess` | Lists the shipped processing profiles, runs the face pipeline with one, checks its progress, and merges sharded runs |
 | `dfwb config` | Starts a config from a template, and shows or validates the resolved config |
 | `dfwb train` | Trains a config, or resumes an interrupted run |
