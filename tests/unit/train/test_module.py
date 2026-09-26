@@ -23,10 +23,12 @@ from tests.unit.train._toy import (
     make_parts,
     read_metrics_csv,
     toy_config,
+    toy_profile,
     toy_source,
     write_toy_store,
 )
 
+from dfwb.core.config.schema import TrainConfig
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import read_scores
 from dfwb.data.collate import collate_clips
@@ -221,7 +223,7 @@ def test_a_multi_class_head_trains_on_val_loss_without_video_scores(tmp_path, to
     )
     run = fit_toy(tmp_path / "run", config, work_root=toy_work_root)
 
-    assert set(run.module.val_metrics) == {"val/loss"}
+    assert set(run.module.val_metrics) == {"val/loss", "val/repaired_frames", "val/videos_skipped"}
     assert run.module.monitor == Monitor("val/loss", "min", fallback=True)
     assert not (run.run_dir / "scores").exists()  # no video scores, so no score file
     assert (run.run_dir / "checkpoints" / "best" / "model.safetensors").is_file()
@@ -481,3 +483,88 @@ def test_the_module_needs_the_protocol_data_module(tmp_path, toy_work_root):
 
 def test_detector_module_is_a_lightning_module():
     assert issubclass(DetectorModule, L.LightningModule)
+
+
+# --------------------------------------------------------- repaired / skipped corrupt frames
+
+
+def _frame_dir(toy_work_root: Path, key: str) -> Path:
+    profile = toy_profile()
+    return toy_work_root / DATASET / "processed" / profile.profile_id() / key / "_"
+
+
+def _corrupt_one_frame(toy_work_root: Path, key: str, index: int = 0) -> None:
+    path = _frame_dir(toy_work_root, key) / f"frame_{index:06d}.png"
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+
+def _corrupt_every_frame(toy_work_root: Path, key: str) -> None:
+    for frame in _frame_dir(toy_work_root, key).glob("frame_*.png"):
+        data = frame.read_bytes()
+        frame.write_bytes(data[: len(data) // 2])
+
+
+def _wide_clip_config(**loader_overrides: int) -> TrainConfig:
+    """The toy config, but each clip is all 4 of a video's stored frames (``consecutive``, one
+    eval clip): wide enough that one corrupt frame leaves others in the same clip to repair from,
+    unlike the default ``clip.frames: 1`` (where any corrupt frame is necessarily the clip's only
+    one, so it can only ever be skipped, never repaired)."""
+    loader = {"batch_size": 8, "num_workers": 0, **loader_overrides}
+    return toy_config(
+        data={
+            "clip": {
+                "frames": 4,
+                "sampling": "consecutive",
+                "clips_per_video": {"train": 2, "eval": 1},
+            },
+            "loader": loader,
+        }
+    )
+
+
+def test_a_partly_corrupt_validation_video_is_repaired_and_logged(tmp_path, toy_work_root):
+    # REAL/r08 is a validation-only video (N_TRAIN=8: indices below it are train, the rest val).
+    _corrupt_one_frame(toy_work_root, "REAL/r08")
+
+    run = fit_toy(tmp_path / "run", _wide_clip_config(), work_root=toy_work_root)
+
+    assert run.module.total_repaired_frames >= 1
+    assert run.module.total_videos_skipped == 0
+    assert run.module.val_metrics["val/repaired_frames"] >= 1
+    assert run.module.val_metrics["val/videos_skipped"] == 0
+
+
+def test_a_wholly_corrupt_validation_video_is_skipped_and_counted(tmp_path, toy_work_root):
+    _corrupt_every_frame(toy_work_root, "REAL/r08")  # validation-only, see the test above
+
+    run = fit_toy(tmp_path / "run", toy_config(), work_root=toy_work_root)
+
+    assert run.module.total_videos_skipped >= 1
+    assert run.module.val_metrics["val/videos_skipped"] >= 1
+    scored_keys = {video.key for result in run.module.val_results for video in result.videos}
+    assert "REAL/r08" not in scored_keys
+
+
+def test_repaired_and_skipped_totals_are_zero_on_a_healthy_store(tmp_path, toy_work_root):
+    run = fit_toy(tmp_path / "run", toy_config(), work_root=toy_work_root)
+
+    assert run.module.total_repaired_frames == 0
+    assert run.module.total_videos_skipped == 0
+    assert run.module.val_metrics["val/repaired_frames"] == 0
+    assert run.module.val_metrics["val/videos_skipped"] == 0
+
+
+def test_repaired_and_skipped_totals_agree_with_0_and_2_workers(tmp_path, toy_work_root):
+    _corrupt_one_frame(toy_work_root, "REAL/r08")  # validation-only (N_TRAIN=8), see above
+    _corrupt_every_frame(toy_work_root, "FAKE/f08")
+    config_0 = _wide_clip_config(num_workers=0)
+    config_2 = _wide_clip_config(num_workers=2)
+
+    run_0 = fit_toy(tmp_path / "a", config_0, work_root=toy_work_root)
+    run_2 = fit_toy(tmp_path / "b", config_2, work_root=toy_work_root)
+
+    assert run_0.module.total_repaired_frames == run_2.module.total_repaired_frames
+    assert run_0.module.total_videos_skipped == run_2.module.total_videos_skipped
+    assert run_0.module.total_repaired_frames >= 1
+    assert run_0.module.total_videos_skipped >= 1

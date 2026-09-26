@@ -20,6 +20,14 @@ What gets logged at the end of each validation epoch:
 - ``val/video_<metric>``: the mean of ``val/<source>/<metric>`` over the sources where it is
   defined.
 - ``val/loss``: the mean loss over every validation clip.
+- ``val/repaired_frames``/``train/repaired_frames``: how many corrupt stored frames that epoch's
+  clips repeated a neighbour for instead (see :class:`~dfwb.data.dataset.ClipDataset`); ``val/
+  videos_skipped``: how many validation videos were skipped outright because every one of their
+  frames was corrupt. Both are ``0`` on a run whose store has nothing wrong with it. Summed in
+  this process from what each batch already carries (``extras["dfwb/repaired_frames"]``/
+  ``["dfwb/videos_skipped"]``), never a counter on the dataset, which several ``DataLoader``
+  workers could only update racily; :attr:`total_repaired_frames`/:attr:`total_videos_skipped`
+  hold the whole run's totals, read by :mod:`dfwb.train.run` once fitting finishes.
 
 The checkpoint monitor is ``train.monitor``/``train.mode``, checked against the validation
 sources' names when fitting starts, before any training. When it names a metric that no source
@@ -168,6 +176,24 @@ def _build_loss(spec: ComponentSpec) -> torch.nn.Module:
     return loss
 
 
+def _repaired_count(batch: ClipBatch) -> int:
+    """How many stored frames were repaired from a neighbour across ``batch`` --
+    ``extras["dfwb/repaired_frames"]``, a ``[B]`` tensor every training/validation batch carries
+    (see :class:`~dfwb.data.dataset.ClipDataset`), summed here in the main process rather than
+    kept as a counter on the dataset itself, which a multi-worker ``DataLoader`` could only update
+    racily. ``0`` when the key is absent (a batch built without repair, e.g. a plugin's own
+    dataset)."""
+    values = batch.extras.get("dfwb/repaired_frames")
+    return int(values.sum().item()) if values is not None else 0
+
+
+def _skipped_count(batch: ClipBatch) -> int:
+    """How many videos :func:`~dfwb.data.collate.collate_clips` dropped from ``batch`` because
+    every one of their stored frames was corrupt -- ``extras["dfwb/videos_skipped"]``, present
+    only when at least one was (see :class:`~dfwb.data.dataset.ClipDataset`)."""
+    return int(batch.extras.get("dfwb/videos_skipped", 0))
+
+
 class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """The Lightning module of one training run.
 
@@ -214,7 +240,16 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
         self._labels: dict[int, dict[VideoKey, int]] = {}
         self._loss_sum = 0.0
         self._loss_count = 0
+        self._val_repaired = 0
+        self._val_skipped = 0
         self._warned: set[str] = set()
+        #: Whole-run totals (never reset per epoch, unlike the ``train/``/``val/repaired_frames``
+        #: metric each step logs): how many corrupt stored frames a training or validation source
+        #: repaired from a neighbour, and how many validation videos were skipped outright because
+        #: every one of their frames was corrupt. Read by ``dfwb.train.run`` once fitting finishes,
+        #: for the end-of-run summary and ``metrics.json``.
+        self.total_repaired_frames = 0
+        self.total_videos_skipped = 0
 
     def setup(self, stage: str) -> None:
         """Refuse more than one process, and check the monitor against the validation sources'
@@ -255,9 +290,19 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
         result: LossOutput = self.loss(out, batch)
         total = result.total
         self.last_loss = total.detach()
+        batch_size = len(batch.keys)
+        repaired = _repaired_count(batch)
+        self.total_repaired_frames += repaired
+        self.log(
+            "train/repaired_frames",
+            float(repaired),
+            on_step=False,
+            on_epoch=True,
+            reduce_fx="sum",
+            batch_size=batch_size,
+        )
         if not bool(torch.isfinite(self.last_loss).all()):
             return None  # skip this update; NonFiniteGuard decides when to stop
-        batch_size = len(batch.keys)
         self.log("train/loss", total, on_step=True, on_epoch=True, batch_size=batch_size)
         for name, value in result.parts.items():
             self.log(f"train/{name}", value, on_step=True, on_epoch=True, batch_size=batch_size)
@@ -303,11 +348,29 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
         self._labels = {}
         self._loss_sum = 0.0
         self._loss_count = 0
+        self._val_repaired = 0
+        self._val_skipped = 0
 
     def validation_step(self, batch: ClipBatch, batch_idx: int, dataloader_idx: int = 0) -> None:
+        # Accumulated by hand and logged once, in on_validation_epoch_end, exactly like val/loss
+        # below -- not through a per-step self.log(..., reduce_fx="sum"), which would double-log
+        # once that epoch-end pass also logs every key of its own "logged" dict.
+        repaired = _repaired_count(batch)
+        skipped = _skipped_count(batch)
+        self._val_repaired += repaired
+        self._val_skipped += skipped
+        if not self.trainer.sanity_checking:  # matches on_validation_epoch_end's own exclusion
+            self.total_repaired_frames += repaired
+            self.total_videos_skipped += skipped
+        size = len(batch.keys)
+        if size == 0:
+            # Every video sharing this batch had every stored frame corrupt (an extreme, rare
+            # edge -- ordinarily at least one video survives, and only it is skipped): nothing is
+            # left to score or lose, so the step ends here rather than running the detector on an
+            # empty batch.
+            return
         out: DetectorOutput = self(batch)
         result: LossOutput = self.loss(out, batch)
-        size = len(batch.keys)
         self._loss_sum += float(result.total) * size
         self._loss_count += size
         if self.detector.head.num_classes != 1:
@@ -385,6 +448,8 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
             if defined:
                 logged[f"{_MEAN_PREFIX}{metric}"] = sum(defined) / len(defined)
         logged[_LOSS_KEY] = self._loss_sum / self._loss_count if self._loss_count else math.nan
+        logged["val/repaired_frames"] = float(self._val_repaired)
+        logged["val/videos_skipped"] = float(self._val_skipped)
 
         self._resolve_monitor(logged)
         for key, value in logged.items():

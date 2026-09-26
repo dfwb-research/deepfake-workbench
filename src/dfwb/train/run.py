@@ -398,6 +398,8 @@ def _metrics_record(
         "global_step": trainer.global_step,
         "monitor": monitor,
         "val": {key: _finite(value) for key, value in module.val_metrics.items()},
+        "repaired_frames": module.total_repaired_frames,
+        "videos_skipped": module.total_videos_skipped,
     }
 
 
@@ -442,6 +444,11 @@ def _report(plan: _Plan, run_dir: Path, metrics: Mapping[str, Any], data: Mappin
         lines.append(
             "- Undefined in the last validation, so left out of the `val/video_<metric>` means: "
             + ", ".join(undefined)
+        )
+    if metrics["repaired_frames"] or metrics["videos_skipped"]:
+        lines.append(
+            f"- Repaired {metrics['repaired_frames']} corrupt stored frame(s); skipped "
+            f"{metrics['videos_skipped']} validation video(s) whose stored frames were all corrupt"
         )
     lines += [
         "",
@@ -654,6 +661,14 @@ def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | 
     rundir.write_json(run_dir / rundir.METRICS_FILE, metrics)
     (run_dir / rundir.REPORT_FILE).write_text(_report(plan, run_dir, metrics, data), "utf-8")
     shutil.rmtree(run_dir / rundir.RESUME_DIR, ignore_errors=True)
+    if module.total_repaired_frames or module.total_videos_skipped:
+        _log.info(
+            "%s: repaired %d corrupt stored frame(s); skipped %d validation video(s) whose "
+            "stored frames were all corrupt",
+            run_dir,
+            module.total_repaired_frames,
+            module.total_videos_skipped,
+        )
     return RunResult(run_dir, seed, metrics)
 
 
