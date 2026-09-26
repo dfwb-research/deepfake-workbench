@@ -170,9 +170,13 @@ def test_verify_cli_exit_codes_and_json(run, monkeypatch, tmp_path):
     result = run("protocols", "verify", "toyone")
     assert result.code == 3
     assert "missing_requested: 1" in result.out
-    assert "dfwb inventory build toyone" in result.err
+    assert (
+        "hint: get any videos you don't have yet (see `dfwb datasets info toyone` for access "
+        "notes), then re-run `dfwb inventory build toyone` to pick them up" in result.err
+    )
 
-    # Relabel a video: exits 4 (contract mismatch).
+    # Relabel a video: exits 4 (contract mismatch). Rebuilding the inventory would derive the same
+    # label from the same file again, so the hint must not suggest that.
     write_jsonl(
         inventory_path,
         [
@@ -186,7 +190,13 @@ def test_verify_cli_exit_codes_and_json(run, monkeypatch, tmp_path):
     assert data["counts"]["label_mismatch"] == 1
     assert data["exit_code"] == 4
     assert data["report_path"] == str(report_path)
-    assert "dfwb inventory build toyone" in result.err
+    assert "dfwb inventory build" not in result.err
+    assert (
+        "hint: rebuilding won't fix this (the same files, the same builder, produce the same "
+        "labels again); check whether your local copy matches the release `dfwb protocols info "
+        "toyone/official` reports, using the samples `dfwb protocols verify toyone/official "
+        "--json` lists" in result.err
+    )
 
 
 def test_verify_cli_refuses_a_work_root_inside_a_datasets_root(run, monkeypatch, tmp_path):
@@ -230,7 +240,10 @@ def test_verify_cli_prints_release_mismatch_warning(run, monkeypatch, tmp_path):
     result = run("protocols", "verify", "release")
 
     assert "warning: FAKE_A: 10 missing and 10 extra" in result.out
-    assert "dfwb inventory build release" in result.err
+    assert (
+        "hint: get any videos you don't have yet (see `dfwb datasets info release` for access "
+        "notes), then re-run `dfwb inventory build release` to pick them up" in result.err
+    )
 
 
 def test_verify_without_inventory_hints_inventory_build(run, monkeypatch, tmp_path):

@@ -105,15 +105,29 @@ def info(ref: str, as_json: bool) -> None:
     click.echo(table(["SPLIT", "COMPRESSION", "LABEL", "COUNT"], rows))
 
 
-def _verify_hint(dataset: str, exit_code: int) -> str:
-    if exit_code == 4:
-        return (
-            f"the local inventory disagrees with the pack about a video's label; re-run "
-            f"`dfwb inventory build {dataset}` against the pack this inventory was built for"
+def _verify_hints(dataset: str, scheme: str, counts: dict[str, int]) -> list[str]:
+    """One hint per failure cause found in ``counts``, each naming what actually resolves it.
+
+    ``dfwb inventory build`` re-derives every video's label from the same local file with the
+    same builder, so it is a real fix for ``missing_requested`` (a video simply is not in the
+    local inventory yet) but not for ``label_mismatch`` (the inventory already has an answer for
+    that video, and rebuilding from the same file gives the identical answer again) -- so each
+    gets its own hint rather than sharing one.
+    """
+    ref = f"{dataset}/{scheme}"
+    hints: list[str] = []
+    if counts.get("missing_requested", 0):
+        hints.append(
+            f"get any videos you don't have yet (see `dfwb datasets info {dataset}` for access "
+            f"notes), then re-run `dfwb inventory build {dataset}` to pick them up"
         )
-    return (
-        f"process the missing videos, then re-run `dfwb inventory build {dataset}` to pick them up"
-    )
+    if counts.get("label_mismatch", 0):
+        hints.append(
+            "rebuilding won't fix this (the same files, the same builder, produce the same "
+            f"labels again); check whether your local copy matches the release `dfwb protocols "
+            f"info {ref}` reports, using the samples `dfwb protocols verify {ref} --json` lists"
+        )
+    return hints
 
 
 @protocols.command("verify")
@@ -150,8 +164,8 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
 
     if as_json:
         emit_json({**report.to_json(), "report_path": str(report_path)})
-        if report.exit_code:
-            hint_line(_verify_hint(report.dataset, report.exit_code))
+        for hint in _verify_hints(report.dataset, report.scheme, report.counts):
+            hint_line(hint)
         return report.exit_code
 
     click.echo(f"{report.dataset}/{report.scheme}  (pack {report.pack} {report.pack_version})")
@@ -163,8 +177,8 @@ def verify(ref: str, inventory: Path | None, splits: tuple[str, ...], as_json: b
     for warning in report.warnings:
         click.echo(f"warning: {warning}")
     click.echo(f"report written to {report_path}")
-    if report.exit_code:
-        hint_line(_verify_hint(report.dataset, report.exit_code))
+    for hint in _verify_hints(report.dataset, report.scheme, report.counts):
+        hint_line(hint)
     return report.exit_code
 
 
