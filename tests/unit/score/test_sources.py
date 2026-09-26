@@ -156,7 +156,7 @@ def test_py_source_scores_a_toy_store(score_roots, tmp_path, monkeypatch):
     assert {row.status for row in scored.rows} == {"ok"}
     for row in scored.rows:
         assert 0.0 <= row.score <= 1.0
-    # A module-source sha is not a checkpoint sha (ruling: checkpoint_sha256 stays None for py:).
+    # A module-source sha is not a checkpoint sha, so checkpoint_sha256 stays None for py:.
     assert scored.meta.detector.checkpoint_sha256 is None
 
 

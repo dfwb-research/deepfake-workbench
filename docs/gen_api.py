@@ -44,8 +44,9 @@ _LAYERS: dict[str, str] = {
     "core": "Contracts, registries, plugins, config, paths and run metadata.",
 }
 
-# See the module docstring for both rulings. Each key is a layer name; the values are relative to
-# that layer (``dfwb.<layer>.`` already stripped), matching how ``_layer_modules`` compares them.
+# The module docstring says why each group is left out. Each key is a layer name; the values are
+# relative to that layer (``dfwb.<layer>.`` already stripped), matching how ``_layer_modules``
+# compares them.
 _EXCLUDED_PREFIXES: dict[str, tuple[str, ...]] = {
     "preprocess": ("inventory.builders.",),
 }

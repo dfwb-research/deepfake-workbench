@@ -21,7 +21,7 @@ def _rewrite_lines(path: Path, transform: Callable[[list[str]], list[str]]) -> N
     """Decompress ``path`` (gzipped JSONL), apply ``transform`` to its lines, and recompress it.
 
     Used to inject a malformed row into an otherwise-valid ``videos.jsonl.gz`` fixture, to pin
-    ``records()``'s per-line error handling (fix round 1: it must match io.py's ``iter_jsonl``,
+    ``records()``'s per-line error handling (it must match io.py's ``iter_jsonl``,
     not lose the line number or raise a raw ``KeyError``/``TypeError``).
     """
     with gzip.open(path, "rt", encoding="utf-8") as handle:
