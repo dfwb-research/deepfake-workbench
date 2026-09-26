@@ -43,9 +43,11 @@ jobs:
             echo "::error::tag version '$tag_version' does not match package __version__ '$pkg_version'"
             exit 1
           fi
-          # PEP 440 pre-release segments only: a (alpha), b (beta) or rc (release candidate),
-          # each followed by a number, at the end of the version. A stable version never matches.
-          if [[ "$tag_version" =~ (a|b|rc)[0-9]+$ ]]; then
+          # PEP 440 pre-releases: a (alpha), b (beta) or rc (release candidate) segments, and
+          # developmental releases (.devN) -- packaging.version.Version.is_prerelease treats a
+          # dev release as a prerelease too, including one of a release candidate (rc1.dev2). A
+          # post-release alone (.postN, with no a/b/rc/dev segment) is a final release, not this.
+          if [[ "$tag_version" =~ (a|b|rc)[0-9]+ ]] || [[ "$tag_version" =~ \.dev[0-9]+ ]]; then
             prerelease=true
           else
             prerelease=false
