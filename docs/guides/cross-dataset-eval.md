@@ -92,7 +92,10 @@ echo $?   # 3 if my.scores.csv has any missing or error row
 
 `dfwb eval compare` never re-joins two files against the pack: it works from the intersection of
 their `ok` rows, keyed by `(dataset, key, compression)`, and always reports how big that
-intersection is (`n`). Score the run and `zoo:random` on the *same* split so their rows overlap:
+intersection is (`n`) and how many `ok` rows each file has that the other lacks (`only_a`,
+`only_b`), which the comparison leaves out. Two files that give a shared row different labels
+(scored under different label mappings, say) are refused rather than compared. Score the run and
+`zoo:random` on the *same* split so their rows overlap:
 
 ```bash
 dfwb score --detector "run:runs/toy-cpu/latest#best" --protocol toyfake/official --split test
@@ -108,6 +111,16 @@ interval of their difference (stratified by label over the shared rows), and, fo
 specifically, the DeLong test (needs the `[eval]` extra: scipy) — a `z` statistic and p-value for
 whether the two AUCs differ. Comparing more than two files runs every pair and Holm-corrects the
 DeLong p-values across all of them, reported as `holm_applied`.
+
+Two edge cases have exact answers rather than estimates:
+
+- **Zero paired variance.** A constant score (such as `zoo:chance`) or a perfect separator has no
+  spread for DeLong to estimate. Equal AUCs then give `z = 0`, `p = 1`; unequal ones give an
+  infinite `z` and `p = 0`, since the AUCs certainly differ. JSON has no infinity, so `--json`
+  writes that `z` as the string `"inf"` or `"-inf"`.
+- **Fewer than two rows in a class.** The DeLong covariance cannot be estimated at all, so
+  `delong_z` and `delong_p` are `null`, `delong_undefined` says why, and that pair is left out of
+  the Holm correction. The AUCs themselves are still reported.
 
 ## Calibration and importing foreign scores
 

@@ -166,6 +166,58 @@ def test_eval_compare_json(run, tmp_path):
     assert data["comparisons"][0]["n"] == 40
 
 
+def _strict_json(text):
+    def _refuse(constant):
+        raise ValueError(f"not valid JSON: {constant}")
+
+    return json.loads(text, parse_constant=_refuse)
+
+
+def test_eval_compare_json_stays_valid_when_delong_is_infinite(run, tmp_path):
+    """A constant score (0.5, as ``zoo:chance`` gives) against a perfect separator: zero paired
+    variance, unequal AUCs -- ``z`` is infinite, which JSON cannot spell as a number."""
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    chance = _write(
+        tmp_path,
+        "chance.scores.csv",
+        make_rows(20, 20, real_score=0.5, fake_score=0.5),
+        make_meta(coverage=cov),
+    )
+    perfect = _write(tmp_path, "perfect.scores.csv", make_rows(20, 20), make_meta(coverage=cov))
+
+    result = run(
+        "eval",
+        "compare",
+        str(chance),
+        str(perfect),
+        "--metrics",
+        "auc",
+        "--bootstrap",
+        "0",
+        "--json",
+    )
+
+    assert result.code == 0
+    auc_row = _strict_json(result.out)["comparisons"][0]["metrics"]["auc"]
+    assert auc_row["delong_z"] == "-inf"
+    assert auc_row["delong_p"] == 0.0
+
+
+def test_eval_compare_plain_output_counts_the_rows_unique_to_each_file(run, tmp_path):
+    rows = make_rows(20, 20)
+    meta_a = make_meta(coverage={"expected": 40, "ok": 40, "missing": 0, "error": 0})
+    meta_b = make_meta(coverage={"expected": 39, "ok": 39, "missing": 0, "error": 0})
+    path_a = _write(tmp_path, "a.scores.csv", rows, meta_a)
+    path_b = _write(tmp_path, "b.scores.csv", rows[1:], meta_b)
+
+    result = run("eval", "compare", str(path_a), str(path_b), "--bootstrap", "0")
+
+    assert result.code == 0
+    assert "n=39" in result.out
+    assert "only in a.scores.csv: 1" in result.out
+    assert "only in b.scores.csv: 0" in result.out
+
+
 def test_eval_compare_needs_two_files(run, score_file):
     result = run("eval", "compare", str(score_file))
     assert result.code == 2

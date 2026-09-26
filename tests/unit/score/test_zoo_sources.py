@@ -74,3 +74,32 @@ def test_the_same_seed_reproduces_its_scores_exactly(score_roots, tmp_path):
     first_scores = [r.score for r in read_scores(first.csv_path).rows]
     third_scores = [r.score for r in read_scores(third.csv_path).rows]
     assert first_scores == third_scores
+
+
+def test_zoo_chance_against_a_perfect_separator_is_a_certain_difference(score_roots, tmp_path):
+    """``zoo:chance`` (AUC 0.5) against a perfect separator (AUC 1.0) on the same videos: both
+    have zero paired variance, so DeLong's answer is exact -- an infinite ``z`` and ``p = 0`` --
+    and the JSON rendering stays valid JSON."""
+    import json
+
+    from dfwb.core.records import write_scores
+    from dfwb.core.records.scores import ScoreRow
+    from dfwb.eval.compare import compare
+
+    write_toy_store(score_roots, toy_run_profile())
+    chance = score("zoo:chance", protocol=PROTOCOL, split="test", out=tmp_path / "out")
+    scored = read_scores(chance.csv_path)
+    perfect_rows = [
+        ScoreRow(r.dataset, r.key, r.compression, r.label, float(r.label), "ok")
+        for r in scored.rows
+    ]
+    perfect_path, _ = write_scores(tmp_path / "perfect.scores.csv", perfect_rows, scored.meta)
+
+    result = compare([chance.csv_path, perfect_path], metrics=["auc"], bootstrap=0)
+
+    row = result.comparisons[0].metrics["auc"]
+    assert (row["a"], row["b"]) == (0.5, 1.0)
+    assert row["delong_z"] == float("-inf")
+    assert row["delong_p"] == 0.0
+    rendered = json.loads(json.dumps(result.to_json(), allow_nan=False))
+    assert rendered["comparisons"][0]["metrics"]["auc"]["delong_z"] == "-inf"

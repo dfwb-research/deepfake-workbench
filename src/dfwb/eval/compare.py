@@ -2,15 +2,23 @@
 
 ``dfwb eval compare`` never re-joins two files against the pack: it works from what they already
 agree on, the intersection of their ``ok`` rows keyed by ``(dataset, key, compression)``, and
-always reports how big that intersection is, so a key present in only one file is counted rather
-than silently misaligned. For AUC specifically, the DeLong test needs the ``[eval]`` extra
-(``scipy``), imported lazily so the rest of comparison works without it; every other metric's
-paired bootstrap needs nothing beyond numpy.
+always reports how big that intersection is and how many ``ok`` rows each file has that the other
+does not, so a key present in only one file is counted rather than silently misaligned. Two files
+that give a shared row different labels are refused rather than compared on either one's labels.
+For AUC specifically, the DeLong test needs the ``[eval]`` extra (``scipy``), imported lazily so
+the rest of comparison works without it; every other metric's paired bootstrap needs nothing
+beyond numpy.
+
+JSON has no infinity and no NaN, so :meth:`CompareResult.to_json` writes an infinite value (a
+DeLong ``z`` when the two AUCs differ but their paired variance is zero) as the string ``"inf"``
+or ``"-inf"``, and a DeLong test that cannot be computed as ``null`` with the reason in
+``delong_undefined``.
 """
 
 from __future__ import annotations
 
 import itertools
+import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -110,10 +118,16 @@ def delong_test(y: IntArray, p_a: FloatArray, p_b: FloatArray) -> tuple[float, f
     """The DeLong test for ``AUC(p_a) == AUC(p_b)`` on the same paired samples ``y``.
 
     Returns ``(z, p_value)`` for a two-sided test, using the fast (midrank) DeLong algorithm for
-    the AUCs' covariance and the standard normal for the p-value.
+    the AUCs' covariance and the standard normal for the p-value. When the paired variance of the
+    AUC difference is zero (both raters' structural components are constant: a constant score, or
+    a perfect separator), the answer is exact rather than estimated: equal AUCs give ``(0.0,
+    1.0)``, and unequal ones give ``z = inf`` (``-inf`` when ``AUC(p_a)`` is the smaller) with
+    ``p = 0.0`` -- the AUCs certainly differ.
 
     Raises:
         InstallationError: scipy (the ``[eval]`` extra) is not installed.
+        MetricUndefined: a class has fewer than two rows, so the covariance the test needs cannot
+            be estimated (or it is not finite for any other reason).
     """
     try:
         from scipy.stats import norm
@@ -124,12 +138,26 @@ def delong_test(y: IntArray, p_a: FloatArray, p_b: FloatArray) -> tuple[float, f
     order = np.argsort(-y, kind="mergesort")  # positives (label 1) first, negatives after
     y_sorted = y[order]
     n_pos = int(np.sum(y_sorted == 1))
+    n_neg = int(y_sorted.shape[0]) - n_pos
+    if n_pos < 2 or n_neg < 2:
+        raise MetricUndefined(
+            f"delong: undefined with fewer than two rows in a class ({n_pos} fake, {n_neg} real)",
+            hint="the DeLong covariance needs at least two fake and two real rows",
+        )
     predictions = np.vstack([np.asarray(p_a)[order], np.asarray(p_b)[order]])
     aucs, cov = _fast_delong(predictions, n_pos)
-    variance = cov[0, 0] + cov[1, 1] - 2.0 * cov[0, 1]
+    variance = float(cov[0, 0] + cov[1, 1] - 2.0 * cov[0, 1])
+    if not math.isfinite(variance):
+        raise MetricUndefined(
+            "delong: undefined, the paired variance of the AUC difference is not finite",
+            hint="check the scores are finite and both classes have at least two rows",
+        )
+    difference = float(aucs[0] - aucs[1])
     if variance <= 0.0:
-        return 0.0, 1.0
-    z = float((aucs[0] - aucs[1]) / np.sqrt(variance))
+        if math.isclose(difference, 0.0, abs_tol=1e-12):
+            return 0.0, 1.0
+        return math.copysign(math.inf, difference), 0.0
+    z = difference / math.sqrt(variance)
     p_value = float(2.0 * norm.sf(abs(z)))
     return z, p_value
 
@@ -170,12 +198,29 @@ def _paired_bootstrap_delta(
 
 @dataclass(frozen=True)
 class PairComparison:
-    """One pair's result: per-metric values, the paired delta CI, and DeLong for AUC."""
+    """One pair's result: per-metric values, the paired delta CI, and DeLong for AUC.
+
+    ``n`` is how many ``ok`` rows the two files share (what every metric here is computed over);
+    ``only_a``/``only_b`` count the ``ok`` rows of ``a``/``b`` the other file has no ``ok`` row
+    for, which the comparison leaves out.
+    """
 
     a: str
     b: str
     n: int
-    metrics: dict[str, dict[str, float | None]] = field(default_factory=dict)
+    metrics: dict[str, dict[str, float | str | None]] = field(default_factory=dict)
+    only_a: int = 0
+    only_b: int = 0
+
+
+def _json_value(value: float | str | None) -> float | str | None:
+    """``value`` as valid JSON: an infinity becomes ``"inf"``/``"-inf"`` and a NaN ``None``,
+    since JSON has no literal for either."""
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return None
+        return "inf" if value > 0 else "-inf"
+    return value
 
 
 @dataclass(frozen=True)
@@ -187,14 +232,49 @@ class CompareResult:
     holm_applied: bool
 
     def to_json(self) -> dict[str, Any]:
-        """A JSON-friendly, full-precision rendering of every comparison."""
+        """A JSON-friendly, full-precision rendering of every comparison; always valid JSON (see
+        the module docstring for how an infinite or undefined value is written)."""
         return {
             "files": list(self.files),
             "holm_applied": self.holm_applied,
             "comparisons": [
-                {"a": c.a, "b": c.b, "n": c.n, "metrics": c.metrics} for c in self.comparisons
+                {
+                    "a": c.a,
+                    "b": c.b,
+                    "n": c.n,
+                    "only_a": c.only_a,
+                    "only_b": c.only_b,
+                    "metrics": {
+                        metric: {name: _json_value(value) for name, value in row.items()}
+                        for metric, row in c.metrics.items()
+                    },
+                }
+                for c in self.comparisons
             ],
         }
+
+
+def _check_labels_agree(
+    common: Sequence[_RowKey],
+    rows_a: dict[_RowKey, ScoreRow],
+    rows_b: dict[_RowKey, ScoreRow],
+    names: tuple[str, str],
+) -> None:
+    disagree = [key for key in common if rows_a[key].label != rows_b[key].label]
+    if not disagree:
+        return
+    sample = ", ".join(
+        f"{dataset}/{key}"
+        + (f" ({compression})" if compression else "")
+        + f": {rows_a[(dataset, key, compression)].label} vs "
+        + f"{rows_b[(dataset, key, compression)].label}"
+        for dataset, key, compression in disagree[:5]
+    )
+    raise ContractError(
+        f"{names[0]!r} and {names[1]!r} give {len(disagree)} shared row(s) different labels "
+        f"(e.g. {sample})",
+        hint="compare files scored under the same label mapping and pack version",
+    )
 
 
 def compare(
@@ -208,13 +288,17 @@ def compare(
 
     For every metric and every pair, this reports both files' point values, the paired-bootstrap
     CI of their difference (``b - a``, stratified by label over the shared rows), and, for
-    ``"auc"``, the DeLong test. With more than two files (more than one pair), every pair's DeLong
-    p-value is Holm-corrected across all of them (:attr:`CompareResult.holm_applied` says so).
+    ``"auc"``, the DeLong test (see :func:`delong_test`; a test that cannot be computed is
+    reported as ``None`` with its reason in ``delong_undefined``, not raised). With more than one
+    DeLong p-value (more than one pair), every one is Holm-corrected across all of them
+    (:attr:`CompareResult.holm_applied` says so). Each pair also reports how many ``ok`` rows
+    each file has that the other does not (``only_a``/``only_b``).
 
     Raises:
         ConfigError: fewer than two files are given.
-        ContractError: a file cannot be read (see :func:`~dfwb.core.records.read_scores`), or a
-            pair's ``ok`` rows share no key at all.
+        ContractError: a file cannot be read (see :func:`~dfwb.core.records.read_scores`), a
+            pair's ``ok`` rows share no key at all, or a pair gives a shared row two different
+            labels.
         MetricUndefined: a pair's shared rows are all one class and a metric needs both (named
             with the two files and how many rows they share, not just "every label is 'fake'").
         InstallationError: ``"auc"`` is among ``metrics`` and scipy is not installed.
@@ -236,10 +320,11 @@ def compare(
                 "(their (dataset, key, compression) intersection is empty)",
                 hint="check both files were scored on the same split with matching keys",
             )
+        _check_labels_agree(common, ok_rows[i], ok_rows[j], (names[i], names[j]))
         y = np.asarray([ok_rows[i][k].label for k in common], dtype=np.int64)
         p_a = np.asarray([ok_rows[i][k].score for k in common], dtype=np.float64)
         p_b = np.asarray([ok_rows[j][k].score for k in common], dtype=np.float64)
-        metric_rows: dict[str, dict[str, float | None]] = {}
+        metric_rows: dict[str, dict[str, float | str | None]] = {}
         for metric in metrics:
             try:
                 value_a = compute(metric, y, p_a)
@@ -251,7 +336,7 @@ def compare(
                     hint=exc.hint,
                 ) from exc
             lo, hi = _paired_bootstrap_delta(metric, y, p_a, p_b, n_boot=bootstrap, seed=seed)
-            row = {
+            row: dict[str, float | str | None] = {
                 "a": value_a,
                 "b": value_b,
                 "delta": value_b - value_a,
@@ -259,12 +344,27 @@ def compare(
                 "delta_hi": hi,
             }
             if parse_metric_spec(metric)[0] == "auc":
-                z, p_value = delong_test(y, p_a, p_b)
-                row["delong_z"] = z
-                row["delong_p"] = p_value
-                delong_by_pair[pair_index] = p_value
+                try:
+                    z, p_value = delong_test(y, p_a, p_b)
+                except MetricUndefined as exc:
+                    row["delong_z"] = None
+                    row["delong_p"] = None
+                    row["delong_undefined"] = exc.message
+                else:
+                    row["delong_z"] = z
+                    row["delong_p"] = p_value
+                    delong_by_pair[pair_index] = p_value
             metric_rows[metric] = row
-        comparisons.append(PairComparison(names[i], names[j], len(common), metric_rows))
+        comparisons.append(
+            PairComparison(
+                names[i],
+                names[j],
+                len(common),
+                metric_rows,
+                only_a=len(ok_rows[i]) - len(common),
+                only_b=len(ok_rows[j]) - len(common),
+            )
+        )
     holm_applied = len(delong_by_pair) > 1
     if holm_applied:
         pair_indices = list(delong_by_pair)

@@ -342,7 +342,10 @@ def compare(files: tuple[Path, ...], metrics: str, bootstrap: int, seed: int, as
         return 0
     click.echo(f"holm correction applied: {result.holm_applied}")
     for comparison in result.comparisons:
-        click.echo(f"{comparison.a} vs {comparison.b} (n={comparison.n})")
+        click.echo(
+            f"{comparison.a} vs {comparison.b} (n={comparison.n}; only in {comparison.a}: "
+            f"{comparison.only_a}, only in {comparison.b}: {comparison.only_b})"
+        )
         for metric, values in comparison.metrics.items():
             click.echo(f"  {metric}: {values}")
     return 0
