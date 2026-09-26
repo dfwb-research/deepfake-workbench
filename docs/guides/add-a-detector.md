@@ -128,9 +128,10 @@ reported:
 
 - **`code_strategy`** (required; there is no default) says how the adapter's upstream model code
   is obtained:
-  - **`pip`** — the card's `install.extra` pins the upstream package (`pip install
-    "deepfake-workbench[<extra>]"`), and the adapter imports it normally. Both dummy adapters use
-    it (with no real upstream package to install).
+  - **`pip`** — the card's `install.extra` pins the upstream package: `uv sync --extra <extra>`,
+    or `pip install -e ".[<extra>]"` from a clone (`pip install "deepfake-workbench[<extra>]"`
+    once a release exists) — and the adapter imports it normally. Both dummy adapters use it (with
+    no real upstream package to install).
   - **`vendored`** — upstream code under an MIT/BSD/Apache-compatible licence, small enough to
     copy verbatim into `dfwb/zoo/_vendor/<name>/`, alongside its own `LICENSE`, a `NOTICE`
     (upstream repo, commit, files, any modifications) and a `HASHES.sha256` list proving the copy
