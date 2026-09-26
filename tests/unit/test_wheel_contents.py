@@ -55,3 +55,12 @@ def test_wheel_ships_the_built_in_pack_the_newpack_templates_and_the_catalogue(t
         assert f"dfwb/protocols/_newpack/{template.name}" in names
 
     assert "dfwb/core/catalogue.toml" in names
+
+
+def test_wheel_never_ships_the_docs_site_or_the_examples(tmp_path):
+    # packages = ["src/dfwb"] already keeps the wheel to that one tree; this is a
+    # belt-and-suspenders check that docs/, examples/ and mkdocs.yml never end up in it.
+    names = _wheel_names(tmp_path)
+    assert not any(name.startswith("dfwb/docs/") or "/docs/" in name for name in names)
+    assert not any(name.startswith("dfwb/examples/") or "/examples/" in name for name in names)
+    assert not any(name.endswith("mkdocs.yml") for name in names)
