@@ -151,9 +151,12 @@ def make_detector() -> BrightnessDetector:
 ```
 
 ```bash
-uv run dfwb score --detector py:my_detector:make_detector \
+PYTHONPATH=. uv run dfwb score --detector py:my_detector:make_detector \
   --protocol toyfake/official --split test --profile toy-64-center-8f
 ```
+
+`<module>` must be importable on the interpreter's own path — `PYTHONPATH=.` puts the current
+directory on it, so `my_detector.py` next to it resolves; installed code needs no such override.
 
 See `docs/guides/add-a-detector.md` for the full guide, including how to package a detector as a
 shareable, licence-aware zoo adapter card instead of a one-off factory function; the framework's

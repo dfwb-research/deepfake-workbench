@@ -50,21 +50,9 @@ All notable changes to this project are documented here. The format follows
   `list`, `info`, `fetch`, `verify` (re-hashes cached weights and checks the code pin, downloading
   nothing), `parity` (scores an adapter's parity set against its card's reported numbers) and
   `licenses`.
-- The `dfwb eval` CLI, over the coverage-aware evaluation layer: bare `dfwb eval FILES...` computes
-  metrics with a stratified bootstrap confidence interval per file (`--bootstrap N`; `--bootstrap 0`
-  reports the point value alone, with no interval), a coverage policy over non-`ok` rows
-  (`--missing exclude|as-real|as-fake|as-chance`, `--min-coverage` setting exit code `3` without
-  raising), a breakdown by method/family/compression/label_key (`--by`), a suite's aggregate rows
-  (`--suite`), and, when several files agree on everything but their seed, a per-seed mean ± sd
-  table. `dfwb eval compare` pairs two or more C5 files on the intersection of their `ok` rows and
-  reports each metric's paired-bootstrap delta, plus (for AUC, needing scipy) the DeLong test,
-  Holm-corrected across more than two files. `dfwb eval calibrate` fits a post-hoc calibration
-  (`temperature`, `platt` or `isotonic`) on one file and applies it to another, writing a new C5
-  file whose meta records the calibration's provenance. `dfwb eval import` turns a foreign score
-  CSV into a C5 file against a protocol split (`--map key=...,score=...`), needing no torch install
-  at all — the whole `dfwb.eval` layer, and this CLI over it, stays torch-free. `--out DIR` writes
-  `metrics.json` and a `report.{md,csv,tex}` (`--format`), plus ROC/DET/reliability/risk-coverage
-  plots with the `[eval]` extra (matplotlib).
+- `dfwb eval`'s `--bootstrap 0` now reports every metric's point value with no confidence interval
+  (`ci_lo`/`ci_hi` both `null`) instead of raising, for `dfwb eval` and `dfwb eval compare` alike; a
+  suite (registry `eval_suites`) may also carry a free-text `description` of what it measures.
 - `[eval]` now also pulls in pyarrow, for `dfwb score --frames`'s per-clip/per-frame dump.
 - User docs: score files (`docs/concepts/score-files.md`: the C5 schema, statuses, the cache, and
   the optional detector attributes), cross-dataset evaluation (`docs/guides/cross-dataset-eval.md`:
@@ -134,6 +122,22 @@ All notable changes to this project are documented here. The format follows
   `16-mixed`. A plugin's callbacks join a run through `train.callbacks`, their state saved with the
   resume state. Optimisers and schedules are validated against the already-assembled
   detector, not a plugin registry, since group names come from the detector itself.
+- The `dfwb.eval` layer and `dfwb eval`, torch-free and in the base install: coverage-aware metrics
+  (registry `metrics`: `auc`, `ap`, `eer`, `acc@thr`, `tpr@fpr=x`, `fpr@tpr=x`, `ece`, `brier`,
+  `nll`, `aurc`) with a stratified bootstrap confidence interval per file (`--bootstrap N`,
+  `--seed`), a `--missing` coverage policy (`exclude`/`as-real`/`as-fake`/`as-chance`) and
+  `--min-coverage` (exit code `3` without raising), a breakdown by
+  method/family/compression/label_key (`--by`), suites (registry `eval_suites`: named collections
+  of protocol/split/where entries with aggregate rows, `--suite`) and, for several files that agree
+  on everything but their seed, a per-seed mean ± sd table. `dfwb eval compare` pairs two or more
+  C5 files on the intersection of their `ok` rows, with a paired-bootstrap delta and (for AUC,
+  needing scipy) the DeLong test, Holm-corrected across more than two files. `dfwb eval calibrate`
+  fits a post-hoc calibration (`temperature`, `platt` or `isotonic`) on one file and applies it to
+  another, writing a new C5 file whose meta records the calibration's provenance. `dfwb eval
+  import` turns a foreign score CSV into a C5 file against a protocol split (`--map
+  key=...,score=...`), with suggestions for the common ways a key fails to line up. `--out DIR`
+  writes `metrics.json` and a `report.{md,csv,tex}` (`--format`), plus ROC/DET/reliability/
+  risk-coverage plots with the `[eval]` extra (matplotlib).
 - Validation reuses the same `dfwb.eval` metric code as final evaluation, so there is no metric
   drift between the two: a single-class validation split reports its metric as not defined, with a
   warning, instead of a silent 0.5, and the checkpoint monitor falls back to `val/loss` (with a

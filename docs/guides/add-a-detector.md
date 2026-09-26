@@ -55,9 +55,14 @@ def make_detector() -> BrightnessDetector:
 ```
 
 ```bash
-dfwb score --detector py:my_detector:make_detector \
+PYTHONPATH=. dfwb score --detector py:my_detector:make_detector \
            --protocol toyfake/official --split test --profile toy-64-center-8f
 ```
+
+`PYTHONPATH=.` puts the current directory — wherever `my_detector.py` sits — on the interpreter's
+own path, since the `dfwb` command itself does not add the working directory to it; a module
+already installed in the environment needs no such override. Leaving it off gives `py: cannot
+import 'my_detector': No module named 'my_detector'`, with a hint saying the same thing.
 
 This factory's `InputSpec` (`crop="full-frame"`) matches the toyfake quickstart's
 `toy-64-center-8f` store exactly, so no `--allow-input-mismatch` is needed; a detector expecting a
