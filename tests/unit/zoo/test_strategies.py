@@ -15,7 +15,7 @@ import pytest
 import dfwb.zoo.strategies as strategies_module
 from dfwb.core import licenses
 from dfwb.core.errors import ConfigError, ContractError, InstallationError
-from dfwb.zoo.card import parse_card
+from dfwb.zoo.card import AdapterCard, parse_card
 from dfwb.zoo.strategies import (
     check_vendored_layout,
     clone_at_commit,
@@ -171,9 +171,11 @@ def _rev_parse(cwd: Path, ref: str = "HEAD") -> str:
 def upstream_repo(tmp_path: Path) -> tuple[Path, str, str]:
     """A local git repository with a top-level ``src/`` package (the case that used to force
     vendoring code just to dodge a ``sys.modules`` collision), one file that imports a sibling
-    *relatively* (``src/model.py``) and one, at the repo's own top level, that imports the clone's
-    top-level package name *absolutely* (``absolute_entry.py``) -- plus a branch and a tag on the
-    same commit, for the pin-validation tests. Returns ``(repo, commit, branch)``."""
+    *relatively* (``src/model.py``) and two, at the repo's own top level, that import the clone's
+    top-level package name *absolutely* -- ``absolute_entry.py`` (``import src``, succeeds against
+    a decoy) and ``absolute_from_helper_entry.py`` (``from src.helper import ...``, which raises
+    against a plain-module decoy but succeeds against a decoy *package*) -- plus a branch and a
+    tag on the same commit, for the pin-validation tests. Returns ``(repo, commit, branch)``."""
     repo = tmp_path / "upstream"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -192,6 +194,11 @@ def upstream_repo(tmp_path: Path) -> tuple[Path, str, str]:
         "from __future__ import annotations\n\n"
         "import src\n\n"
         "MARKER = getattr(src, 'MARKER', 'clones-own-src')\n"
+    )
+    (repo / "absolute_from_helper_entry.py").write_text(
+        "from __future__ import annotations\n\n"
+        "from src.helper import HELPER_VALUE\n\n"
+        "MARKER = HELPER_VALUE\n"
     )
     _git(["add", "."], repo)
     _git(["commit", "-q", "-m", "initial"], repo)
@@ -259,6 +266,7 @@ def test_clone_at_commit_disables_the_git_terminal_prompt(tmp_path, upstream_rep
 
     assert seen_envs  # at least the clone call was seen
     assert all(env.get("GIT_TERMINAL_PROMPT") == "0" for env in seen_envs)
+    assert all(env.get("GIT_SSH_COMMAND") == "ssh -o BatchMode=yes" for env in seen_envs)
 
 
 def test_clone_at_commit_reports_a_timeout(tmp_path, upstream_repo, monkeypatch):
@@ -339,6 +347,44 @@ def test_ensure_clone_refuses_a_dirty_clone(isolated, upstream_repo):
         ensure_clone(card)
 
 
+def test_ensure_clone_reuses_a_clone_that_has_already_been_imported_from(isolated, upstream_repo):
+    """The literal end-to-end scenario: clone, import an entry from it, then ensure_clone again --
+    must reuse it, not refuse it as dirty."""
+    repo, commit, _ = upstream_repo
+    card = parse_card(_gated_card_yaml("pinned-test", repo, commit))
+    dest = ensure_clone(card)
+    module_name = private_module_name(card.name)
+
+    try:
+        module = import_pinned_entry(dest, card, "src.model")
+        assert module.make_detector() == 142
+
+        reused = ensure_clone(card)
+        assert reused == dest
+    finally:
+        _forget(module_name)
+
+
+def test_ensure_clone_reuses_a_clone_with_bytecode_cache_files(isolated, upstream_repo):
+    """Simulates what an import leaves behind (``__pycache__/*.pyc``) even in a scenario where
+    something bypasses ``sys.dont_write_bytecode`` (a subprocess spawned by the adapter's own
+    code, say): the clone's own ``.git/info/exclude`` must keep those out of
+    ``git status --porcelain`` on its own, independent of ``import_pinned_entry`` also having set
+    ``sys.dont_write_bytecode`` -- or ``ensure_clone``'s dirty-worktree check would refuse an
+    otherwise perfectly good, already-used clone."""
+    repo, commit, _ = upstream_repo
+    card = parse_card(_gated_card_yaml("pinned-test", repo, commit))
+    dest = ensure_clone(card)
+
+    pycache = dest / "src" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "model.cpython-312.pyc").write_bytes(b"\x00\x00\x00\x00")
+    (dest / "src" / "model.pyc").write_bytes(b"\x00\x00\x00\x00")
+
+    reused = ensure_clone(card)
+    assert reused == dest
+
+
 def test_ensure_clone_refuses_a_clone_at_another_commit(isolated, upstream_repo):
     repo, commit, _ = upstream_repo
     card = parse_card(_gated_card_yaml("pinned-test", repo, commit))
@@ -401,6 +447,52 @@ def test_ensure_clone_removes_a_stale_tmp_directory_from_a_previous_crash(isolat
     assert not stale_tmp.exists()
 
 
+def test_ensure_clone_reuses_a_concurrently_created_clone(isolated, upstream_repo, monkeypatch):
+    """Simulates losing a race with another process: `dest` is pre-created (with a valid clone)
+    right in the middle of this call's own attempt, so its `tmp.replace(dest)` fails because
+    `dest` now exists. The temp clone must be discarded and the winner's `dest` reused instead."""
+    repo, commit, _ = upstream_repo
+    card = parse_card(_gated_card_yaml("pinned-test", repo, commit))
+    dest = clone_cache_dir(card.name, commit)
+    real_clone_at_commit = strategies_module.clone_at_commit
+
+    def racing_clone(repo_arg: str, commit_arg: str, tmp_dest: Path) -> Path:
+        if not dest.is_dir():
+            real_clone_at_commit(repo_arg, commit_arg, dest)  # the "other process" wins first
+        return real_clone_at_commit(repo_arg, commit_arg, tmp_dest)
+
+    monkeypatch.setattr(strategies_module, "clone_at_commit", racing_clone)
+
+    result = ensure_clone(card)
+
+    assert result == dest
+    assert (dest / "src" / "model.py").is_file()
+    leftover_tmp = [p for p in dest.parent.iterdir() if p.name.startswith(f".{dest.name}.tmp-")]
+    assert leftover_tmp == []
+
+
+def test_ensure_clone_refuses_a_pre_created_dest_that_fails_its_own_checks(
+    isolated, upstream_repo, monkeypatch
+):
+    """The same race, but the process that won it left something bad behind: the loser must still
+    refuse, not silently accept whatever is sitting at `dest`."""
+    repo, commit, _ = upstream_repo
+    card = parse_card(_gated_card_yaml("pinned-test", repo, commit))
+    dest = clone_cache_dir(card.name, commit)
+    real_clone_at_commit = strategies_module.clone_at_commit
+
+    def racing_clone_with_a_dirty_winner(repo_arg: str, commit_arg: str, tmp_dest: Path) -> Path:
+        if not dest.is_dir():
+            real_clone_at_commit(repo_arg, commit_arg, dest)
+            (dest / "extra.txt").write_text("uncommitted")
+        return real_clone_at_commit(repo_arg, commit_arg, tmp_dest)
+
+    monkeypatch.setattr(strategies_module, "clone_at_commit", racing_clone_with_a_dirty_winner)
+
+    with pytest.raises(ContractError, match="local modifications"):
+        ensure_clone(card)
+
+
 def test_ensure_clone_is_gated_by_licence(isolated, upstream_repo, monkeypatch):
     repo, commit, _ = upstream_repo
     card = parse_card(_gated_card_yaml("pinned-test-gated", repo, commit, requires_ack=True))
@@ -408,13 +500,17 @@ def test_ensure_clone_is_gated_by_licence(isolated, upstream_repo, monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("clone_at_commit must not run before the licence is accepted")
 
-    monkeypatch.setattr(strategies_module, "clone_at_commit", boom)
-    with pytest.raises(InstallationError) as info:
-        ensure_clone(card)
-    assert info.value.exit_code == 5
-    assert not clone_cache_dir(card.name, commit).exists()
+    # Scoped to just this one patch: a bare `monkeypatch.undo()` here would also revert the
+    # autouse `isolated` fixture's own DFWB_CACHE_ROOT/DFWB_STATE_DIR patches (they share the
+    # same function-scoped MonkeyPatch), which would then send the acceptance and the real clone
+    # below to the machine's real cache and state directories instead of tmp_path.
+    with monkeypatch.context() as gate_check:
+        gate_check.setattr(strategies_module, "clone_at_commit", boom)
+        with pytest.raises(InstallationError) as info:
+            ensure_clone(card)
+        assert info.value.exit_code == 5
+        assert not clone_cache_dir(card.name, commit).exists()
 
-    monkeypatch.undo()
     licenses.accept(card.name, license=card.license.code)
     dest = ensure_clone(card)
     assert (dest / "src" / "model.py").is_file()
@@ -438,72 +534,134 @@ input: {}
 # ---------------------------------------------------------------------------- import_pinned_entry
 
 
+def _card_named(name: str) -> AdapterCard:
+    """A minimal, valid card with the given ``name`` -- ``import_pinned_entry`` derives the
+    private module name from it, so these tests never pass a bare string of their own."""
+    return parse_card(
+        f"""
+name: {name}
+display_name: Test
+contract_version: [1, 0]
+license: {{code: MIT}}
+code_strategy: pip
+input: {{}}
+"""
+    )
+
+
+def _forget(module_name: str, *extra: str) -> None:
+    """Pop ``module_name`` and everything under it, plus any ``extra`` bare names (and their own
+    submodules), from ``sys.modules`` -- test teardown for the private-package tests below, which
+    otherwise leak into later tests since ``sys.modules`` is global, process-wide state."""
+    prefixes = [f"{module_name}."] + [f"{name}." for name in extra]
+    for key in list(sys.modules):
+        if key == module_name or key in extra or any(key.startswith(p) for p in prefixes):
+            sys.modules.pop(key, None)
+
+
 def test_private_module_name_is_sanitised():
     assert private_module_name("gend") == "dfwb_zoo_ext_gend"
     assert private_module_name("My/Weird Name") == "dfwb_zoo_ext_my_weird_name"
 
 
+def test_leak_detection_requires_a_real_package_or_module_at_the_clone_root(tmp_path):
+    (tmp_path / "datasets").mkdir()  # a plain data folder: no __init__.py, not a package
+    (tmp_path / "realpkg").mkdir()
+    (tmp_path / "realpkg" / "__init__.py").write_text("")
+    (tmp_path / "realmodule.py").write_text("")
+
+    is_importable = strategies_module._is_importable_at_clone_root
+    assert is_importable(tmp_path, "datasets") is False
+    assert is_importable(tmp_path, "realpkg") is True
+    assert is_importable(tmp_path, "realmodule") is True
+    assert is_importable(tmp_path, "nonexistent") is False
+
+
 def test_a_clone_root_with_its_own_init_file_is_loaded(tmp_path):
     (tmp_path / "__init__.py").write_text("PACKAGE_MARKER = 'root init ran'\n")
     (tmp_path / "leaf.py").write_text("VALUE = 1\n")
-    module_name = "dfwb_zoo_ext_root_init_test"
+    card = _card_named("root-init-test")
+    module_name = private_module_name(card.name)
 
     try:
-        module = import_pinned_entry(tmp_path, module_name, "leaf")
+        module = import_pinned_entry(tmp_path, card, "leaf")
         assert module.VALUE == 1
         assert sys.modules[module_name].PACKAGE_MARKER == "root init ran"
     finally:
-        for name in list(sys.modules):
-            if name == module_name or name.startswith(f"{module_name}."):
-                sys.modules.pop(name, None)
+        _forget(module_name)
 
 
 def test_a_raising_root_init_file_is_reported(tmp_path):
     (tmp_path / "__init__.py").write_text("raise RuntimeError('root init kaboom')\n")
-    module_name = "dfwb_zoo_ext_bad_root_init_test"
+    card = _card_named("bad-root-init-test")
+    module_name = private_module_name(card.name)
 
     with pytest.raises(ContractError, match="root init kaboom"):
-        import_pinned_entry(tmp_path, module_name, "leaf")
+        import_pinned_entry(tmp_path, card, "leaf")
     assert module_name not in sys.modules
 
 
 def test_registering_the_same_private_package_twice_reuses_it(tmp_path, upstream_repo):
     repo, commit, _ = upstream_repo
     clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
-    module_name = "dfwb_zoo_ext_reuse_test"
+    card = _card_named("reuse-test")
+    module_name = private_module_name(card.name)
 
     try:
-        first = import_pinned_entry(clone_root, module_name, "src.model")
-        second = import_pinned_entry(clone_root, module_name, "src.model")
+        first = import_pinned_entry(clone_root, card, "src.model")
+        second = import_pinned_entry(clone_root, card, "src.model")
         assert first is second
         assert second.make_detector() == 142
     finally:
-        for name in list(sys.modules):
-            if name == module_name or name.startswith(f"{module_name}."):
-                sys.modules.pop(name, None)
+        _forget(module_name)
+
+
+def test_reregisters_when_the_same_card_points_at_a_different_clone_root(tmp_path, upstream_repo):
+    repo, commit, _ = upstream_repo
+    clone_a = clone_at_commit(str(repo), commit, tmp_path / "clone-a")
+    card = _card_named("reregister-test")
+    module_name = private_module_name(card.name)
+
+    clone_b = tmp_path / "clone-b"
+    clone_b.mkdir()
+    (clone_b / "__init__.py").write_text("")
+    (clone_b / "leaf.py").write_text("VALUE = 999\n")
+
+    try:
+        first = import_pinned_entry(clone_a, card, "src.model")
+        assert first.make_detector() == 142
+
+        second = import_pinned_entry(clone_b, card, "leaf")
+        assert second.VALUE == 999
+        assert list(sys.modules[module_name].__path__) == [str(clone_b)]
+        # The stale registration (and anything cached under it from clone_a) is gone, not just
+        # shadowed -- a later re-import of the old entry would not find it lying around.
+        assert f"{module_name}.src" not in sys.modules
+    finally:
+        _forget(module_name)
 
 
 def test_a_relative_import_inside_the_clone_resolves_correctly(tmp_path, upstream_repo):
     repo, commit, _ = upstream_repo
     clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
-    module_name = "dfwb_zoo_ext_relative_test"
+    card = _card_named("relative-test")
+    module_name = private_module_name(card.name)
 
     assert "src" not in sys.modules
     try:
-        module = import_pinned_entry(clone_root, module_name, "src.model")
+        module = import_pinned_entry(clone_root, card, "src.model")
         assert module.make_detector() == 142  # 42 + 100: the relative import really resolved
         assert "src" not in sys.modules
         assert f"{module_name}.src" in sys.modules
     finally:
-        for name in list(sys.modules):
-            if name == module_name or name.startswith(f"{module_name}."):
-                sys.modules.pop(name, None)
+        _forget(module_name)
 
 
 def test_an_absolute_self_import_that_collides_is_refused(tmp_path, upstream_repo, monkeypatch):
     repo, commit, _ = upstream_repo
     clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
-    module_name = "dfwb_zoo_ext_absolute_test"
+    card = _card_named("absolute-test")
+    module_name = private_module_name(card.name)
 
     decoy_dir = tmp_path / "decoy"
     decoy_dir.mkdir()
@@ -513,29 +671,133 @@ def test_an_absolute_self_import_that_collides_is_refused(tmp_path, upstream_rep
 
     assert "src" not in sys.modules
     try:
-        with pytest.raises(ContractError, match="absolute"):
-            import_pinned_entry(clone_root, module_name, "absolute_entry")
+        with pytest.raises(ContractError, match="pulled in") as info:
+            import_pinned_entry(clone_root, card, "absolute_entry")
+        assert "vendor a small shim" in info.value.hint
         assert "src" not in sys.modules  # popped, not left holding the wrong module
+        assert f"{module_name}.absolute_entry" not in sys.modules
         assert sys.path == path_before  # never touched
     finally:
-        for name in list(sys.modules):
-            if name == module_name or name.startswith(f"{module_name}."):
-                sys.modules.pop(name, None)
-        sys.modules.pop("src", None)
+        _forget(module_name, "src")
+
+
+def test_a_refused_import_does_not_stick_around_for_a_retry(tmp_path, upstream_repo, monkeypatch):
+    """A second call, with the same colliding decoy still in place, must detect the leak again --
+    not silently return whatever the first, refused attempt left cached in ``sys.modules``."""
+    repo, commit, _ = upstream_repo
+    clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
+    card = _card_named("retry-test")
+    module_name = private_module_name(card.name)
+
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    (decoy_dir / "src.py").write_text("MARKER = 'decoy'\n")
+    monkeypatch.syspath_prepend(str(decoy_dir))
+
+    try:
+        with pytest.raises(ContractError, match="pulled in"):
+            import_pinned_entry(clone_root, card, "absolute_entry")
+        assert f"{module_name}.absolute_entry" not in sys.modules
+
+        with pytest.raises(ContractError, match="pulled in"):
+            import_pinned_entry(clone_root, card, "absolute_entry")
+        assert f"{module_name}.absolute_entry" not in sys.modules
+    finally:
+        _forget(module_name, "src")
+
+
+def test_a_leak_found_on_the_exception_path_gets_the_vendoring_hint(
+    tmp_path, upstream_repo, monkeypatch
+):
+    """``from src.helper import ...`` against a plain-module decoy ``src.py`` (not a package)
+    raises -- but only after ``src`` itself has already been bound to the decoy, which must still
+    be caught and reported with the vendoring hint, not treated as just "a bug in the adapter"."""
+    repo, commit, _ = upstream_repo
+    clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
+    card = _card_named("exception-leak-test")
+    module_name = private_module_name(card.name)
+
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    (decoy_dir / "src.py").write_text("MARKER = 'decoy'\n")
+    monkeypatch.syspath_prepend(str(decoy_dir))
+
+    assert "src" not in sys.modules
+    try:
+        with pytest.raises(ContractError, match="pulled in") as info:
+            import_pinned_entry(clone_root, card, "absolute_from_helper_entry")
+        assert "vendor a small shim" in info.value.hint
+        assert "src" not in sys.modules
+        assert "src.helper" not in sys.modules
+    finally:
+        _forget(module_name, "src")
+
+
+def test_a_leaked_packages_own_submodules_are_also_purged(tmp_path, upstream_repo, monkeypatch):
+    """A decoy that is itself a *package* (not a plain module) succeeds outright -- ``src`` and
+    ``src.helper`` both resolve against it -- and both must be purged, not just the bare name."""
+    repo, commit, _ = upstream_repo
+    clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
+    card = _card_named("submodule-leak-test")
+    module_name = private_module_name(card.name)
+
+    decoy_dir = tmp_path / "decoy_pkg"
+    (decoy_dir / "src").mkdir(parents=True)
+    (decoy_dir / "src" / "__init__.py").write_text("")
+    (decoy_dir / "src" / "helper.py").write_text("HELPER_VALUE = -1\n")
+    monkeypatch.syspath_prepend(str(decoy_dir))
+
+    assert "src" not in sys.modules
+    assert "src.helper" not in sys.modules
+    try:
+        with pytest.raises(ContractError, match="pulled in"):
+            import_pinned_entry(clone_root, card, "absolute_from_helper_entry")
+        assert "src" not in sys.modules
+        assert "src.helper" not in sys.modules
+    finally:
+        _forget(module_name, "src")
+
+
+def test_a_name_already_imported_before_the_call_binds_silently_known_limitation(
+    tmp_path, upstream_repo, monkeypatch
+):
+    """Documented limitation (see the module docstring and ``import_pinned_entry``'s own): the
+    before/after ``sys.modules`` diff can only see a name that is newly imported *during* this
+    call. A colliding name already present beforehand -- imported by anything else, earlier in the
+    same process -- is invisible to it, and an absolute self-import inside the clone silently
+    binds to that already-cached module instead of being refused."""
+    repo, commit, _ = upstream_repo
+    clone_root = clone_at_commit(str(repo), commit, tmp_path / "clone")
+    card = _card_named("preexisting-src-test")
+    module_name = private_module_name(card.name)
+
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    (decoy_dir / "src.py").write_text("MARKER = 'decoy'\n")
+    monkeypatch.syspath_prepend(str(decoy_dir))
+    import src as _pre_existing_src  # noqa: F401 -- imported before the call, on purpose
+
+    try:
+        module = import_pinned_entry(clone_root, card, "absolute_entry")
+        assert module.MARKER == "decoy"  # the known gap: silently bound to the wrong module
+    finally:
+        _forget(module_name, "src")
 
 
 def test_an_unloadable_entry_is_reported(tmp_path, monkeypatch):
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "spec_from_loader", lambda *a, **k: None)
+    card = _card_named("unloadable-test")
     with pytest.raises(ContractError, match="cannot be loaded"):
-        import_pinned_entry(tmp_path, "dfwb_zoo_ext_unloadable", "whatever")
+        import_pinned_entry(tmp_path, card, "whatever")
 
 
 def test_a_raising_entry_is_reported_and_not_left_in_sys_modules(tmp_path):
     (tmp_path / "bad.py").write_text("raise RuntimeError('kaboom')\n")
-    module_name = "dfwb_zoo_ext_bad_test"
+    card = _card_named("bad-test")
+    module_name = private_module_name(card.name)
 
     with pytest.raises(ContractError, match="kaboom"):
-        import_pinned_entry(tmp_path, module_name, "bad")
+        import_pinned_entry(tmp_path, card, "bad")
     assert f"{module_name}.bad" not in sys.modules
