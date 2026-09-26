@@ -199,12 +199,20 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
 
 
 def _pack_card(dataset_id: str) -> dict[str, Any] | None:
-    """The card fields of the first installed, healthy pack that publishes ``dataset_id``."""
+    """The card fields of the first installed, healthy pack that publishes ``dataset_id``.
+
+    Never raises: a pack listing that cannot be read degrades to no card, exactly like
+    :func:`_pack_names` and :func:`_pack_schemes`.
+    """
     from dfwb.core.errors import DFWBError
     from dfwb.protocols._yaml import read_card
     from dfwb.protocols.packs import installed_packs
 
-    for pack in installed_packs():
+    try:
+        packs = installed_packs()
+    except DFWBError:
+        return None
+    for pack in packs:
         if pack.card is not None and dataset_id in pack.card.datasets:
             try:
                 card = read_card(pack.dataset_dir(dataset_id))

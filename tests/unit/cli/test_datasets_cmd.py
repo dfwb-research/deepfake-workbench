@@ -170,6 +170,34 @@ def test_info_works_for_a_dataset_known_only_from_a_pack(run, monkeypatch, tmp_p
     ]
 
 
+def test_info_of_a_pack_only_dataset_degrades_when_the_pack_listing_later_fails(
+    run, monkeypatch, tmp_path
+):
+    # `info` reads the pack listing more than once (to name the packs, then their schemes, then
+    # the card); if it starts failing partway through, the command must still report what it
+    # already knows instead of crashing with an unhandled exception.
+    from dfwb.core.errors import ContractError
+    from dfwb.protocols import packs as packs_module
+
+    pack = make_pack(tmp_path, "demo-pack", {"demo": {}, "packonly": {}})
+    install(monkeypatch, {"demo": (DEMO_TARGET, "Demo", "Demo")}, packs={"demo-pack": pack})
+
+    real_installed_packs = packs_module.installed_packs
+    calls = {"n": 0}
+
+    def flaky_after_two_calls():
+        calls["n"] += 1
+        if calls["n"] >= 3:
+            raise ContractError("protocol pack registry went away", hint="reinstall the pack")
+        return real_installed_packs()
+
+    monkeypatch.setattr(packs_module, "installed_packs", flaky_after_two_calls)
+
+    result = run("datasets", "info", "packonly")
+    assert result.code == 0, result.err
+    assert "packonly" in result.out
+
+
 # ------------------------------------------------------------------------------ synth
 
 

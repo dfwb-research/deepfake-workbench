@@ -208,23 +208,25 @@ def doctor(as_json: bool) -> None:
     extras = ", ".join(f"{k}{'' if v else ' (missing)'}" for k, v in data["extras"].items())
     click.echo(f"extras    {extras or 'none declared'}")
     click.echo("")
-    rows = [
-        [n, r["path"] or "(unset)", f"{r['source']}: {r['from']}"] for n, r in data["roots"].items()
-    ]
-    click.echo(table(["ROOT", "PATH", "FROM"], rows))
-    for name, root in data["roots"].items():
-        if root["warning"]:
-            click.echo(f"warning: {root['warning']}", err=True)
-        if name == "datasets" and root["path"] is None:
-            click.echo(
-                "note: DFWB_DATASETS_ROOT is unset; inventory and preprocess commands need it",
-                err=True,
-            )
     if data["roots_error"] is not None:
         click.echo(data["roots_error"]["message"])
         click.echo(f"hint: {data['roots_error']['hint']}")
-    for path in data["roots"].get("datasets", {}).get("paths", []):
-        click.echo(f"datasets root: {path}")
+    else:
+        rows = [
+            [n, r["path"] or "(unset)", f"{r['source']}: {r['from']}"]
+            for n, r in data["roots"].items()
+        ]
+        click.echo(table(["ROOT", "PATH", "FROM"], rows))
+        for name, root in data["roots"].items():
+            if root["warning"]:
+                click.echo(f"warning: {root['warning']}", err=True)
+            if name == "datasets" and root["path"] is None:
+                click.echo(
+                    "note: DFWB_DATASETS_ROOT is unset; inventory and preprocess commands need it",
+                    err=True,
+                )
+        for path in data["roots"]["datasets"]["paths"]:
+            click.echo(f"datasets root: {path}")
     if data["env_file"] is not None:
         env_file = data["env_file"]
         click.echo(f"env file: {env_file['path']} ({len(env_file['applied'])} keys applied)")

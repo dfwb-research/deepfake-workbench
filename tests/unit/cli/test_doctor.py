@@ -92,6 +92,7 @@ def test_doctor_reports_a_broken_project_config_and_carries_on(run, tmp_path):
     assert "not valid UTF-8" in result.out
     assert "hint: save the file as UTF-8" in result.out
     assert "PLUGIN" in result.out  # everything else is still reported
+    assert "ROOT" not in result.out  # no empty ROOT/PATH/FROM table when roots couldn't be read
 
     data = json.loads(run("doctor", "--json").out)
     assert data["roots"] == {}
