@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError, field_validator
 
 from dfwb.core.detector import InputSpec
-from dfwb.core.errors import ContractError, validation_messages
+from dfwb.core.errors import ContractError, DFWBError, validation_messages
+from dfwb.core.metric_spec import check_metric_spec
 
 __all__ = [
     "AdapterCard",
@@ -114,8 +115,26 @@ class AdapterInputSpec(_Strict):
         )
 
 
+# The contract's own adapter-card example names its metric ``video_auc``: a video-level AUC. Every
+# row of a score file is one video, so that is exactly ``auc`` over a score file; the example's
+# spelling is accepted, and read as the metric it names.
+_METRIC_ALIASES = {"video_auc": "auc"}
+
+
+def _known_metric(value: str) -> str:
+    """``value`` as a metric spec the ``metrics`` registry knows (a documented alias resolved to
+    its metric), checked the way ``dfwb eval --metrics`` checks one, with a did-you-mean."""
+    metric = _METRIC_ALIASES.get(value, value)
+    try:
+        check_metric_spec(metric)
+    except DFWBError as exc:  # the registry's own message, did-you-mean included
+        raise ValueError(exc.message) from None
+    return metric
+
+
 class ReportedMetric(_Strict):
-    """One number the upstream paper claims."""
+    """One number the upstream paper claims. ``metric`` is a metric spec ``dfwb eval`` knows
+    (``auc``, ``eer``, ``tpr@fpr=0.01``, ...), checked when the card is read."""
 
     protocol: str
     split: str
@@ -123,9 +142,17 @@ class ReportedMetric(_Strict):
     value: float
     source: str
 
+    @field_validator("metric")
+    @classmethod
+    def _check_metric(cls, value: str) -> str:
+        return _known_metric(value)
+
 
 class ParityMetric(_Strict):
-    """One number DFWB has reproduced, checked against :attr:`ReportedMetric.value`."""
+    """One number DFWB has reproduced, checked against :attr:`ReportedMetric.value`: how many
+    videos it was computed over (``n``), what fraction of the split was scored (``coverage``),
+    and which weight variant was measured (``weights``, for a card with any), so a reader can
+    tell a number measured on the whole split from one measured on part of it."""
 
     protocol: str
     split: str
@@ -134,6 +161,14 @@ class ParityMetric(_Strict):
     tolerance: float
     dfwb_version: str
     date: str
+    n: int | None = None
+    coverage: float | None = None
+    weights: str | None = None
+
+    @field_validator("metric")
+    @classmethod
+    def _check_metric(cls, value: str) -> str:
+        return _known_metric(value)
 
 
 class AdapterCard(_Strict):

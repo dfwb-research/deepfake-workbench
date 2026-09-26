@@ -32,8 +32,8 @@ def test_compare_parity_matches_each_reported_metric_to_its_measured_value(isola
     checks = compare_parity(
         _card(),
         {
-            ("celebdf-v2/official", "test", "video_auc"): 0.905,
-            ("ffpp/official", "test", "video_auc"): 0.80,
+            ("celebdf-v2/official", "test", "auc"): 0.905,
+            ("ffpp/official", "test", "auc"): 0.80,
         },
         tolerance=0.01,
     )
@@ -46,7 +46,7 @@ def test_compare_parity_matches_each_reported_metric_to_its_measured_value(isola
 
 def test_compare_parity_raises_when_a_reported_metric_has_no_measured_value(isolated):
     with pytest.raises(ContractError, match="ffpp/official"):
-        compare_parity(_card(), {("celebdf-v2/official", "test", "video_auc"): 0.905})
+        compare_parity(_card(), {("celebdf-v2/official", "test", "auc"): 0.905})
 
 
 def test_write_parity_overlay_writes_a_file_shaped_like_the_cards_own_parity_list(isolated):
@@ -54,8 +54,8 @@ def test_write_parity_overlay_writes_a_file_shaped_like_the_cards_own_parity_lis
     checks = compare_parity(
         card,
         {
-            ("celebdf-v2/official", "test", "video_auc"): 0.905,
-            ("ffpp/official", "test", "video_auc"): 0.95,
+            ("celebdf-v2/official", "test", "auc"): 0.905,
+            ("ffpp/official", "test", "auc"): 0.95,
         },
     )
     metrics = [c.as_metric(dfwb_version="0.1.0", date="2026-01-01") for c in checks]
@@ -67,7 +67,7 @@ def test_write_parity_overlay_writes_a_file_shaped_like_the_cards_own_parity_lis
     assert len(payload["parity"]) == 2
     entry = next(e for e in payload["parity"] if e["protocol"] == "celebdf-v2/official")
     assert entry["value"] == 0.905
-    assert entry["metric"] == "video_auc"
+    assert entry["metric"] == "auc"  # the card's video_auc, read as the metric it names
     assert entry["dfwb_version"] == "0.1.0"
     assert entry["date"] == "2026-01-01"
 
@@ -86,8 +86,8 @@ def test_read_parity_overlay_round_trips_what_was_written(isolated):
     checks = compare_parity(
         card,
         {
-            ("celebdf-v2/official", "test", "video_auc"): 0.905,
-            ("ffpp/official", "test", "video_auc"): 0.95,
+            ("celebdf-v2/official", "test", "auc"): 0.905,
+            ("ffpp/official", "test", "auc"): 0.95,
         },
     )
     metrics = [c.as_metric(dfwb_version="0.1.0", date="2026-01-01") for c in checks]
@@ -134,14 +134,14 @@ def test_write_parity_overlay_merges_with_entries_for_other_protocols(isolated):
     # Two separate runs, each against a different protocol -- as `dfwb zoo parity` naturally
     # would, one protocol at a time -- must accumulate in the one overlay file, not overwrite it.
     celebdf_check = compare_parity(
-        parse_card(_CELEBDF_ONLY_CARD), {("celebdf-v2/official", "test", "video_auc"): 0.905}
+        parse_card(_CELEBDF_ONLY_CARD), {("celebdf-v2/official", "test", "auc"): 0.905}
     )
     write_parity_overlay(
         "gend", [c.as_metric(dfwb_version="0.1.0", date="2026-01-01") for c in celebdf_check]
     )
 
     ffpp_check = compare_parity(
-        parse_card(_FFPP_ONLY_CARD), {("ffpp/official", "test", "video_auc"): 0.95}
+        parse_card(_FFPP_ONLY_CARD), {("ffpp/official", "test", "auc"): 0.95}
     )
     write_parity_overlay(
         "gend", [c.as_metric(dfwb_version="0.1.0", date="2026-01-02") for c in ffpp_check]
@@ -156,12 +156,12 @@ def test_write_parity_overlay_merges_with_entries_for_other_protocols(isolated):
 
 def test_write_parity_overlay_replaces_a_later_measurement_of_the_same_metric(isolated):
     card = parse_card(_CELEBDF_ONLY_CARD)
-    first = compare_parity(card, {("celebdf-v2/official", "test", "video_auc"): 0.905})
+    first = compare_parity(card, {("celebdf-v2/official", "test", "auc"): 0.905})
     write_parity_overlay(
         card.name, [c.as_metric(dfwb_version="0.1.0", date="2026-01-01") for c in first]
     )
 
-    second = compare_parity(card, {("celebdf-v2/official", "test", "video_auc"): 0.912})
+    second = compare_parity(card, {("celebdf-v2/official", "test", "auc"): 0.912})
     write_parity_overlay(
         card.name, [c.as_metric(dfwb_version="0.1.1", date="2026-01-02") for c in second]
     )

@@ -806,3 +806,145 @@ def test_parity_plain_text_failing(run, scoretoy, monkeypatch):
     assert result.code == 4
     assert "FAIL" in result.out
     assert "wrote " in result.out
+
+
+# ---------------------------------------------------------- parity: coverage and weight variants
+
+
+def _install_reported_chance(name, monkeypatch, *, card_text=None):
+    from tests.unit.score._toy import PROTOCOL
+
+    get_registry("detectors").add(
+        name, target="tests.unit.zoo.test_cli:ReportedChanceAdapter", summary="x"
+    )
+    card = parse_card(card_text) if card_text else _reported_card(name, PROTOCOL, value=0.5)
+    monkeypatch.setattr(ReportedChanceAdapter, "card", card, raising=False)
+
+
+def test_parity_refuses_to_record_a_number_measured_below_min_coverage(run, scoretoy, monkeypatch):
+    """Six of eight videos scored: a parity number from 75% of the split is not the split's
+    number, so nothing is written to the overlay; the table still shows what was measured."""
+    from tests.unit.score._toy import toy_run_profile, write_toy_store
+
+    from dfwb.zoo.parity import read_parity_overlay
+
+    write_toy_store(scoretoy, toy_run_profile(), skip=["FAKE/f03", "REAL/r03"])
+    _install_reported_chance("parity-low-coverage", monkeypatch)
+
+    result = run("zoo", "parity", "parity-low-coverage", "--json")
+
+    assert result.code == 3
+    data = json.loads(result.out)
+    (check,) = data["checks"]
+    assert check["n"] == 6
+    assert check["coverage"] == pytest.approx(0.75)
+    assert data["overlay"] is None
+    assert "hint: " in result.err
+    assert "0.7500" in result.err
+    assert read_parity_overlay("parity-low-coverage") == []
+
+
+def test_parity_min_coverage_can_be_lowered(run, scoretoy, monkeypatch):
+    from tests.unit.score._toy import toy_run_profile, write_toy_store
+
+    from dfwb.zoo.parity import read_parity_overlay
+
+    write_toy_store(scoretoy, toy_run_profile(), skip=["FAKE/f03", "REAL/r03"])
+    _install_reported_chance("parity-lowered", monkeypatch)
+
+    result = run("zoo", "parity", "parity-lowered", "--min-coverage", "0.7")
+
+    assert result.code == 0
+    (entry,) = read_parity_overlay("parity-lowered")
+    assert entry.n == 6
+    assert entry.coverage == pytest.approx(0.75)
+
+
+def test_parity_records_n_and_coverage_in_the_overlay(run, scoretoy, monkeypatch):
+    from tests.unit.score._toy import toy_run_profile, write_toy_store
+
+    from dfwb.zoo.parity import read_parity_overlay
+
+    write_toy_store(scoretoy, toy_run_profile())
+    _install_reported_chance("parity-full", monkeypatch)
+
+    result = run("zoo", "parity", "parity-full", "--json")
+
+    assert result.code == 0
+    (check,) = json.loads(result.out)["checks"]
+    assert (check["n"], check["coverage"]) == (8, 1.0)
+    (entry,) = read_parity_overlay("parity-full")
+    assert (entry.n, entry.coverage, entry.weights) == (8, 1.0, None)
+    plain = run("zoo", "parity", "parity-full")
+    assert "COVERAGE" in plain.out
+
+
+def _two_weights_card(name, server_url, protocol):
+    return f"""
+name: {name}
+display_name: Two Weights (fixture)
+contract_version: [1, 0]
+license: {{code: MIT, requires_ack: false}}
+code_strategy: pip
+input: {{crop: face, crop_scale: 1.3, size: [64, 64], frames: 1}}
+weights:
+  - {{id: v1, url: "{server_url}/w.safetensors", sha256: "{SHA256}", bytes: {len(CONTENT)},
+     format: safetensors}}
+  - {{id: v2, url: "{server_url}/w.safetensors", sha256: "{SHA256}", bytes: {len(CONTENT)},
+     format: safetensors}}
+reported:
+  - {{protocol: "{protocol}", split: test, metric: auc, value: 0.5, source: fixture}}
+"""
+
+
+def test_parity_checks_the_weight_variant_it_is_given(run, scoretoy, server, monkeypatch):
+    from tests.unit.score._toy import PROTOCOL, toy_run_profile, write_toy_store
+
+    from dfwb.zoo.parity import read_parity_overlay
+
+    write_toy_store(scoretoy, toy_run_profile())
+    server.routes["/w.safetensors"] = CONTENT
+    _install_reported_chance(
+        "parity-two", monkeypatch, card_text=_two_weights_card("parity-two", server.url, PROTOCOL)
+    )
+
+    result = run("zoo", "parity", "parity-two", "--weights", "v2", "--json")
+
+    assert result.code == 0, result.err
+    (check,) = json.loads(result.out)["checks"]
+    assert check["weights"] == "v2"
+    (entry,) = read_parity_overlay("parity-two")
+    assert entry.weights == "v2"
+
+
+def test_parity_without_weights_for_a_card_with_several_is_a_config_error(
+    run, scoretoy, server, monkeypatch
+):
+    from tests.unit.score._toy import PROTOCOL
+
+    _install_reported_chance(
+        "parity-ambiguous",
+        monkeypatch,
+        card_text=_two_weights_card("parity-ambiguous", server.url, PROTOCOL),
+    )
+
+    result = run("zoo", "parity", "parity-ambiguous")
+
+    assert result.code == 2
+    assert "--weights" in result.err
+
+
+def test_parity_weights_for_a_card_with_none_is_a_config_error(run, monkeypatch):
+    from tests.unit.score._toy import PROTOCOL
+
+    _install_reported_chance(
+        "parity-no-weights",
+        monkeypatch,
+        card_text=_reported_card("parity-no-weights", PROTOCOL, value=0.5).model_dump_json(),
+    )
+
+    result = run("zoo", "parity", "parity-no-weights", "--weights", "v1")
+
+    assert result.code == 2
+    assert "has no weights" in result.err
+    assert "hint:" in result.err

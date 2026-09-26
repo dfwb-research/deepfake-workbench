@@ -199,3 +199,46 @@ def test_shipped_dummy_cards_have_no_weights_and_mit_licence(name):
     assert card.input.crop_scale == 1.3
     assert card.input.size == (64, 64)
     assert card.input.frames == 1
+
+
+# ------------------------------------------------------------------------- reported metric names
+
+
+def _card_with_metric(metric: str, *, section: str = "reported") -> str:
+    if section == "reported":
+        entry = f'{{protocol: x/official, split: test, metric: "{metric}", value: 0.9, source: t}}'
+    else:
+        entry = (
+            f'{{protocol: x/official, split: test, metric: "{metric}", value: 0.9, '
+            'tolerance: 0.01, dfwb_version: "0.1.0", date: "2026-01-01"}'
+        )
+    return _MINIMAL_CARD + f"{section}:\n  - {entry}\n"
+
+
+@pytest.mark.parametrize("section", ["reported", "parity"])
+def test_an_unknown_metric_is_refused_with_a_did_you_mean(section):
+    with pytest.raises(ContractError) as info:
+        parse_card(_card_with_metric("aucc", section=section))
+
+    assert f"{section}[0].metric" in info.value.message
+    assert "did you mean 'auc'" in info.value.message
+
+
+def test_a_metric_with_a_bad_parameter_is_refused():
+    with pytest.raises(ContractError, match="fprr"):
+        parse_card(_card_with_metric("tpr@fprr=0.01"))
+
+
+def test_a_metric_spec_with_parameters_is_accepted():
+    card = parse_card(_card_with_metric("tpr@fpr=0.01"))
+
+    assert card.reported[0].metric == "tpr@fpr=0.01"
+
+
+def test_the_c4_examples_video_auc_is_read_as_auc():
+    """Every row of a score file is one video, so a video-level AUC is ``auc`` over it: the
+    spelling the adapter-card example uses is accepted, and read as the metric it names."""
+    card = parse_card(_FULL_CARD)
+
+    assert card.reported[0].metric == "auc"
+    assert card.parity[0].metric == "auc"

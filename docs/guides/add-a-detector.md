@@ -147,6 +147,11 @@ reported:
   every use, not trusted by its path alone, so local tampering or corruption is always caught. A
   weights format is always `safetensors` or a `torch.load(weights_only=True)` checkpoint — never
   an arbitrary pickle.
+- **`reported`** lists the numbers the upstream paper claims. Each `metric` is a metric spec
+  `dfwb eval` knows (`auc`, `eer`, `tpr@fpr=0.01`, ...), checked when the card is read, with a
+  did-you-mean for a misspelling. `video_auc`, the spelling of the adapter-card contract's own
+  example, is accepted and read as `auc`: every row of a score file is one video, so `auc` over
+  a score file is the video-level AUC.
 - **The licence gate.** `license.requires_ack: true` (weights under stricter terms than the code,
   as `tinynet`'s fictional `CC-BY-NC-4.0` weights are here) means `zoo:tinynet` refuses with a hint
   until the licence is acknowledged once, on this machine:
@@ -170,10 +175,14 @@ dfwb zoo parity random --tolerance 0.01
 
 `dfwb zoo parity <name>` scores the adapter's own parity set and compares the measured numbers
 against `card.reported`, writing the result into a local overlay file (`dfwb zoo info` does not
-show it) meant to be pasted into the card itself once it passes. `chance` and `random` report no
-`reported` metrics, so there is nothing for `parity` to check against yet — exactly what "the
-machinery, not real adapters" means in this version. Scoring either of them still runs the whole
-path:
+show it) meant to be pasted into the card itself once it passes. Each overlay entry records how
+many videos its number was computed over (`n`), the split's coverage, and the weight variant
+measured (`--weights <id>` picks one; a card with more than one variant needs it). A number
+measured on less of its split than `--min-coverage` (default `0.99`, as `dfwb eval`) is not a
+parity number: nothing is written, and the command exits `3` with a hint. `chance` and `random`
+report no `reported` metrics, so there is nothing for `parity` to check against yet — exactly what
+"the machinery, not real adapters" means in this version. Scoring either of them still runs the
+whole path:
 
 ```bash
 dfwb score --detector zoo:random --protocol toyfake/official --split test --allow-input-mismatch

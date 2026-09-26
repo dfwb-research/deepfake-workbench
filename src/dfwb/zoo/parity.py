@@ -33,6 +33,7 @@ __all__ = [
 ]
 
 MetricKey = tuple[str, str, str]  # (protocol, split, metric)
+_OverlayKey = tuple[str, str, str, str]  # (protocol, split, metric, weights id or "")
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class ParityCheck:
     reported: float
     measured: float
     tolerance: float
+    n: int | None = None
+    coverage: float | None = None
+    weights: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -62,6 +66,9 @@ class ParityCheck:
             tolerance=self.tolerance,
             dfwb_version=dfwb_version or __version__,
             date=date or datetime.datetime.now(datetime.UTC).date().isoformat(),
+            n=self.n,
+            coverage=self.coverage,
+            weights=self.weights,
         )
 
 
@@ -103,16 +110,16 @@ def parity_path(name: str) -> Path:
     return cache_root / "zoo" / name / "parity.json"
 
 
-def _metric_key(metric: ParityMetric) -> MetricKey:
-    return (metric.protocol, metric.split, metric.metric)
+def _metric_key(metric: ParityMetric) -> _OverlayKey:
+    return (metric.protocol, metric.split, metric.metric, metric.weights or "")
 
 
 def write_parity_overlay(name: str, metrics: Sequence[ParityMetric]) -> Path:
     """Merge ``metrics`` (typically from :meth:`ParityCheck.as_metric`) into the local overlay
     file, written atomically. A parity run only ever measures one protocol's worth of metrics at a
-    time, so this keeps whatever an earlier run already recorded for every other
-    ``(protocol, split, metric)`` and only replaces an entry that shares one of ``metrics``' own
-    keys -- never drops the rest of the file.
+    time, for one weight variant, so this keeps whatever an earlier run already recorded for every
+    other ``(protocol, split, metric, weights)`` and only replaces an entry that shares one of
+    ``metrics``' own keys -- never drops the rest of the file.
 
     Raises:
         ContractError: the existing overlay file (if any) is corrupt (see
@@ -125,7 +132,7 @@ def write_parity_overlay(name: str, metrics: Sequence[ParityMetric]) -> Path:
 
     path = parity_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"parity": [metric.model_dump(mode="json") for metric in ordered]}
+    payload = {"parity": [metric.model_dump(mode="json", exclude_none=True) for metric in ordered]}
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     try:
