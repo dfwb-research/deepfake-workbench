@@ -1,4 +1,4 @@
-"""Where materialized lists live under the work root, and the command that writes them."""
+"""Where materialised lists live under the work root, and the command that writes them."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dfwb.protocols.refs import ProtocolRef
 
 __all__ = ["HASHES_FILE", "materialize_command", "materialized_dir"]
 
-#: The file of a materialized recipe dataset that records the card hashes its lists matched.
+#: The file of a materialised recipe dataset that records the card hashes its lists matched.
 HASHES_FILE: Final = "hashes.json"
 
 

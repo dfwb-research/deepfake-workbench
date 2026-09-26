@@ -123,6 +123,13 @@ it is what keeps `self.copies` correct when a builder is used directly, outside 
 - **`describe_layout(self)`** — human-readable text for `dfwb datasets info`. The default builds
   it from the task table; override it only if the layout is not "one folder per task".
 
+An attribute a builder puts in a record's `attrs` should describe the dataset, not the local copy.
+When one has to describe the copy, such as a path whose prefix depends on how the release was
+unpacked, or a value set only when some file happens to be present, name it in the class attribute
+`local_attrs` (e.g. `local_attrs = frozenset({"audio_relpath"})`). It then stays in the local
+inventory, where local tools read it, and is left out of every published record, so a protocol
+pack's lists, and their hashes, are the same whoever builds them.
+
 ### Datasets spread across more than one datasets root
 
 `DFWB_DATASETS_ROOT` can list more than one location, and the same dataset's folder can exist
@@ -227,8 +234,11 @@ dfwb protocols materialize my-dataset
 
 `materialize` checks every rebuilt list against the hashes in your card, writes them under the
 work root only when all of them match, and every other command then reads them from there (see
-`docs/concepts/protocols.md`). Because the pairs are rebuilt by your builder's `pairing_rule` and
-`pair_candidates`, a change to either changes the pack: rebuild it and release a new version.
+`docs/concepts/protocols.md`). Say in your pack's README what that needs: every video of the
+release, in each compression the card lists, and an inventory built by the builder version the
+pack was built with, which `PROVENANCE.json` records. A partial copy cannot be materialised.
+Because the lists are rebuilt by your builder (its records, `pairing_rule`, `pair_candidates` and
+`local_attrs`), a change to any of them changes the pack: rebuild it and release a new version.
 
 ## See also
 

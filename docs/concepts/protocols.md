@@ -62,7 +62,9 @@ small number of general families:
   real when there are fewer, so it is not always class-balanced. A benchmark can be defined at
   given compressions, recorded in its scheme card's parameters, so it is the same subset
   whichever other compressions a local copy holds: the FaceForensics++ and DeepFakeDetection
-  benchmarks are defined at c23.
+  benchmarks are defined at c23. For a recipe dataset (below) that holds only once every
+  compression the card lists is present, since materialising rebuilds the whole video list,
+  which covers all of them.
 
 ## Lists and recipes
 
@@ -88,6 +90,19 @@ dfwb inventory build DATASET
 dfwb protocols materialize DATASET
 ```
 
+A recipe rebuilds the published lists exactly, so it needs an exact copy of the release:
+
+- every video of the release, in each compression the card lists (`compressions`). Rows of a
+  compression the card does not list are left out before anything is rebuilt, so a copy that
+  holds more compressions is fine;
+- an inventory built by the version of the dataset's inventory builder the pack was built with.
+  The pack's `PROVENANCE.json` records that version, and the dfwb version that shipped it.
+
+A partial copy, such as one without one of the listed compressions, cannot be materialised: the
+published hashes cover the whole release, and there is no hash per compression. What describes
+only your own copy, such as where an audio track sits after unpacking, stays in your inventory
+and is never part of the lists, so how you unpacked the release makes no difference.
+
 `materialize` turns your inventory into the video list, recomputes every scheme with the rules
 the pack was built with, draws the pairs with the dataset's inventory builder, and checks each of
 those lists against the hash the card publishes. Only when every hash matches does it write them
@@ -100,10 +115,13 @@ copy without being asked. Until you materialise, those commands stop with an err
 the command to run, and they ask you to materialise again if an upgraded pack publishes other
 hashes.
 
-A mismatch exits with code 4, names every list whose hash differs, and writes nothing, leaving any
-earlier materialised copy as it was. It means your local copy differs from the release the card
-describes (its `release`): a video is missing or extra, the copy is a different upstream release,
-or the inventory was built by another version of the dataset's inventory builder.
+A mismatch exits with code 4 and writes nothing, leaving any earlier materialised copy as it was.
+Its message names every list whose hash differs, gives each scheme's rebuilt and published split
+counts, the number of videos and the compressions your inventory gives next to those the card
+lists, and the inventory builder versions when they are not the pack's; its hint names the likely
+cause: a missing compression, missing or extra videos, videos that differ in label or another
+field (another upstream release than the card's `release`, say), or the dfwb version to rebuild
+the inventory with.
 
 A pack can also publish a single scheme as a recipe while still shipping its videos: it leaves
 out just that scheme's split file, and `dfwb protocols materialize DATASET/SCHEME` rebuilds that
@@ -119,8 +137,9 @@ materialised videos), and buckets every video into one of:
 - `missing` — published by the pack, but not found locally.
 - `missing_requested` — the part of `missing` whose split was actually requested (see `--split`
   below); this is what decides whether verification counts as full coverage.
-- `extra` — found locally, but not part of what the pack publishes for this dataset. This is
-  normal for a partial or differently-organised local copy, and is not itself a failure.
+- `extra` — found locally, but not part of what the pack publishes for this dataset. For a list
+  dataset this is normal for a partial or differently-organised local copy, and is not itself a
+  failure. A recipe dataset has no partial copy: see "Lists and recipes" above.
 - `label_mismatch` — present in both, but its label or method disagree between the local
   inventory and the pack. This usually means the local copy is a different release than the one
   the pack card describes.
@@ -133,6 +152,10 @@ dataset card, rather than reporting it as plain incompleteness. The full report 
 sample of up to twenty keys per bucket, and any warnings — is written to
 `<work root>/<dataset>/verify/<scheme>.json`, so a later step (training, scoring) can record a
 run against the same coverage summary without re-running verify.
+
+For a materialised recipe dataset, verify compares your inventory with lists rebuilt from that
+same inventory, so as long as the inventory has not changed since, its coverage is complete by
+construction: only rows of a compression the card does not list show up, as `extra`.
 
 ## Exit codes
 

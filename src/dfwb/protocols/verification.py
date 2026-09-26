@@ -3,7 +3,7 @@
 :func:`verify` joins ``$DFWB_WORK_ROOT/<dataset>/inventory.jsonl`` (C3b) to the pack's full
 ``videos.jsonl.gz`` (every ``VideoRecord`` of the dataset, not just this scheme's assigned rows --
 so a video this scheme leaves unassigned is never reported ``extra`` just because it sits
-outside the current scheme; for a recipe dataset shipped without key lists, the materialized copy
+outside the current scheme; for a recipe dataset shipped without key lists, the materialised copy
 :func:`~dfwb.protocols.protocol.load` serves) on ``(key, compression)``, and buckets the result.
 :func:`write_report` persists the outcome so training and scoring can embed its summary in run
 metadata.
