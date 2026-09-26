@@ -2,11 +2,15 @@
 
 The supported grammar is a small, well-defined subset of a shell environment file:
 
+- A UTF-8 byte-order mark at the very start of the file is ignored; it never becomes part of the
+  first key.
 - Blank lines and ``#`` comment lines are skipped. An optional ``export `` prefix is allowed.
 - A line is ``KEY=VALUE``, where ``KEY`` matches ``[A-Za-z_][A-Za-z0-9_]*``.
 - An unquoted value is trimmed, and an inline `` #`` starts a comment.
 - A ``'single'``-quoted value is literal.
 - A ``"double"``-quoted value supports the escapes ``\\n``, ``\\"`` and ``\\\\``.
+- Nothing but blank space may follow a quoted value's closing quote (not even a comment): trailing
+  text there is a :class:`ConfigError`, never silently dropped.
 - ``${NAME}`` inside an unquoted or double-quoted value expands, first from the process
   environment and then from keys earlier in the same file: a key the shell sets wins over the
   file's value, both for itself and in every expansion. An unknown name is a
@@ -54,11 +58,23 @@ def _fail(path: Path, lineno: int, message: str, *, hint: str) -> ConfigError:
     return ConfigError(f"{path}:{lineno}: {message}", hint=hint)
 
 
+def _check_no_trailing_text(path: Path, lineno: int, rest: str) -> None:
+    """Raise unless ``rest`` (everything after a quoted value's closing quote) is blank."""
+    if rest.strip():
+        raise _fail(
+            path,
+            lineno,
+            f"unexpected text after the closing quote: {rest.strip()!r}",
+            hint="remove the text after the closing quote, or quote the whole value",
+        )
+
+
 def _unquote_single(path: Path, lineno: int, text: str) -> str:
     """Parse a ``'...'`` value; ``text[0]`` is the opening quote. No escapes are supported."""
     end = text.find("'", 1)
     if end == -1:
         raise _fail(path, lineno, "unterminated quote", hint="add the closing '")
+    _check_no_trailing_text(path, lineno, text[end + 1 :])
     return text[1:end]
 
 
@@ -69,6 +85,7 @@ def _unquote_double(path: Path, lineno: int, text: str) -> str:
     while i < len(text):
         char = text[i]
         if char == '"':
+            _check_no_trailing_text(path, lineno, text[i + 1 :])
             return "".join(chars)
         if char == "\\" and i + 1 < len(text) and text[i + 1] in ("n", '"', "\\"):
             chars.append("\n" if text[i + 1] == "n" else text[i + 1])
@@ -128,7 +145,9 @@ def parse_env_file(path: Path, environ: Mapping[str, str] | None = None) -> dict
     """
     environ = os.environ if environ is None else environ
     values: dict[str, str] = {}
-    for lineno, line in enumerate(path.read_text("utf-8").splitlines(), start=1):
+    # "utf-8-sig" strips a leading byte-order mark if present, and reads exactly like "utf-8"
+    # otherwise, so a BOM never becomes part of the first key.
+    for lineno, line in enumerate(path.read_text("utf-8-sig").splitlines(), start=1):
         parsed = _parse_line(path, lineno, line, values, environ)
         if parsed is not None:
             key, value = parsed

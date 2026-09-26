@@ -33,11 +33,23 @@ def test_parse_the_supported_grammar(tmp_path, monkeypatch):
         ("1BAD=x\n", ".env:1: expected KEY=VALUE"),
         ("A=${NOPE}\n", ".env:1: unknown variable 'NOPE'"),
         ('A="open\n', ".env:1: unterminated quote"),
+        ("A='value'x\n", ".env:1: unexpected text after the closing quote"),
+        ('A="value" # note\n', ".env:1: unexpected text after the closing quote"),
     ],
 )
 def test_parse_errors_name_the_line(tmp_path, text, message):
     with pytest.raises(ConfigError, match=message):
         parse_env_file(write(tmp_path, text))
+
+
+def test_trailing_whitespace_after_a_closing_quote_is_fine(tmp_path):
+    assert parse_env_file(write(tmp_path, "A='value'   \n")) == {"A": "value"}
+
+
+def test_a_leading_byte_order_mark_does_not_break_line_1(tmp_path):
+    path = tmp_path / ".env"
+    path.write_bytes(b"\xef\xbb\xbfA=1\nB=2\n")
+    assert parse_env_file(path) == {"A": "1", "B": "2"}
 
 
 def test_the_real_environment_wins(tmp_path):
