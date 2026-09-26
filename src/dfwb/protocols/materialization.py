@@ -376,7 +376,14 @@ def _video_records(
 def _read_records(
     inventory: Path, card: DatasetCard, local_attrs: Collection[str]
 ) -> list[VideoRecord]:
-    rows = release_rows(read_jsonl(inventory, InventoryRecord), card)
+    """The inventory's records for one recipe scheme of a pack that ships its videos.
+
+    A card that lists no ``compressions`` filters nothing here: a pack built before cards had to
+    list them may carry compressions in its videos all the same.
+    """
+    rows = read_jsonl(inventory, InventoryRecord)
+    if card.compressions is not None:
+        rows = release_rows(rows, card)
     return _video_records(rows, inventory, card.id, local_attrs)
 
 
@@ -409,8 +416,9 @@ def materialize(
     card's default scheme); the records are ``inventory``'s rows as
     :class:`~dfwb.core.records.VideoRecord`, without the attributes named in ``local_attrs``
     (those the dataset's builder declares as facts about the local copy, which a pack never
-    publishes). The rows are hashed exactly as a split file is, and
-    only a match with the card's ``sha256`` writes
+    publishes); when the card lists its ``compressions``, rows of any other compression are left
+    out (a card that lists none filters nothing). The rows are hashed exactly as a split file is,
+    and only a match with the card's ``sha256`` writes
     ``<work_root>/<dataset>/materialized/{videos.jsonl.gz,splits/<scheme>.tsv.gz}``, where
     :func:`~dfwb.protocols.protocol.load` then finds them. A mismatch writes nothing, so the work
     root is left exactly as it was.

@@ -292,6 +292,9 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
     without its key lists prints {dataset, path, videos_sha256, pairs_sha256, schemes, n_videos,
     n_pairs, matched}, where schemes maps each scheme to its hash.
     """
+    import contextlib
+
+    from dfwb.core.errors import UnknownKeyError
     from dfwb.core.paths import require_root, resolve_roots
     from dfwb.core.records import InventoryRecord, read_jsonl
     from dfwb.preprocess.inventory.runner import get_builder, inventory_path
@@ -327,20 +330,26 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
         return
 
     source = inventory if inventory is not None else inventory_path(parsed.dataset, work_root)
-    # The publisher's split and the attributes that describe the local copy are dataset
-    # knowledge: the dataset's own builder has them.
-    builder = get_builder(parsed.dataset)
+    # The publisher's split is dataset knowledge: the dataset's own builder reads it, so a rule
+    # that reads it needs the builder. Any other rule needs none, and a builder that is installed
+    # only says which attributes describe the local copy.
     official = None
+    local_attrs: frozenset[str] = frozenset()
     if needs_official(parsed) and source.is_file():
+        builder = get_builder(parsed.dataset)
         records = read_jsonl(source, InventoryRecord)
         official = builder.official_splits(locate_metadata_root(builder, roots), records)
+        local_attrs = builder.local_attrs
+    else:
+        with contextlib.suppress(UnknownKeyError):
+            local_attrs = get_builder(parsed.dataset).local_attrs
     result = run_materialize(
         parsed,
         inventory=source,
         official=official,
         work_root=work_root,
         datasets_roots=roots["datasets"].paths,
-        local_attrs=builder.local_attrs,
+        local_attrs=local_attrs,
     )
 
     if as_json:

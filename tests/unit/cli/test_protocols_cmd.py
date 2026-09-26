@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 from tests.unit.preprocess.test_packbuild import setup_packdemo
 from tests.unit.protocols.conftest import (
@@ -13,6 +14,8 @@ from tests.unit.protocols.conftest import (
     write_toyone_dataset,
 )
 
+from dfwb.core import plugins
+from dfwb.core.errors import UnknownKeyError
 from dfwb.core.records import (
     BuilderRef,
     DatasetCard,
@@ -27,6 +30,7 @@ from dfwb.core.records import (
     write_jsonl,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+from dfwb.preprocess.inventory.runner import get_builder
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.writer import scheme_card_for, write_dataset_files
 
@@ -990,3 +994,28 @@ def test_materialize_help_gives_both_json_shapes(run):
     assert "{dataset, path, videos_sha256, pairs_sha256, schemes, n_videos, n_pairs, matched}" in (
         text
     )
+
+
+def test_materialize_cli_needs_no_builder_for_a_rule_that_reads_nothing_of_it(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    (out / "splits" / "ident-72-14-14.tsv.gz").unlink()
+    # The pack alone is installed now: no inventory builder is registered for packdemo.
+    register_packs(monkeypatch, {"packdemo-pack": paths["pack"]})
+    plugins.reset()
+    with pytest.raises(UnknownKeyError):
+        get_builder("packdemo")
+
+    result = run(
+        "protocols",
+        "materialize",
+        "packdemo/ident-72-14-14",
+        "--inventory",
+        str(paths["inventory"]),
+    )
+
+    assert result.code == 0, result.err
+    assert "matches the published hash" in result.out

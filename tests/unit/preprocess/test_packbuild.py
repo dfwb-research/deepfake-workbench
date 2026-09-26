@@ -794,11 +794,8 @@ def test_a_benchmark_defined_at_one_compression_ignores_the_others(demo, monkeyp
     monkeypatch.setattr(
         PackDemoBuilder, "benchmark", BenchmarkSpec(k_fake=2, compressions=("c23",))
     )
-    monkeypatch.setattr(
-        PackDemoBuilder,
-        "card_info",
-        {**PackDemoBuilder.card_info, "compressions": ["raw", "c23", "c40"]},
-    )
+    # The card lists no compressions (as a pack built before cards had to list them might):
+    # materializing one recipe scheme then filters none of the inventory's rows.
     rows = read_inventory("packdemo", demo["work"])
     only_c23, full = tmp_path / "c23.jsonl", tmp_path / "full.jsonl"
     write_jsonl(only_c23, _at_compressions(rows, "c23"))
