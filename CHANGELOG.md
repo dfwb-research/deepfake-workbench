@@ -19,18 +19,25 @@ All notable changes to this project are documented here. The format follows
   pipeline, such as the CLI — the shipped profiles that would serve the detector once data is
   processed with one of them). Clip scores are aggregated to one score per video
   (`--aggregate mean-prob|mean-logit|max|median`); `--frames` additionally writes a
-  `<name>.frames.parquet` per-clip/per-frame dump (the `[eval]` extra: pyarrow).
-- **Caching.** An identical scoring request (the detector's exact identity, the protocol split and
-  any `--where`, the processing profile, the aggregation and the label mapping) reuses a score file
-  already sitting at its own output path instead of rescoring, unless `--force` is given; a cached
-  file with any `error` row is always retried rather than reused, since a detector failure is
-  usually transient.
+  `<name>.frames.parquet` per-clip/per-frame dump (the `[eval]` extra: pyarrow), its frame scores
+  checked like the clip scores. A batch whose output fails validation marks its videos `error` and
+  scoring continues; a detector with an `eval()` method is put in inference mode first. The meta
+  records the command line, with no absolute path in it. `--min-coverage` (default `0.99`, as
+  `dfwb eval`) exits `3`, after every file is written and reported, when a file's `ok` fraction is
+  lower; `--suite` resolves the detector once for every entry.
+- **Caching.** An identical scoring request (the detector's exact identity, the protocol split,
+  pack version and any `--where`, the processing profile and the processed store's own index, the
+  aggregation, the label mapping and the precision) reuses a score file already sitting at its own
+  output path instead of rescoring, unless `--force` is given; a cached file with any `error` row is
+  always retried rather than reused, since a detector failure is usually transient. A store that
+  has processed more videos since, or re-processed some, is scored again.
 - Detector sources (registry `detector_sources`, resolved from a `<scheme>:<rest>` URI):
   `run:<dir>[#best|#last]` (a trained run, `dfwb.models`), `zoo:<name>[@<weights id>]` (a
   registered zoo adapter) and `py:<module>:<factory>` (your own code: the named factory returns a
-  C4 `Detector`; the cache key folds in the sha256 of the module's own source file, so an edit to
-  it is never served a stale cached file, and a source with no readable file at all is never cached
-  and always recomputed). A detector source may set a few optional attributes beyond contract C4
+  C4 `Detector`, recorded as `py:<module>:<factory>` when it sets no source of its own; the cache
+  key folds in the sha256 of the module's own source file, so an edit to it is never served a stale
+  cached file, and a source with no readable file at all is never cached and always recomputed). A
+  detector source may set a few optional attributes beyond contract C4
   (`checkpoint_sha256`, `training_seed`, `fingerprint_extra`, `cacheable`) that sharpen a score
   file's meta and its cache key.
 - The `dfwb.zoo` layer: a uniform, licence-aware way to run published third-party detectors. This
@@ -48,8 +55,10 @@ All notable changes to this project are documented here. The format follows
   upstream, cloned at an exact commit into the cache and imported under a private module name,
   never added to `sys.path`, so it can never collide with anything else importable). `dfwb zoo`:
   `list`, `info`, `fetch`, `verify` (re-hashes cached weights and checks the code pin, downloading
-  nothing), `parity` (scores an adapter's parity set against its card's reported numbers) and
-  `licenses`.
+  nothing), `parity` (scores an adapter's parity set against its card's reported numbers, for one
+  weight variant, `--weights`; refuses with exit code `3` below `--min-coverage`, and records each
+  number's `n`, coverage and weight variant) and `licenses`. A card's reported metrics are checked
+  against the `metrics` registry when it is read; `video_auc` is read as `auc`.
 - `dfwb eval`'s `--bootstrap 0` now reports every metric's point value with no confidence interval
   (`ci_lo`/`ci_hi` both `null`) instead of raising, for `dfwb eval` and `dfwb eval compare` alike; a
   suite (registry `eval_suites`) may also carry a free-text `description` of what it measures.
@@ -62,6 +71,27 @@ All notable changes to this project are documented here. The format follows
   restyled in the organisation's shared format, with its own hero, and two added journeys: scoring
   and evaluating score files produced by your own code with no training or torch install, and
   scoring a detector of your own through the `py:` source with no adapter card.
+
+### Changed
+
+- `dfwb eval`: a metric undefined for one file (a two-class metric on a single-class file, say) is
+  an `undefined` cell (in JSON, a `null` value with the reason) instead of aborting the whole run;
+  the command exits `4` only when no requested metric is defined for any file. The seeds table
+  also requires the label mapping, aggregation and processing profile to agree, and warns (keeping
+  the first) when two files share a seed as well.
+- `dfwb eval compare` reports the `ok` rows unique to each file (`only_a`, `only_b`), refuses two
+  files that give a shared row different labels, and gives DeLong's exact answer at zero paired
+  variance (equal AUCs: `z = 0`, `p = 1`; unequal: an infinite `z`, `p = 0`) or `null` with a
+  reason when a class has fewer than two rows; `--json` is always valid JSON (an infinity is
+  written as `"inf"`/`"-inf"`).
+- `dfwb eval import` says when unmatched keys belong to another split of the pack.
+
+### Fixed
+
+- A score file whose `where` holds a list (repeated `--where key=v`) no longer crashes `dfwb
+  eval`, and a suite entry with a list filter matches its file whatever the list's order.
+- The command line recorded in a run's or a score file's metadata never holds an absolute path,
+  wherever it appears inside an argument.
 
 ## [0.1.0b1] - 2026-09-26
 

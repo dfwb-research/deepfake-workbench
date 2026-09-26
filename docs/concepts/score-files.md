@@ -73,10 +73,14 @@ written as `$DFWB_*_ROOT/...`, any other keeps only its final component):
   "aggregation": {"clip_to_video": "mean-prob", "clips_per_video": 4},
   "coverage": {"expected": 41, "ok": 41, "missing": 0, "error": 0},
   "seed": 0,
-  "env": {"dfwb": "0.1.0b2", "python": "3.12.14", "platform": "Linux-x86_64", "torch": "2.14.0+cpu", "cuda": null, "device": "cpu"},
+  "env": {
+    "dfwb": "0.1.0b2", "python": "3.12.14", "platform": "Linux-x86_64", "torch": "2.14.0+cpu",
+    "cuda": null, "device": "cpu", "precision": "fp32",
+    "store_index_sha256": "a41ed4149e8c61c7915a679cb69713578023b29bd634872e7665df58f8166370"
+  },
   "git": null,
-  "command": null,
-  "created": "2026-09-26T04:30:28Z",
+  "command": "dfwb score --detector 'run:runs/toy-cpu/latest#best' --protocol toyfake/official --split test",
+  "created": "2026-09-26T06:21:33Z",
   "calibration": null
 }
 ```
@@ -87,8 +91,10 @@ run detector, `zoo:<name>` or `zoo:<name>@<weights id>` for a zoo adapter, and
 sets it keeps its own).
 
 `seed` is the seed the weights were trained with when the detector has one (a `run:` detector's
-own seed), otherwise the scoring command's `--seed`. `dfwb eval` folds files that differ only in
-`seed` into a seeds table (mean and standard deviation across seeds) — but a `run:` detector's
+own seed), otherwise the scoring command's `--seed`. `dfwb eval` folds files that agree on the
+detector's `source`, the protocol split and `where`, the label mapping, the aggregation and the
+processing profile, but not on `seed`, into a seeds table (mean and standard deviation across
+seeds) — but a `run:` detector's
 `source` is its config's fingerprint, and the config's `run.seeds` is part of that fingerprint.
 So the seeds table groups the seeds of one experiment config: list every seed in one config's
 `run.seeds` to get it. Seeds trained as separate jobs, each from a config naming only its own
