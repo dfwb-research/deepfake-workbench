@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel
 
@@ -141,18 +141,23 @@ def _check_listing(root: Path, card: PackCard, present: list[str], issues: list[
 
 
 def _lint_videos(
-    dataset_dir: Path, dataset_id: str, labels: LabelVocab | None, issues: list[LintIssue]
-) -> list[VideoRecord]:
+    dataset_dir: Path,
+    dataset_id: str,
+    card: DatasetCard | None,
+    labels: LabelVocab | None,
+    issues: list[LintIssue],
+) -> list[VideoRecord] | None:
+    """The shipped videos, checked; ``None`` when they are missing or cannot be read."""
     where = f"{dataset_id}/videos.jsonl.gz"
     path = dataset_dir / "videos.jsonl.gz"
     if not path.is_file():
         issues.append(LintIssue("error", where, "file is missing"))
-        return []
+        return None
     try:
         videos = read_jsonl(path, VideoRecord, strict=True)
     except ContractError as exc:
         issues.append(LintIssue("error", where, exc.message))
-        return []
+        return None
 
     seen: set[tuple[str, str | None]] = set()
     for video in videos:
@@ -179,6 +184,19 @@ def _lint_videos(
     leak = _row_leaks(videos, "video", where)
     if leak is not None:
         issues.append(leak)
+    if card is not None:
+        listed = set(card.compressions or ())
+        unlisted = [v.compression for v in videos if v.compression not in listed | {None}]
+        if unlisted:
+            issues.append(
+                LintIssue(
+                    "error",
+                    where,
+                    f"{len(unlisted)} video(s) are of a compression the card's compressions do "
+                    f"not list ({', '.join(sorted(set(map(str, unlisted))))}); list it in the "
+                    "card, since a recipe's lists are rebuilt from the listed compressions only",
+                )
+            )
     return videos
 
 
@@ -382,6 +400,30 @@ def _lint_key_free_recipe(
         )
 
 
+# What a notice written for a dataset that ships its lists says, and a recipe's must not.
+_OFFERS_LISTS: Final = ("this folder lists video keys", "may be redistributed")
+
+
+def _lint_recipe_notice(
+    dataset_dir: Path, dataset_id: str, *, release: bool, issues: list[LintIssue]
+) -> None:
+    """A recipe without key lists must not keep a notice that says its lists ship."""
+    path = dataset_dir / "NOTICE.md"
+    if not path.is_file():
+        return  # reported once, with every dataset's files
+    text = " ".join(path.read_text("utf-8").split())
+    if any(phrase in text for phrase in _OFFERS_LISTS):
+        issues.append(
+            LintIssue(
+                "error" if release else "warning",
+                f"{dataset_id}/NOTICE.md",
+                "the notice says the key lists ship or may be redistributed, but this recipe "
+                "ships none; rebuild the dataset with dfwb protocols build, which rewrites its "
+                "notice",
+            )
+        )
+
+
 def _lint_dataset(
     root: Path, dataset_id: str, *, release: bool, withheld: bool, issues: list[LintIssue]
 ) -> None:
@@ -416,9 +458,12 @@ def _lint_dataset(
     key_free = not (dataset_dir / "videos.jsonl.gz").is_file()
     if card is not None and card.distribution == "recipe" and key_free:
         _lint_key_free_recipe(dataset_dir, dataset_id, card, issues)
+        _lint_recipe_notice(dataset_dir, dataset_id, release=release, issues=issues)
     else:
-        videos = _lint_videos(dataset_dir, dataset_id, labels, issues)
-        _check_videos_hash(videos, dataset_id, card, issues)
+        shipped = _lint_videos(dataset_dir, dataset_id, card, labels, issues)
+        if shipped is not None:
+            _check_videos_hash(shipped, dataset_id, card, issues)
+        videos = shipped or []
         video_keys = {(v.key, v.compression) for v in videos}
         video_key_only = {v.key for v in videos}
 

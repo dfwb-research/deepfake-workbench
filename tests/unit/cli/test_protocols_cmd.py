@@ -1,6 +1,7 @@
 import dataclasses
 import gzip
 import json
+import shutil
 from pathlib import Path
 
 import yaml
@@ -853,15 +854,23 @@ def test_materialize_cli_without_an_inventory_hints_inventory_build(run, monkeyp
     assert "hint: run: dfwb inventory build packdemo" in result.err
 
 
-def _strip_to_recipe(out: Path) -> None:
+def _decide_recipe(out: Path) -> None:
     card = yaml.safe_load((out / "dataset.yaml").read_text("utf-8"))
     card["distribution"] = "recipe"
     (out / "dataset.yaml").write_text(yaml.safe_dump(card), "utf-8")
+
+
+def _take_out_the_key_lists(out: Path) -> None:
     (out / "videos.jsonl.gz").unlink()
     (out / "pairs.jsonl.gz").unlink()
     for split in (out / "splits").iterdir():
         split.unlink()
     (out / "splits").rmdir()
+
+
+def _strip_to_recipe(out: Path) -> None:
+    _decide_recipe(out)
+    _take_out_the_key_lists(out)
 
 
 def _tree(folder: Path) -> dict[str, bytes]:
@@ -878,7 +887,17 @@ def test_a_key_free_recipe_lints_materializes_and_loads_from_the_cli(run, monkey
     assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
     card = read_card(out)
     _strip_to_recipe(out)
-    assert run("protocols", "lint", str(paths["pack"]), "--release").code == 0
+    # The notice still says what the build wrote for an undecided dataset; a rebuild rewrites it.
+    stale = run("protocols", "lint", str(paths["pack"]), "--release")
+    assert stale.code == 4
+    assert "error: packdemo/NOTICE.md: the notice says the key lists ship" in stale.out
+    shutil.rmtree(out)
+    assert run("protocols", "build", "packdemo", "--out", str(out)).code == 0
+    _decide_recipe(out)
+    assert run("protocols", "build", "packdemo", "--out", str(out)).code == 0
+    _take_out_the_key_lists(out)
+    linted = run("protocols", "lint", str(paths["pack"]), "--release")
+    assert linted.code == 0, linted.out
 
     # Nothing materialized yet: the error names the command to run.
     before = run("protocols", "info", "packdemo/official")

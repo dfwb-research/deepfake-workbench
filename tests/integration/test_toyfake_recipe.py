@@ -1,9 +1,10 @@
 """toyfake as a key-free recipe dataset, round-tripped through the ``dfwb`` command.
 
-``protocols build`` writes toyfake as a list dataset; the dataset is then stripped to a recipe the
-way a release build strips one (its card says ``distribution: recipe``, and its videos, pairs and
-split files are taken out, leaving only ``dataset.yaml``, ``labels.yaml``, ``NOTICE.md`` and
-``PROVENANCE.json``), and that pack takes the place of the built-in toyfake pack. From there:
+``protocols build`` writes toyfake as a list dataset; it is then decided a recipe (its card says
+``distribution: recipe``, and a rebuild rewrites its notice) and stripped the way a release build
+strips one (its videos, pairs and split files are taken out, leaving only ``dataset.yaml``,
+``labels.yaml``, ``NOTICE.md`` and ``PROVENANCE.json``), and that pack takes the place of the
+built-in toyfake pack. From there:
 ``protocols lint --release`` passes, a tampered inventory fails ``protocols materialize`` with exit
 4 and writes nothing, the real inventory materializes every list byte for byte, and ``protocols
 verify``, ``train``, ``score`` and ``eval`` all read the materialized copy.
@@ -98,9 +99,12 @@ def recipe(capsys, monkeypatch, tmp_path):
         "videos.jsonl.gz",
     ]
 
+    # Decided a recipe: a rebuild keeps the decision and rewrites the notice to match it.
     card = yaml.safe_load((out / "dataset.yaml").read_text("utf-8"))
     card["distribution"] = "recipe"
+    card["terms"]["notes"] = "Only the rules and hashes are published."
     (out / "dataset.yaml").write_text(yaml.safe_dump(card, sort_keys=True), "utf-8")
+    assert run("protocols", "build", DATASET, "--out", str(out)).code == 0
     for name in lists:
         (out / name).unlink()
     (out / "splits").rmdir()

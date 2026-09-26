@@ -739,3 +739,64 @@ def test_no_pairs_file_hashes_as_no_pairs(tmp_path):
 
     assert read_card(root / "toylint").pairs_sha256 == records_sha256([])
     assert lint_pack(root) == []
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_a_list_dataset_without_readable_videos_gets_no_hash_error_on_top(tmp_path, damage):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint")
+    videos = root / "toylint" / "videos.jsonl.gz"
+    if damage == "missing":
+        videos.unlink()
+    else:
+        with gzip.open(videos, "wt", encoding="utf-8") as handle:
+            handle.write("not json\n")
+
+    issues = lint_pack(root)
+
+    assert [i for i in issues if i.where == "toylint/videos.jsonl.gz"] == [
+        next(i for i in issues if i.where == "toylint/videos.jsonl.gz")
+    ]
+    assert not any("videos_sha256" in issue.message for issue in issues)
+
+
+def test_videos_of_a_compression_the_card_does_not_list_are_the_only_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    path = root / "toylint" / "videos.jsonl.gz"
+    videos = read_jsonl(path, VideoRecord)
+    write_jsonl(path, [*videos, dataclasses.replace(videos[0], compression="c23")])
+
+    issues = lint_pack(root)
+
+    assert issues == [
+        LintIssue(
+            "error",
+            "toylint/videos.jsonl.gz",
+            "1 video(s) are of a compression the card's compressions do not list (c23); "
+            "list it in the card, since a recipe's lists are rebuilt from the listed "
+            "compressions only",
+        )
+    ]
+
+
+_STALE_NOTICE = (
+    "Never media: this folder lists video keys, labels, split assignments and fake/real pairs.",
+    "Terms reviewed: dataset.yaml records distribution: list, so these lists may be redistributed.",
+)
+
+
+@pytest.mark.parametrize("text", _STALE_NOTICE, ids=["holds-lists", "redistributed"])
+def test_a_key_free_recipe_whose_notice_still_offers_its_lists_fails_a_release_lint(tmp_path, text):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    _strip(root / "toylint")
+    (root / "toylint" / "NOTICE.md").write_text(f"# toylint\n\n{text}\n")
+
+    stale = LintIssue(
+        "error",
+        "toylint/NOTICE.md",
+        "the notice says the key lists ship or may be redistributed, but this recipe ships "
+        "none; rebuild the dataset with dfwb protocols build, which rewrites its notice",
+    )
+    assert lint_pack(root, release=True) == [stale]
+    assert lint_pack(root) == [dataclasses.replace(stale, severity="warning")]
