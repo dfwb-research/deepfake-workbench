@@ -49,6 +49,9 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     # a public docs page at that same bare filename under docs/, and that page must be citable by
     # its own path. The negative lookbehind only blocks a match when the filename is unqualified.
     re.compile(r"(?<![/\w])protocols\.md\b"),
+    # The unpublished research these packages grew out of is not described here, not even by
+    # naming the kind of document it is; a regime, profile or fixture is described by what it does.
+    re.compile(r"\b[Tt][Hh][Ee][Ss][Ii][Ss]\b"),  # any casing, without spelling the word here
 )
 
 # (relative path, pattern index) pairs known to be false positives, kept explicit so a new one

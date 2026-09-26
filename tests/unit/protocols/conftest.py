@@ -223,10 +223,10 @@ def write_toyone_dataset(dataset_dir: Path, dataset_id: str) -> None:
     (dataset_dir / "labels.yaml").write_text(_dump(labels))
 
     pairs = [
-        PairRecord("FAKE_A/a1", "REAL/r1", "thesis"),
-        PairRecord("FAKE_A/a2", "REAL/r2", "thesis"),
-        PairRecord("FAKE_B/b3", "REAL/r3", "thesis"),
-        PairRecord("FAKE_B/b4", "REAL/r4", "thesis"),
+        PairRecord("FAKE_A/a1", "REAL/r1", "target-id"),
+        PairRecord("FAKE_A/a2", "REAL/r2", "target-id"),
+        PairRecord("FAKE_B/b3", "REAL/r3", "target-id"),
+        PairRecord("FAKE_B/b4", "REAL/r4", "target-id"),
     ]
     write_jsonl(dataset_dir / "pairs.jsonl.gz", pairs)
 
