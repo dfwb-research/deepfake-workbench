@@ -1,0 +1,98 @@
+site_name: Deepfake Workbench
+site_description: >-
+  A uniform, plugin-driven workbench for deepfake detection research: datasets, protocols,
+  training, scoring and evaluation.
+repo_url: https://github.com/dfwb-research/deepfake-workbench
+repo_name: dfwb-research/deepfake-workbench
+edit_uri: ""
+docs_dir: docs
+
+theme:
+  name: material
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: grey
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: grey
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path:
+        - "."
+      check_paths: true
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen_cli.py
+        - docs/gen_config.py
+        - docs/gen_contracts.py
+        - docs/gen_api.py
+        - docs/gen_datasets.py
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: true
+            docstring_style: google
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Quickstart: quickstart.md
+  - Concepts:
+      - concepts/pipeline.md
+      - concepts/protocols.md
+      - concepts/processing-profiles.md
+      - concepts/detectors.md
+      - concepts/score-files.md
+      - concepts/training.md
+      - concepts/plugins.md
+  - Guides:
+      - guides/add-a-dataset.md
+      - guides/add-a-detector.md
+      - guides/write-a-plugin.md
+      - guides/cross-dataset-eval.md
+      - guides/reproduce-a-run.md
+  - Reference:
+      - reference/cli.md
+      - reference/config.md
+      - Contracts: reference/contracts/index.md
+      - API: reference/api/index.md
+  - Datasets: datasets/index.md
+  - Ecosystem: ecosystem.md
+  - Citing: citing.md
+  - Changelog: changelog.md

@@ -91,6 +91,14 @@ dev = [
   "av>=12",
   "opencv-python-headless>=4.9",
 ]
+docs = [
+  "mike>=2.2.0",
+  # Pinned to the last release before 0.6.1 added a hard, unrelated dependency on "properdocs"
+  # (a fork that nags mkdocs users, via a stderr banner, to switch to it).
+  "mkdocs-gen-files==0.6.0",
+  "mkdocs-material>=9.7.7",
+  "mkdocstrings[python]>=1.0.6",
+]
 
 [tool.ruff]
 line-length = 100
