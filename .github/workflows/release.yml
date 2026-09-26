@@ -1,0 +1,112 @@
+name: release
+
+# Never triggered by the initial scaffold: only a push of a tag matching v<X.Y.Z> starts this.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never cancel a publish partway through
+
+jobs:
+  resolve:
+    name: resolve
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      prerelease: ${{ steps.parse.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag and package version agree
+        id: parse
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v([0-9].*)$ ]]; then
+            echo "::error::tag '$TAG' does not match 'vX.Y.Z'"
+            exit 1
+          fi
+          tag_version="${BASH_REMATCH[1]}"
+          pkg_version=$(grep -m1 -oP '(?<=^__version__ = ")[^"]+' src/dfwb/_version.py || true)
+          if [ -z "$pkg_version" ]; then
+            echo "::error::could not find __version__ in src/dfwb/_version.py"
+            exit 1
+          fi
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::tag version '$tag_version' does not match package __version__ '$pkg_version'"
+            exit 1
+          fi
+          # PEP 440 pre-release segments only: a (alpha), b (beta) or rc (release candidate),
+          # each followed by a number, at the end of the version. A stable version never matches.
+          if [[ "$tag_version" =~ (a|b|rc)[0-9]+$ ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "tag and package version agree: $tag_version (prerelease: $prerelease)"
+
+  build:
+    name: build
+    needs: resolve
+    uses: dfwb-research/.github/.github/workflows/python-build.yml@v1
+
+  publish:
+    name: publish
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+
+  release:
+    name: github-release
+    needs: [resolve, build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist
+      # A draft: the maintainer writes the release notes by hand, then publishes it. An
+      # rc/alpha/beta tag's draft already carries --prerelease, so publishing it never flips
+      # GitHub's "Latest release" onto a prerelease.
+      - name: Create the draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(
+            --verify-tag
+            --draft
+            --title "deepfake-workbench ${VERSION}"
+            --notes "Draft: write the release notes for deepfake-workbench ${VERSION} before publishing."
+          )
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" dist/* "${args[@]}"
