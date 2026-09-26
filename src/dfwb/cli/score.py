@@ -242,7 +242,7 @@ def _check_coverage(rows: list[dict[str, Any]], min_coverage: float) -> None:
     raise CoverageError(
         f"coverage below --min-coverage {min_coverage}: {detail}",
         hint="missing rows are videos with no processed clip (run `dfwb preprocess` for them, "
-        "then score again); error rows are batches that failed to score (the detector, or a "
+        "then score again); error rows are videos that failed to score (the detector, or a "
         "bad stored frame; the log says why, and scoring again retries them); or pass a lower "
         "--min-coverage",
     )

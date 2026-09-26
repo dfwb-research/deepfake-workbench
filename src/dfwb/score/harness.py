@@ -329,23 +329,26 @@ def _score_videos(
     """Score every clip of ``dataset`` and group it by video.
 
     Returns ``(clip_scores, errored, frame_records)``: ``clip_scores`` maps a video key to its
-    clip scores (``ok``); ``errored`` maps a video key to why its batch failed; ``frame_records``
-    is every scored clip's per-frame record (see :func:`_frame_records`), collected only when
-    ``collect_frames`` is true -- and then built inside the same per-batch guard as the clip
-    scores, so a batch whose ``frame_scores`` fail validation marks its videos ``error`` rather
-    than aborting the run. That same guard also covers fetching the batch itself: a video key is
-    computed from ``dataset.video_key(i)`` (known from the join alone, no decoding needed) before
-    the fetch is attempted, so a stored frame ``dataset[i]`` cannot decode -- corrupt, or the wrong
-    size for its profile -- still blames the right video and marks it ``error``, instead of
-    raising out of this loop and aborting every video still to come. A video's clips never split
-    across two batches (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one
-    of the two. ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to
-    training and validation batches only, never a scoring one. A detector with an ``eval()``
-    method (a torch module, typically) is switched to inference behaviour first -- no dropout,
-    batch norm using its stored statistics -- whatever state its source left it in.
+    clip scores (``ok``); ``errored`` maps a video key to why it failed; ``frame_records`` is
+    every scored clip's per-frame record (see :func:`_frame_records`), collected only when
+    ``collect_frames`` is true.
+
+    A video's clips never split across two batches (:class:`~dfwb.data.samplers.VideoGrouped`),
+    but several videos' clips do share one (``batch_size`` clips a batch, by default 32): a batch
+    whose stored frames fail to fetch -- one video's corrupt or mis-sized frame -- is retried one
+    video at a time instead, so only the video actually at fault is marked ``error``; every other
+    video sharing that batch is scored normally, exactly as if it had had a batch of its own. A
+    detector failure (raised, or an invalid output) is not retried this way, since it happened
+    after the batch was already fetched intact and cannot be attributed to one clip in it: it
+    still marks every video of that batch ``error``, as before. ``batch.labels`` is cleared before
+    ``predict()``: contract C4 gives labels to training and validation batches only, never a
+    scoring one. A detector with an ``eval()`` method (a torch module, typically) is switched to
+    inference behaviour first -- no dropout, batch norm using its stored statistics -- whatever
+    state its source left it in.
     """
+    import itertools
+
     import torch
-    from torch.utils.data import DataLoader
 
     from dfwb.data.collate import collate_clips
     from dfwb.data.samplers import VideoGrouped
@@ -356,35 +359,63 @@ def _score_videos(
     if callable(set_eval):
         set_eval()
     batches = list(VideoGrouped(dataset, batch_size))
-    loader: DataLoader[Any] = DataLoader(
-        dataset, batch_sampler=batches, collate_fn=collate_clips, num_workers=0
-    )
     dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16}  # fp32 (or None): no autocast
     autocast_dtype = dtypes.get(precision or "")
 
     clip_scores: dict[VideoKey, list[float]] = {}
     errored: dict[VideoKey, str] = {}
     frame_records: list[FrameRecord] = []
-    loader_iter = iter(loader)
+
+    def _predict(batch: Any, keys: Sequence[VideoKey]) -> tuple[list[float], list[FrameRecord]]:
+        batch.labels = None
+        batch.clips = batch.clips.to(torch_device)
+        with torch.inference_mode():
+            if autocast_dtype is not None:
+                with torch.autocast(device_type=torch_device.type, dtype=autocast_dtype):
+                    output = detector.predict(batch)
+            else:
+                output = detector.predict(batch)
+            validated = _validated_scores(output, len(keys))
+        scores = validated.detach().float().cpu().tolist()
+        records = _frame_records(batch, keys, scores, output) if collect_frames else []
+        return scores, records
+
     for indices in batches:
         keys: list[VideoKey] = [dataset.video_key(i) for i in indices]
         try:
-            batch = next(loader_iter)  # may itself raise: a corrupt or mis-sized stored frame
-            batch.labels = None
-            batch.clips = batch.clips.to(torch_device)
-            with torch.inference_mode():
-                if autocast_dtype is not None:
-                    with torch.autocast(device_type=torch_device.type, dtype=autocast_dtype):
-                        output = detector.predict(batch)
-                else:
-                    output = detector.predict(batch)
-                validated = _validated_scores(output, len(keys))
-            scores = validated.detach().float().cpu().tolist()
-            records = _frame_records(batch, keys, scores, output) if collect_frames else []
-        except Exception as exc:  # a batch may fail to load, or a detector to run, for any reason
+            samples = [dataset[i] for i in indices]
+        except Exception as exc:
+            unique = sorted(set(keys))
+            _log.warning(
+                "%d video(s) share a batch whose stored frames failed to load (%s); scoring "
+                "them one at a time to isolate the failure: %s",
+                len(unique),
+                unique,
+                f"{type(exc).__name__}: {exc}",
+            )
+            groups = (list(g) for _, g in itertools.groupby(indices, key=dataset.video_key))
+            for video_indices in groups:
+                video_key = dataset.video_key(video_indices[0])
+                try:
+                    video_samples = [dataset[i] for i in video_indices]
+                    scores, records = _predict(
+                        collate_clips(video_samples), [video_key] * len(video_indices)
+                    )
+                except Exception as video_exc:
+                    reason = f"{type(video_exc).__name__}: {video_exc}"
+                    _log.warning("scoring failed on video %s: %s", video_key, reason)
+                    errored[video_key] = reason
+                    continue
+                clip_scores.setdefault(video_key, []).extend(float(value) for value in scores)
+                frame_records.extend(records)
+            continue
+
+        try:
+            scores, records = _predict(collate_clips(samples), keys)
+        except Exception as exc:  # a detector may fail for any reason; scoring continues
             reason = f"{type(exc).__name__}: {exc}"
             unique = sorted(set(keys))
-            _log.warning("scoring failed on %d video(s) (%s): %s", len(unique), unique, reason)
+            _log.warning("detector failed on %d video(s) (%s): %s", len(unique), unique, reason)
             for key in unique:
                 errored[key] = reason
             continue
