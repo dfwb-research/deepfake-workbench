@@ -1,17 +1,17 @@
 """The parts of a dataset's generated ``NOTICE.md`` that follow its ``distribution`` (C3a).
 
-``dfwb protocols build`` writes them, and ``dfwb protocols lint`` looks for the ones written for a
-dataset that ships its key lists in the notice of a recipe that ships none (a notice not rewritten
-since the dataset was decided a recipe). Both read them from here, so they cannot drift apart.
-A maintainer's ``terms.notes``, which the build appends to the terms paragraph, is free text and
-plays no part in the check.
+``dfwb protocols build`` writes them, and ``dfwb protocols lint`` looks for the ones written for
+another distribution than the card's (a notice not rewritten since the distribution was decided):
+list text in a recipe's notice, or recipe text in a list dataset's. Both read them from here, so
+they cannot drift apart. A maintainer's ``terms.notes``, which the build appends to the terms
+paragraph, is free text and plays no part in the check.
 """
 
 from __future__ import annotations
 
 from typing import Final, Literal
 
-__all__ = ["holds_paragraph", "offers_lists", "terms_sentence"]
+__all__ = ["holds_paragraph", "offers_lists", "offers_recipe", "terms_sentence"]
 
 Distribution = Literal["undecided", "list", "recipe"]
 
@@ -70,6 +70,17 @@ def offers_lists(notice: str) -> bool:
     such as a maintainer's ``terms.notes``, never matches, whatever it says about
     redistribution; nor does a notice edited by hand into other words.
     """
+    return _holds_any(notice, (_HOLDS_LISTS, terms_sentence("list"), terms_sentence("undecided")))
+
+
+def offers_recipe(notice: str) -> bool:
+    """Whether ``notice`` holds text generated for a recipe, which ships no key list.
+
+    Matched as :func:`offers_lists` matches: whole generated paragraphs, never free text.
+    """
+    return _holds_any(notice, (_HOLDS_RECIPE, terms_sentence("recipe")))
+
+
+def _holds_any(notice: str, generated: tuple[str, ...]) -> bool:
     text = _flat(notice)
-    generated = (_HOLDS_LISTS, terms_sentence("list"), terms_sentence("undecided"))
     return any(_flat(part) in text for part in generated)

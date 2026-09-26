@@ -612,10 +612,50 @@ def test_a_key_free_recipe_dataset_passes_a_release_lint(tmp_path):
     assert lint_pack(root, release=True) == []
 
 
-def test_a_recipe_card_with_its_hashes_passes_while_it_still_ships_its_lists(tmp_path):
+def _shipped_recipe_issue(files: str, severity: str = "error") -> LintIssue:
+    return LintIssue(
+        severity,  # type: ignore[arg-type]
+        "toylint",
+        f"a recipe dataset is published without its key lists, and this one ships {files}: "
+        "take them out of the folder you publish (a release build that strips recipe datasets "
+        "does), or record distribution: list if its terms let them be redistributed",
+    )
+
+
+def test_a_recipe_that_still_ships_its_key_lists_fails_a_release_lint(tmp_path):
     root = _write_pack(tmp_path, ["toylint"])
     _hash_the_lists(root / "toylint", distribution="recipe")
 
+    files = "videos.jsonl.gz, pairs.jsonl.gz, splits/official.tsv.gz"
+    assert lint_pack(root, release=True) == [_shipped_recipe_issue(files)]
+    # While a pack is being built, before a release strips it, this is only a warning.
+    assert lint_pack(root) == [_shipped_recipe_issue(files, "warning")]
+
+
+def test_a_recipe_stripped_of_its_splits_alone_still_fails_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    shutil.rmtree(root / "toylint" / "splits")
+
+    assert lint_pack(root, release=True) == [
+        _shipped_recipe_issue("videos.jsonl.gz, pairs.jsonl.gz")
+    ]
+
+
+def test_a_list_dataset_whose_notice_was_written_for_a_recipe_fails_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(_notice_for("recipe"))
+
+    stale = LintIssue(
+        "error",
+        "toylint/NOTICE.md",
+        "the notice is the one written for a recipe dataset, which ships no key list, but this "
+        "dataset ships its lists (distribution: list); rebuild the dataset with dfwb protocols "
+        "build, which rewrites its notice",
+    )
+    assert lint_pack(root, release=True) == [stale]
+    assert lint_pack(root) == [dataclasses.replace(stale, severity="warning")]
+    (root / "toylint" / "NOTICE.md").write_text(_notice_for("list", "Owned by nobody."))
     assert lint_pack(root, release=True) == []
 
 

@@ -34,7 +34,7 @@ from dfwb.core.records import (
     records_sha256,
     split_sha256,
 )
-from dfwb.protocols._notice import offers_lists
+from dfwb.protocols._notice import offers_lists, offers_recipe
 from dfwb.protocols._yaml import read_model
 from dfwb.protocols.materialization import RULES
 
@@ -425,6 +425,40 @@ def _lint_recipe_notice(
         )
 
 
+def _lint_shipped_recipe(
+    dataset_dir: Path, dataset_id: str, *, release: bool, issues: list[LintIssue]
+) -> None:
+    """A recipe is published without its key lists: one that still ships them is not ready."""
+    files = ["videos.jsonl.gz", *_key_list_files(dataset_dir)]
+    issues.append(
+        LintIssue(
+            "error" if release else "warning",
+            dataset_id,
+            "a recipe dataset is published without its key lists, and this one ships "
+            f"{', '.join(files)}: take them out of the folder you publish (a release build that "
+            "strips recipe datasets does), or record distribution: list if its terms let them "
+            "be redistributed",
+        )
+    )
+
+
+def _lint_list_notice(
+    dataset_dir: Path, dataset_id: str, *, release: bool, issues: list[LintIssue]
+) -> None:
+    """A list dataset must not keep the notice built for a recipe (see :func:`offers_recipe`)."""
+    path = dataset_dir / "NOTICE.md"
+    if path.is_file() and offers_recipe(path.read_text("utf-8")):
+        issues.append(
+            LintIssue(
+                "error" if release else "warning",
+                f"{dataset_id}/NOTICE.md",
+                "the notice is the one written for a recipe dataset, which ships no key list, but "
+                "this dataset ships its lists (distribution: list); rebuild the dataset with dfwb "
+                "protocols build, which rewrites its notice",
+            )
+        )
+
+
 def _lint_dataset(
     root: Path, dataset_id: str, *, release: bool, withheld: bool, issues: list[LintIssue]
 ) -> None:
@@ -461,6 +495,10 @@ def _lint_dataset(
         _lint_key_free_recipe(dataset_dir, dataset_id, card, issues)
         _lint_recipe_notice(dataset_dir, dataset_id, release=release, issues=issues)
     else:
+        if card is not None and card.distribution == "recipe":
+            _lint_shipped_recipe(dataset_dir, dataset_id, release=release, issues=issues)
+        if card is not None and card.distribution == "list":
+            _lint_list_notice(dataset_dir, dataset_id, release=release, issues=issues)
         shipped = _lint_videos(dataset_dir, dataset_id, card, labels, issues)
         if shipped is not None:
             _check_videos_hash(shipped, dataset_id, card, issues)

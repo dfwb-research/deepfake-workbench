@@ -222,7 +222,8 @@ rewrites `NOTICE.md` to match it.
   needs, because every build records the hashes of the video and pair lists (`videos_sha256`,
   `pairs_sha256`) and the pairing rule in it, next to each scheme's rule, parameters and hash.
   Lint the folder you publish (the build output with those files taken out) with `dfwb protocols
-  lint --release`.
+  lint --release`: it reports a recipe that still ships any of them, and a notice that was not
+  rewritten after the decision.
 
 A user of a recipe dataset installs your inventory builder and the pack, then rebuilds the lists
 from their own copy of the dataset:

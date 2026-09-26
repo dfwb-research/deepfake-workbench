@@ -59,7 +59,9 @@ All notable changes to this project are documented here. The format follows
   checks the lists with. `dfwb protocols lint --release` reports a recipe shipped without its
   lists whose notice is still the one generated for a list or undecided dataset (only the
   generated text counts, never the card's `terms.notes`).
-- `dfwb protocols lint` reports a video of a compression the card does not list.
+- `dfwb protocols lint` reports a video of a compression the card does not list, a recipe
+  dataset that still ships any key list, and a list dataset whose notice is the one generated for
+  a recipe (errors under `--release`, warnings otherwise, for the last two).
 - `dfwb protocols build` no longer publishes the `attrs.audio_relpath` of AV-Deepfake1M++ and
   TalkingHeadBench videos, which depended on the local copy; their builders declare it in
   `local_attrs`.

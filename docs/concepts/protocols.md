@@ -125,9 +125,10 @@ cause: a missing compression, missing or extra videos, videos that differ in lab
 field (another upstream release than the card's `release`, say), or the dfwb version to rebuild
 the inventory with.
 
-A pack can also publish a single scheme as a recipe while still shipping its videos: it leaves
-out just that scheme's split file, and `dfwb protocols materialize DATASET/SCHEME` rebuilds that
-one split in the same way.
+A recipe dataset is published without any key list: `dfwb protocols lint --release` reports one
+that still ships its `videos.jsonl.gz`, `pairs.jsonl.gz` or any split file. While a pack is being
+built, a scheme can also be left out of a dataset that ships its videos, and `dfwb protocols
+materialize DATASET/SCHEME` then rebuilds that one split in the same way.
 
 ## Verifying a local copy
 
