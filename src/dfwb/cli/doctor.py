@@ -102,6 +102,22 @@ def _datasets(roots: Mapping[RootName, ResolvedRoot]) -> list[dict[str, Any]]:
     return rows
 
 
+def _roots() -> tuple[Mapping[RootName, ResolvedRoot], dict[str, str] | None]:
+    """The resolved roots, and the problem that stopped them being read (``{"message",
+    "hint"}``), if any.
+
+    A broken ``dfwb.toml`` (or user config) must not abort the whole report: it is shown as this
+    one failed check, and every other section -- torch, extras, plugins, licences -- still runs.
+    """
+    from dfwb.core.errors import ConfigError
+    from dfwb.core.paths import resolve_roots
+
+    try:
+        return resolve_roots(), None
+    except ConfigError as exc:
+        return {}, {"message": exc.message, "hint": exc.hint}
+
+
 def _licenses() -> tuple[dict[str, dict[str, str]], dict[str, str] | None]:
     """Every licence acknowledgement recorded on this machine, keyed by name, and the problem
     that stopped the store being read (``{"message", "hint"}``), if any.
@@ -126,10 +142,9 @@ def collect() -> dict[str, Any]:
     """Everything ``dfwb doctor`` reports, as plain data."""
     from dfwb import __version__
     from dfwb.core.envfile import last_applied
-    from dfwb.core.paths import resolve_roots
     from dfwb.core.plugins import load_plugins
 
-    roots = resolve_roots()
+    roots, roots_error = _roots()
     report = load_plugins()
     env_file = last_applied()
     accepted, licenses_error = _licenses()
@@ -166,7 +181,10 @@ def collect() -> dict[str, Any]:
             }
             for r in report.records
         ],
-        "datasets": _datasets(roots),
+        "roots_error": roots_error,
+        # dataset_overrides() re-reads the same project/user config as resolve_roots(): once that
+        # has already failed, re-reading it would only raise the same error again.
+        "datasets": [] if roots_error is not None else _datasets(roots),
         "licenses": accepted,
         "licenses_error": licenses_error,
     }
@@ -202,7 +220,10 @@ def doctor(as_json: bool) -> None:
                 "note: DFWB_DATASETS_ROOT is unset; inventory and preprocess commands need it",
                 err=True,
             )
-    for path in data["roots"]["datasets"]["paths"]:
+    if data["roots_error"] is not None:
+        click.echo(data["roots_error"]["message"])
+        click.echo(f"hint: {data['roots_error']['hint']}")
+    for path in data["roots"].get("datasets", {}).get("paths", []):
         click.echo(f"datasets root: {path}")
     if data["env_file"] is not None:
         env_file = data["env_file"]
