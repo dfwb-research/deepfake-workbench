@@ -262,12 +262,13 @@ added.
 The same pages build into a documentation site (MkDocs Material) that adds generated reference
 pages, made from the code at build time: every `dfwb` command and option, every configuration
 key, the JSON Schemas of the five contracts, the Python API, and one page per dataset from its
-dataset card. The site is not published yet; build and browse it locally:
+dataset card. None of this needs any extra installed -- every subcommand module and every
+inventory builder imports its heavy dependencies only inside functions, so the `docs` group alone
+is enough. The site is not published yet; build and browse it locally:
 
 ```bash
-uv sync --all-extras --group docs
-uv run mkdocs serve          # http://127.0.0.1:8000, reloads as you edit
-uv run mkdocs build --strict # the check CI runs on every pull request
+uv run --group docs mkdocs serve          # http://127.0.0.1:8000, reloads as you edit
+uv run --group docs mkdocs build --strict # the check CI runs on every pull request
 ```
 
 ## Data in several places, several machines

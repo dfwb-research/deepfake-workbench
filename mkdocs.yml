@@ -7,6 +7,9 @@ repo_name: dfwb-research/deepfake-workbench
 edit_uri: ""
 docs_dir: docs
 
+validation:
+  anchors: warn
+
 theme:
   name: material
   font:
