@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="Deepfake Workbench: open, reproducible tooling for deepfake detection research. A four-stage pipeline, each stage ticking green in turn: datasets (sha256-verified inventories), protocols (versioned splits), training (seed-locked runs) and evaluation (AUC with confidence intervals and coverage)." src="docs/assets/hero-light.svg">
+  <img alt="Deepfake Workbench: open, reproducible tooling for deepfake detection research. A four-stage pipeline, each stage ticking green in turn: datasets (verified inventories), protocols (versioned splits), training (seed-locked runs) and evaluation (AUC with confidence intervals and coverage)." src="docs/assets/hero-light.svg">
 </picture>
 
 A uniform, plugin-driven workbench for deepfake detection research: raw dataset → verified
