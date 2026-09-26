@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 
 pytest.importorskip("torch")
@@ -145,6 +148,45 @@ def test_a_failing_batch_holding_several_videos_marks_exactly_those(score_roots,
     others = {key: status for key, status in by_key.items() if key not in ("FAKE/f00", "FAKE/f01")}
     assert set(others.values()) == {"ok"}
     assert result.coverage == {"expected": 8, "ok": 6, "missing": 0, "error": 2}
+
+
+def _frame_path(store_dir: Path, key: str, index: int = 0) -> Path:
+    return store_dir / key / "_" / f"frame_{index:06d}.png"
+
+
+def test_a_corrupt_stored_frame_marks_its_video_error_and_scoring_continues(score_roots, tmp_path):
+    store_dir = write_toy_store(score_roots, toy_profile("toy-face"))
+    path = _frame_path(store_dir, "FAKE/f00")
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])  # truncated: no longer a decodable PNG
+
+    # batch_size == clips_per_video: each video is scored in its own batch, so only FAKE/f00
+    # is affected; every other video still gets scored.
+    result = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row for row in scored.rows}
+    assert by_key["FAKE/f00"].status == "error"
+    assert by_key["FAKE/f00"].score is None
+    ok_statuses = {key: row.status for key, row in by_key.items() if key != "FAKE/f00"}
+    assert set(ok_statuses.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
+
+
+def test_a_mis_sized_stored_frame_marks_its_video_error(score_roots, tmp_path):
+    profile = toy_profile("toy-face")  # crop.size == 32
+    store_dir = write_toy_store(score_roots, profile)
+    path = _frame_path(store_dir, "FAKE/f00")
+    cv2.imwrite(str(path), np.zeros((16, 16, 3), dtype=np.uint8))
+
+    result = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row for row in scored.rows}
+    assert by_key["FAKE/f00"].status == "error"
+    ok_statuses = {key: row.status for key, row in by_key.items() if key != "FAKE/f00"}
+    assert set(ok_statuses.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
 
 
 # ------------------------------------------------------------------------------ output validation

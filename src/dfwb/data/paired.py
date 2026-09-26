@@ -61,6 +61,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
         transform: ClipTransform | None = None,
         adapt_chain: Callable[[Tensor], Tensor] | None = None,
         seed: int,
+        expected_frame_size: int | None = None,
     ) -> None:
         by_key = _by_key(index)
         real_items: list[VideoItem] = []
@@ -88,6 +89,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             transform=transform,
             adapt_chain=adapt_chain,
             seed=seed,
+            expected_frame_size=expected_frame_size,
         )
         self._fake = ClipDataset(
             _sub_index(fake_items),
@@ -96,6 +98,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             transform=transform,
             adapt_chain=adapt_chain,
             seed=seed,
+            expected_frame_size=expected_frame_size,
         )
 
     def set_epoch(self, epoch: int) -> None:
@@ -103,6 +106,11 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
         :meth:`~dfwb.data.dataset.ClipDataset.set_epoch`)."""
         self._real.set_epoch(epoch)
         self._fake.set_epoch(epoch)
+
+    @property
+    def corrupt_frames_skipped(self) -> int:
+        """Both sides' :attr:`~dfwb.data.dataset.ClipDataset.corrupt_frames_skipped`, combined."""
+        return self._real.corrupt_frames_skipped + self._fake.corrupt_frames_skipped
 
     def __len__(self) -> int:
         return len(self._real) + len(self._fake)

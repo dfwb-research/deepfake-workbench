@@ -3,6 +3,8 @@ detector's input spec, and served through the samplers ``data.loader`` names."""
 
 from __future__ import annotations
 
+import cv2
+import numpy as np
 import pytest
 
 pytest.importorskip("lightning")
@@ -137,6 +139,25 @@ def test_a_store_without_a_profile_file_is_a_contract_error(toy_work_root):
     datamodule = _datamodule(toy_config(), toy_work_root)
     with pytest.raises(ContractError, match="profile"):
         datamodule.setup("fit")
+
+
+def test_a_mis_sized_stored_frame_is_a_clear_error_during_training(toy_work_root):
+    # Every frame of one video is re-sized (not just one): the clip window's random draw would
+    # otherwise sometimes miss the corrupted file and make this test flaky.
+    profile = toy_profile()
+    frame_dir = toy_work_root / DATASET / "processed" / profile.profile_id() / "REAL" / "r00" / "_"
+    for frame in frame_dir.glob("frame_*.png"):
+        cv2.imwrite(str(frame), np.zeros((16, 16, 3), dtype=np.uint8))  # profile.crop.size is 32
+
+    datamodule = _datamodule(toy_config(), toy_work_root)
+    datamodule.setup("fit")
+
+    # 48 clips / batch_size 8: no trailing partial batch is dropped, so a full pass is guaranteed
+    # to visit every video, including the one just corrupted -- unlike train mode's usual
+    # corrupt-*frame* tolerance (see test_dataset.py), a size mismatch always raises.
+    with pytest.raises(ContractError, match="not 32x32"):
+        for _ in datamodule.train_dataloader():
+            pass
 
 
 # ---------------------------------------------------------------------------------- loaders

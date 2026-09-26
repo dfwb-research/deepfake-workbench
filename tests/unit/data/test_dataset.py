@@ -8,6 +8,7 @@ its items.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,7 +22,8 @@ pytest.importorskip("torch")
 import torch
 from torch.utils.data import DataLoader
 
-from dfwb.core.errors import ConfigError
+from dfwb.core.errors import ConfigError, ContractError
+from dfwb.data._images import CorruptFrameError
 from dfwb.data.clips import ClipSpec, ClipsPerVideo
 from dfwb.data.dataset import ClipDataset, MultiSource, _torch_seed
 from dfwb.data.index import VideoIndex, VideoItem
@@ -215,6 +217,118 @@ def test_long_enough_video_is_not_padded(tmp_path):
 
     for i in range(len(dataset)):
         assert dataset[i].extras["dfwb/padded"] is False
+
+
+# ---------------------------------------------------------------- corrupt / mis-sized stored frames
+
+
+def _corrupt(path: Path) -> None:
+    """Truncates an already-written PNG so Pillow can no longer decode it."""
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+
+def test_expected_frame_size_mismatch_is_refused(tmp_path):
+    item = _video_item(tmp_path / "v", n_frames=4)  # written 4x4, see _write_frames
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=False, seed=0, expected_frame_size=8)
+
+    with pytest.raises(ContractError, match="stored frame is 4x4, not 8x8") as excinfo:
+        dataset[0]
+    assert "profile.crop.size" in excinfo.value.message
+
+
+def test_no_expected_frame_size_means_no_size_check(tmp_path):
+    item = _video_item(tmp_path / "v", n_frames=4)
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=False, seed=0)
+
+    dataset[0]  # no expected_frame_size given: any size is accepted, exactly as before
+
+
+def test_a_mismatched_size_is_never_silently_skipped_even_when_training(tmp_path):
+    item = _video_item(tmp_path / "v", n_frames=4)
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=True, seed=0, expected_frame_size=8)
+
+    with pytest.raises(ContractError, match="not 8x8"):
+        dataset[0]
+
+
+def test_eval_mode_propagates_a_corrupt_frame(tmp_path):
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=4)
+    _corrupt(video_dir / "frame_000001.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=False, seed=0)
+
+    with pytest.raises(CorruptFrameError, match="cannot decode this stored frame"):
+        dataset[0]
+    assert dataset.corrupt_frames_skipped == 0  # eval never patches over it
+
+
+def test_train_mode_skips_a_corrupt_frame_with_a_warning_and_counts_it(tmp_path, caplog):
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=4)
+    _corrupt(video_dir / "frame_000001.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=True, seed=0)
+
+    with caplog.at_level(logging.WARNING):
+        sample = dataset[0]  # window is exactly [0, 1, 2, 3]: deterministic even for train=True
+
+    assert sample.clip.shape == (4, 3, 4, 4)
+    assert dataset.corrupt_frames_skipped == 1
+    assert any("corrupt stored frame" in message for message in caplog.messages)
+    # Position 1 (corrupt) is repeated from its nearest still-good neighbour, position 0.
+    assert torch.equal(sample.clip[1], sample.clip[0])
+
+
+def test_train_mode_counts_keep_accumulating_across_samples(tmp_path):
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=4)
+    _corrupt(video_dir / "frame_000001.png")
+    _corrupt(video_dir / "frame_000003.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=True, seed=0)
+
+    dataset[0]
+
+    assert dataset.corrupt_frames_skipped == 2
+
+
+def test_train_mode_still_raises_when_every_frame_of_the_clip_is_corrupt(tmp_path):
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=2)
+    _corrupt(video_dir / "frame_000000.png")
+    _corrupt(video_dir / "frame_000001.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=True, seed=0)
+
+    with pytest.raises(CorruptFrameError):
+        dataset[0]
+    assert dataset.corrupt_frames_skipped == 0  # nothing was actually patched over
 
 
 # ---------------------------------------------------------------------------- eval determinism

@@ -3,8 +3,9 @@ file: resolve the detector, choose a processing profile, adapt stored clips to i
 every clip, aggregate clip -> video, and write ``<name>.scores.{csv,meta.json}``.
 
 Every video the split names gets a row: ``ok`` (scored), ``missing`` (no usable processed clip) or
-``error`` (the detector raised while scoring it, or returned an output that fails validation).
-Nothing is silently dropped.
+``error`` (the detector raised while scoring it, it returned an output that fails validation, or
+one of its stored frames could not be read -- corrupt, or not the size its processing profile
+declares). Nothing is silently dropped.
 
 A detector source may set plain attributes on the ``Detector`` it returns, beyond contract C4
 (``meta``, ``to()``, ``predict()``) -- see :mod:`dfwb.score.cache` for what they are and how the
@@ -332,12 +333,16 @@ def _score_videos(
     is every scored clip's per-frame record (see :func:`_frame_records`), collected only when
     ``collect_frames`` is true -- and then built inside the same per-batch guard as the clip
     scores, so a batch whose ``frame_scores`` fail validation marks its videos ``error`` rather
-    than aborting the run. A video's clips never split across two batches
-    (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one of the two.
-    ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to training and
-    validation batches only, never a scoring one. A detector with an ``eval()`` method (a torch
-    module, typically) is switched to inference behaviour first -- no dropout, batch norm using
-    its stored statistics -- whatever state its source left it in.
+    than aborting the run. That same guard also covers fetching the batch itself: a video key is
+    computed from ``dataset.video_key(i)`` (known from the join alone, no decoding needed) before
+    the fetch is attempted, so a stored frame ``dataset[i]`` cannot decode -- corrupt, or the wrong
+    size for its profile -- still blames the right video and marks it ``error``, instead of
+    raising out of this loop and aborting every video still to come. A video's clips never split
+    across two batches (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one
+    of the two. ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to
+    training and validation batches only, never a scoring one. A detector with an ``eval()``
+    method (a torch module, typically) is switched to inference behaviour first -- no dropout,
+    batch norm using its stored statistics -- whatever state its source left it in.
     """
     import torch
     from torch.utils.data import DataLoader
@@ -350,11 +355,9 @@ def _score_videos(
     set_eval = getattr(detector, "eval", None)
     if callable(set_eval):
         set_eval()
+    batches = list(VideoGrouped(dataset, batch_size))
     loader: DataLoader[Any] = DataLoader(
-        dataset,
-        batch_sampler=VideoGrouped(dataset, batch_size),
-        collate_fn=collate_clips,
-        num_workers=0,
+        dataset, batch_sampler=batches, collate_fn=collate_clips, num_workers=0
     )
     dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16}  # fp32 (or None): no autocast
     autocast_dtype = dtypes.get(precision or "")
@@ -362,12 +365,11 @@ def _score_videos(
     clip_scores: dict[VideoKey, list[float]] = {}
     errored: dict[VideoKey, str] = {}
     frame_records: list[FrameRecord] = []
-    for batch in loader:
-        keys: list[VideoKey] = [
-            (batch.dataset_ids[i], batch.keys[i], batch.compressions[i])
-            for i in range(len(batch.keys))
-        ]
+    loader_iter = iter(loader)
+    for indices in batches:
+        keys: list[VideoKey] = [dataset.video_key(i) for i in indices]
         try:
+            batch = next(loader_iter)  # may itself raise: a corrupt or mis-sized stored frame
             batch.labels = None
             batch.clips = batch.clips.to(torch_device)
             with torch.inference_mode():
@@ -379,10 +381,10 @@ def _score_videos(
                 validated = _validated_scores(output, len(keys))
             scores = validated.detach().float().cpu().tolist()
             records = _frame_records(batch, keys, scores, output) if collect_frames else []
-        except Exception as exc:  # a detector may fail for any reason; scoring continues
+        except Exception as exc:  # a batch may fail to load, or a detector to run, for any reason
             reason = f"{type(exc).__name__}: {exc}"
             unique = sorted(set(keys))
-            _log.warning("detector failed on %d video(s) (%s): %s", len(unique), unique, reason)
+            _log.warning("scoring failed on %d video(s) (%s): %s", len(unique), unique, reason)
             for key in unique:
                 errored[key] = reason
             continue
@@ -533,8 +535,8 @@ def score(
     ``False``, and the detector itself is cacheable (``getattr(detector, "cacheable", True)``) --
     scores every clip under ``torch.inference_mode()``, aggregates clip scores to one score per
     video, and writes a C5 score file. Every video of the split gets a row: ``ok``, ``missing``
-    (no usable processed clip), or ``error`` (the detector raised while scoring it, or returned an
-    output that fails validation).
+    (no usable processed clip), or ``error`` (the detector raised while scoring it, it returned an
+    output that fails validation, or one of its stored frames could not be read).
 
     ``frames=True`` additionally writes ``<name>.frames.parquet``; see the module docstring for
     exactly when, and :attr:`ScoreResult.frames_path`.
@@ -654,7 +656,13 @@ def score(
 
     clip_spec = _clip_spec(spec, clips_per_video)
     dataset = ClipDataset(
-        index, clip_spec, train=False, transform=None, adapt_chain=adaptation.chain, seed=seed
+        index,
+        clip_spec,
+        train=False,
+        transform=None,
+        adapt_chain=adaptation.chain,
+        seed=seed,
+        expected_frame_size=chosen_profile.crop.size,
     )
 
     clip_scores, errored, frame_records = _score_videos(

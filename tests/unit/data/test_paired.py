@@ -18,6 +18,8 @@ pytest.importorskip("torch")
 import torch
 from tests.unit.data.conftest import processed_record, write_store_frames, write_store_index
 
+from dfwb.core.errors import ContractError
+from dfwb.data._images import CorruptFrameError
 from dfwb.data.clips import ClipSpec, ClipsPerVideo
 from dfwb.data.collate import collate_clips
 from dfwb.data.index import SourceSpec, VideoIndex, VideoItem
@@ -197,6 +199,53 @@ def test_index_out_of_range_raises_index_error(tmp_path):
     dataset = PairedClipDataset(index, [("REAL/0", "FAKE/0")], _spec(), train=False, seed=0)
     with pytest.raises(IndexError):
         dataset[len(dataset)]
+
+
+# ---------------------------------------------------------------- corrupt / mis-sized stored frames
+
+
+def test_expected_frame_size_reaches_both_sides(tmp_path):
+    real = _item(tmp_path, key="REAL/0", label=0, n_frames=4)  # written 4x4, see _write_frames
+    fake = _item(tmp_path, key="FAKE/0", label=1, n_frames=4)
+    index = VideoIndex(items=[real, fake], excluded=[], _summaries=[])
+    dataset = PairedClipDataset(
+        index, [("REAL/0", "FAKE/0")], _spec(), train=False, seed=0, expected_frame_size=8
+    )
+
+    with pytest.raises(ContractError, match="not 8x8"):
+        dataset[0]  # the real side
+    with pytest.raises(ContractError, match="not 8x8"):
+        dataset[len(dataset) - 1]  # the fake side
+
+
+def test_corrupt_frames_skipped_sums_both_sides(tmp_path):
+    real = _item(tmp_path, key="REAL/0", label=0, n_frames=4)
+    fake = _item(tmp_path, key="FAKE/0", label=1, n_frames=4)
+    data = (real.video_dir / "frame_000000.png").read_bytes()
+    (real.video_dir / "frame_000000.png").write_bytes(data[: len(data) // 2])
+    (fake.video_dir / "frame_000000.png").write_bytes(data[: len(data) // 2])
+    index = VideoIndex(items=[real, fake], excluded=[], _summaries=[])
+    spec = ClipSpec(
+        frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = PairedClipDataset(index, [("REAL/0", "FAKE/0")], spec, train=True, seed=0)
+
+    for i in range(len(dataset)):
+        dataset[i]
+
+    assert dataset.corrupt_frames_skipped == 2  # one per side
+
+
+def test_eval_mode_still_propagates_a_corrupt_frame_through_pairs(tmp_path):
+    real = _item(tmp_path, key="REAL/0", label=0, n_frames=4)
+    fake = _item(tmp_path, key="FAKE/0", label=1, n_frames=4)
+    data = (real.video_dir / "frame_000000.png").read_bytes()
+    (real.video_dir / "frame_000000.png").write_bytes(data[: len(data) // 2])
+    index = VideoIndex(items=[real, fake], excluded=[], _summaries=[])
+    dataset = PairedClipDataset(index, [("REAL/0", "FAKE/0")], _spec(), train=False, seed=0)
+
+    with pytest.raises(CorruptFrameError):
+        dataset[0]
 
 
 # --------------------------------------------------------------------------------- integration

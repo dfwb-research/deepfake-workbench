@@ -209,10 +209,12 @@ def look_up(target: Path, **expected: Any) -> CacheHit | None:
     """A :class:`CacheHit` for ``target`` when it exists, is a readable C5 file,
     :func:`cache_matches` (given ``expected``) confirms it, and its coverage has no ``error``
     rows; ``None`` otherwise -- an unreadable file, one with no meta, one whose meta does not
-    match, or one where the detector failed on some of its videos last time is never trusted.
-    A detector error is typically transient (an OOM, a flaky device fault); the reuse rule is
-    about an identical *successful* result, so an errored cache entry is retried instead
-    (logged at info level: how many videos), not served as if it were complete."""
+    match, or one where some of its videos failed to score last time (the detector, or a bad
+    stored frame) is never trusted. Some such failures are transient (an OOM, a flaky device
+    fault); others are not (a corrupt or mis-sized stored frame keeps failing until the store is
+    fixed) -- either way, the reuse rule is about an identical *successful* result, so an errored
+    cache entry is retried instead (logged at info level: how many videos), not served as if it
+    were complete."""
     try:
         existing = read_scores(target)
     except (ContractError, OSError):

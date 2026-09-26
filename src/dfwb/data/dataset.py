@@ -15,6 +15,7 @@ from __future__ import annotations
 import bisect
 import hashlib
 import itertools
+import logging
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -26,14 +27,16 @@ from torch.utils.data import Dataset
 
 from dfwb.core.errors import ConfigError
 from dfwb.core.records.local import FRAME_FILE
-from dfwb.data._images import read_frame
+from dfwb.data._images import CorruptFrameError, read_frame
 from dfwb.data.clips import ClipSpec, clip_windows_padded
-from dfwb.data.index import VideoIndex
+from dfwb.data.index import VideoIndex, VideoItem
 
 if TYPE_CHECKING:
     from dfwb.data.paired import PairedClipDataset
 
 __all__ = ["ClipDataset", "ClipSample", "ClipTransform", "MultiSource"]
+
+_log = logging.getLogger(__name__)
 
 _PAIR_ID = "dfwb/pair_id"
 
@@ -87,7 +90,18 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
     process -- would never reach the copy of this dataset each worker already holds. Writing into
     a shared tensor in place, and reading it back with ``.item()``, is visible from every process
     that shares the same underlying storage, workers included, whether they were started by
-    ``fork`` or ``spawn``.
+    ``fork`` or ``spawn``. :attr:`corrupt_frames_skipped` is a second shared-memory counter, for
+    exactly the same reason.
+
+    A corrupt stored frame (one Pillow cannot decode) is handled differently by ``train``: eval
+    (``train=False``, what scoring uses) lets the error propagate -- a caller grouping clips by
+    video, such as :mod:`dfwb.score.harness`, catches it itself and marks that video ``error``,
+    which is more useful there than silently patching a video's evaluation clips. Training
+    (``train=True``) instead repeats the clip's nearest still-good frame in the corrupt frame's
+    place, logs a warning naming the file, and counts it in :attr:`corrupt_frames_skipped`, so one
+    bad file never aborts a training run. A stored frame whose *size* does not match
+    ``expected_frame_size`` is never treated this way, in either mode: it always raises, since a
+    wrongly sized store is the wrong store, not a one-off corrupt file.
     """
 
     def __init__(
@@ -99,6 +113,7 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         transform: ClipTransform | None = None,
         adapt_chain: Callable[[Tensor], Tensor] | None = None,
         seed: int,
+        expected_frame_size: int | None = None,
     ) -> None:
         self.index = index
         self.spec = spec
@@ -106,13 +121,23 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         self.transform = transform
         self.adapt_chain = adapt_chain
         self.seed = seed
+        self.expected_frame_size = expected_frame_size
         self._epoch = torch.zeros((), dtype=torch.int64)
         self._epoch.share_memory_()  # type: ignore[no-untyped-call, unused-ignore]
+        self._corrupt_frames_skipped = torch.zeros((), dtype=torch.int64)
+        self._corrupt_frames_skipped.share_memory_()  # type: ignore[no-untyped-call, unused-ignore]
         self._clips_per_video = spec.clips_per_mode(train=train)
 
     @property
     def epoch(self) -> int:
         return int(self._epoch.item())
+
+    @property
+    def corrupt_frames_skipped(self) -> int:
+        """How many stored frames :meth:`__getitem__` has repeated a neighbour for instead of
+        decoding, because the file was corrupt (only ever nonzero when ``train`` is true -- see
+        the class docstring)."""
+        return int(self._corrupt_frames_skipped.item())
 
     def set_epoch(self, epoch: int) -> None:
         """Every sample drawn after this call is seeded with ``epoch`` instead -- including by a
@@ -121,6 +146,46 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
 
     def __len__(self) -> int:
         return len(self.index.items) * self._clips_per_video
+
+    def video_key(self, i: int) -> tuple[str, str, str | None]:
+        """The ``(dataset, key, compression)`` sample ``i`` belongs to -- from ``index.items``
+        alone, so it is known even when decoding ``i``'s frames would raise (a corrupt stored
+        frame, in eval mode). A caller that must blame the right video for a batch whose very
+        fetch failed (:mod:`dfwb.score.harness`) asks this instead of reading it off a batch that
+        was never actually built."""
+        if not 0 <= i < len(self):
+            raise IndexError(i)
+        item_index, _ = divmod(i, self._clips_per_video)
+        item = self.index.items[item_index]
+        return (item.dataset, item.key, item.compression)
+
+    def _read_clip_frames(self, item: VideoItem, frame_numbers: Sequence[int]) -> list[Tensor]:
+        """``frame_numbers`` of ``item``, decoded; see the class docstring for what happens to a
+        corrupt one."""
+        paths = [item.video_dir / FRAME_FILE.format(index=number) for number in frame_numbers]
+        if not self.train:
+            return [read_frame(path, expected_size=self.expected_frame_size) for path in paths]
+
+        frames: list[Tensor | None] = [None] * len(paths)
+        corrupt: list[int] = []
+        for position, path in enumerate(paths):
+            try:
+                frames[position] = read_frame(path, expected_size=self.expected_frame_size)
+            except CorruptFrameError as exc:
+                corrupt.append(position)
+                _log.warning("%s: corrupt stored frame skipped and repeated: %s", path, exc)
+        if not corrupt:
+            return frames  # type: ignore[return-value]  # every position was filled above
+        good = [position for position in range(len(paths)) if position not in corrupt]
+        if not good:
+            # Nothing in this clip decoded at all -- there is no neighbour left to repeat, so the
+            # original decode failure is the most useful thing to raise.
+            read_frame(paths[corrupt[0]], expected_size=self.expected_frame_size)
+        self._corrupt_frames_skipped.add_(len(corrupt))
+        for position in corrupt:
+            nearest = min(good, key=lambda g: abs(g - position))
+            frames[position] = frames[nearest]
+        return frames  # type: ignore[return-value]  # every position is now filled
 
     def __getitem__(self, i: int) -> ClipSample:
         if not 0 <= i < len(self):
@@ -134,9 +199,7 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         positions, padded = windows[clip_index]
 
         frame_numbers = [item.frame_indices[position] for position in positions]
-        frames = [
-            read_frame(item.video_dir / FRAME_FILE.format(index=number)) for number in frame_numbers
-        ]
+        frames = self._read_clip_frames(item, frame_numbers)
         clip = torch.stack(frames).to(torch.float32) / 255.0
 
         if self.transform is not None:
