@@ -172,7 +172,7 @@
             }
           ],
           "default": null,
-          "description": "sha256 of the dataset's PairRecord list (pairs.jsonl.gz), hashed as videos_sha256 is; the sha256 of empty content when nothing pairs.",
+          "description": "sha256 of the dataset's PairRecord list (pairs.jsonl.gz), with duplicate pairs removed, each pair one line hashed exactly as videos_sha256 describes; e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855, the sha256 of empty content, when nothing pairs.",
           "title": "Pairs Sha256"
         },
         "paper": {
@@ -214,7 +214,7 @@
             }
           ],
           "default": null,
-          "description": "sha256 of the dataset's VideoRecord list (videos.jsonl.gz): its JSONL lines sorted and hashed together, uncompressed. With pairs_sha256 it lets a recipe dataset ship no key list at all: dfwb protocols materialize rebuilds the lists from a local inventory and checks them against these hashes.",
+          "description": "sha256 of the dataset's VideoRecord list (videos.jsonl.gz). Each record is one line: json.dumps of its fields (every VideoRecord field, nulls included) with sort_keys=True, separators=(',', ':') and ensure_ascii=False, followed by a newline; the lines are sorted (by code point, which UTF-8 byte order keeps), joined, encoded as UTF-8 and hashed uncompressed. With pairs_sha256 it lets a recipe dataset ship no key list at all: dfwb protocols materialize rebuilds the lists from a local inventory and checks them against these hashes.",
           "title": "Videos Sha256"
         }
       },

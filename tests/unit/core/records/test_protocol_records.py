@@ -1,5 +1,7 @@
+import dataclasses
 import gzip
 import hashlib
+import json
 
 import pytest
 import yaml
@@ -287,3 +289,30 @@ def test_cards_round_trip_through_yaml(model, document):
     card = model.model_validate(yaml.safe_load(document))
     dumped = yaml.safe_dump(card.model_dump(mode="json", by_alias=True), sort_keys=False)
     assert model.model_validate(yaml.safe_load(dumped)) == card
+
+
+def test_the_schema_says_exactly_how_the_list_hashes_are_taken():
+    videos = DatasetCard.model_fields["videos_sha256"].description or ""
+    pairs = DatasetCard.model_fields["pairs_sha256"].description or ""
+
+    for part in (
+        "sort_keys=True",
+        "separators=(',', ':')",
+        "ensure_ascii=False",
+        "followed by a newline",
+        "UTF-8",
+        "sorted",
+        "uncompressed",
+    ):
+        assert part in videos
+    assert "duplicate pairs removed" in pairs
+    assert hashlib.sha256(b"").hexdigest() in pairs
+
+    # The recipe in the description is the hash itself.
+    line = (
+        json.dumps(
+            dataclasses.asdict(VIDEOS[0]), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        + "\n"
+    )
+    assert records_sha256(VIDEOS[:1]) == hashlib.sha256(line.encode("utf-8")).hexdigest()
