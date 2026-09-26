@@ -83,6 +83,10 @@ records the outcome of a terms review as its `distribution`:
 - **undecided**: the terms have not been reviewed yet. A released pack leaves such a dataset out
   and lists it under `withheld` in its `pack.yaml`.
 
+`dfwb protocols list` and `dfwb datasets info DATASET` show each dataset's distribution, and for
+a recipe whose pack ships no key list, whether it is materialised here (`recipe: materialised` or
+`recipe: not materialised`).
+
 For a recipe dataset you rebuild the lists yourself, from your own copy of the dataset:
 
 ```bash
@@ -168,9 +172,9 @@ exception:
 | Code | Meaning | Where it shows up here |
 |------|---------|-------------------------|
 | 0 | Success | Full coverage on `verify`; no error-level issues on `lint`; a matching hash on `materialize`. |
-| 2 | Usage or configuration problem | An invalid protocol reference; `--split` names a split the scheme does not have; no local inventory to verify against. |
+| 2 | Usage or configuration problem | An invalid protocol reference; `--split` names a split the scheme does not have; no local inventory to verify against or to materialise from; a materialised folder that cannot be written. |
 | 3 | Partial coverage | `verify`: at least one requested split is missing a video. |
-| 4 | Contract or data mismatch | `verify`: a video's label or method disagrees with the pack; `lint`: at least one error-level issue; `materialize`: a rebuilt list does not hash to its published value; `diff --expect-bump`: the bump claimed is smaller than what the differences between the two packs require (an unchanged pack requires none). |
+| 4 | Contract or data mismatch | `verify`: a video's label or method disagrees with the pack; `lint`: at least one error-level issue; `materialize`: a rebuilt list does not hash to its published value; any command that loads a recipe dataset's protocol before it is materialised here, or after an upgraded pack changed its hashes or added the scheme (the hint names the `materialize` command to run); `diff --expect-bump`: the bump claimed is smaller than what the differences between the two packs require (an unchanged pack requires none). |
 | 5 | A needed optional dependency is missing | Commands that need the `preprocess` extra for media probing (e.g. `dfwb inventory build --probe`) when it is not installed. |
 
 Every error prints an `error:` line describing what went wrong and a `hint:` line describing the

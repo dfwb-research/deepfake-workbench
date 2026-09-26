@@ -33,7 +33,7 @@ from dfwb.protocols.materialization import (
     materialize_dataset,
     ships_key_lists,
 )
-from dfwb.protocols.protocol import load
+from dfwb.protocols.protocol import list_protocols, load
 
 _SCHEMES = ("all-test", "benchmark", "ident-72-14-14", "official")
 _KEY_LISTS = ("videos.jsonl.gz", "pairs.jsonl.gz", *(f"splits/{s}.tsv.gz" for s in _SCHEMES))
@@ -583,3 +583,28 @@ def test_a_scheme_added_since_materialising_asks_to_materialise_again(recipe):
     assert info.value.hint == "run again: dfwb protocols materialize packdemo"
     # The schemes materialised then are still served.
     assert load("packdemo/all-test", work_root=recipe["work"]).scheme == "all-test"
+
+
+def _state(work_root: Path) -> dict[str, tuple[str, bool | None]]:
+    return {
+        info.scheme: (info.distribution, info.materialized)
+        for info in list_protocols(work_root=work_root)
+        if info.dataset_id == "packdemo"
+    }
+
+
+def test_the_protocol_list_says_which_recipe_schemes_are_materialised_here(recipe):
+    assert set(_state(recipe["work"]).values()) == {("recipe", False)}
+
+    _materialize(recipe)
+    assert set(_state(recipe["work"]).values()) == {("recipe", True)}
+
+    card = yaml.safe_load((recipe["dataset"] / "dataset.yaml").read_text("utf-8"))
+    card["schemes"]["all-test-again"] = card["schemes"]["all-test"]
+    _set_card(recipe["dataset"], schemes=card["schemes"])
+    state = _state(recipe["work"])
+    assert state.pop("all-test-again") == ("recipe", False)
+    assert set(state.values()) == {("recipe", True)}
+
+    _set_card(recipe["dataset"], videos_sha256="0" * 64)  # an upgrade relabelled a video
+    assert set(_state(recipe["work"]).values()) == {("recipe", False)}

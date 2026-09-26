@@ -37,7 +37,14 @@ from dfwb.protocols._yaml import read_card, read_labels
 from dfwb.protocols.packs import Pack, find_dataset, installed_packs
 from dfwb.protocols.refs import ProtocolRef, parse_ref
 
-__all__ = ["LabelMapping", "Protocol", "ProtocolInfo", "list_protocols", "load"]
+__all__ = [
+    "LabelMapping",
+    "Protocol",
+    "ProtocolInfo",
+    "list_protocols",
+    "load",
+    "materialized_schemes",
+]
 
 # Plain VideoRecord fields the ``where`` filter may query, plus the derived "task" key (the key
 # prefix before the first "/"). ``attrs.<name>`` is handled separately (its vocabulary is per
@@ -95,7 +102,13 @@ class LabelMapping:
 
 @dataclass(frozen=True)
 class ProtocolInfo:
-    """One row of :func:`list_protocols`: a scheme of a dataset, or a broken pack."""
+    """One row of :func:`list_protocols`: a scheme of a dataset, or a broken pack.
+
+    ``distribution`` is the dataset card's (``list``, ``recipe`` or ``undecided``; empty for a
+    broken row). ``materialized`` is ``None`` when the pack ships the dataset's key lists, and
+    otherwise whether this scheme is materialised under the work root, against the card's
+    current hashes.
+    """
 
     dataset_id: str
     scheme: str
@@ -105,6 +118,8 @@ class ProtocolInfo:
     default: bool
     counts: dict[str, int] | None
     broken: str | None
+    distribution: str = ""
+    materialized: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -486,13 +501,51 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
     )
 
 
-def list_protocols() -> list[ProtocolInfo]:
+def materialized_schemes(
+    dataset_dir: Path, dataset: str, card: DatasetCard, work_root: Path | None = None
+) -> frozenset[str] | None:
+    """The schemes of a dataset shipped without key lists that are materialised here.
+
+    ``None`` when the pack ships the dataset's key lists (``videos.jsonl.gz``), since nothing
+    needs materialising. Otherwise the schemes whose split sits under
+    ``<work_root>/<dataset>/materialized/`` with the card's current hashes, as ``hashes.json``
+    records them: none when nothing is materialised, the copy predates the card's lists, or no
+    work root is set (``work_root`` defaults to the resolved ``work`` root). No split file is
+    read.
+    """
+    if (dataset_dir / "videos.jsonl.gz").is_file():
+        return None
+    if work_root is None:
+        try:
+            work_root = require_root("work", resolve_roots())
+        except ConfigError:
+            return frozenset()
+    materialized = materialized_dir(work_root, dataset)
+    recorded = _read_hashes(materialized / HASHES_FILE)
+    if recorded is None or not (materialized / "videos.jsonl.gz").is_file():
+        return frozenset()
+    if any(recorded.get(name) != getattr(card, name) for name in ("videos_sha256", "pairs_sha256")):
+        return frozenset()
+    schemes = recorded.get("schemes")
+    if not isinstance(schemes, dict):
+        return frozenset()
+    return frozenset(
+        name
+        for name, scheme in card.schemes.items()
+        if schemes.get(name) == scheme.sha256
+        and (materialized / "splits" / f"{name}.tsv.gz").is_file()
+    )
+
+
+def list_protocols(*, work_root: Path | None = None) -> list[ProtocolInfo]:
     """One row per scheme per dataset per healthy pack, plus one row per broken pack or dataset.
 
     ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read. A pack
     that cannot be read gives one row with an empty ``dataset_id``; a dataset whose card cannot
     be read gives one row with its ``dataset_id`` and an empty ``scheme``. Either way ``broken``
-    holds the reason, and every other pack and dataset is still listed.
+    holds the reason, and every other pack and dataset is still listed. Each row also carries the
+    card's ``distribution`` and, for a dataset the pack ships without key lists, whether the
+    scheme is materialised under ``work_root`` (see :func:`materialized_schemes`).
     """
     rows: list[ProtocolInfo] = []
     for pack in installed_packs():
@@ -510,6 +563,7 @@ def list_protocols() -> list[ProtocolInfo]:
                     )
                 )
                 continue
+            here = materialized_schemes(pack.dataset_dir(dataset_id), dataset_id, card, work_root)
             for scheme_name, scheme_card in card.schemes.items():
                 rows.append(
                     ProtocolInfo(
@@ -523,6 +577,8 @@ def list_protocols() -> list[ProtocolInfo]:
                         if scheme_card.counts
                         else None,
                         broken=None,
+                        distribution=card.distribution,
+                        materialized=None if here is None else scheme_name in here,
                     )
                 )
     return sorted(rows, key=lambda r: (r.dataset_id, r.scheme, r.pack, r.broken or ""))

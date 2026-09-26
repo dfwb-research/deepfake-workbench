@@ -40,6 +40,9 @@ All notable changes to this project are documented here. The format follows
   dataset ships. `dfwb.core.records.records_sha256` computes the hashes: the sha256 of a list's
   JSONL lines, sorted. dfwb 0.1.0b2 and earlier reject a card with fields they do not know, so a
   protocol pack whose cards carry these needs a dfwb at least this new.
+- `dfwb protocols list` (a DISTRIBUTION column, and `distribution`/`materialized` in `--json`) and
+  `dfwb datasets info` show each dataset's distribution, and for a recipe shipped without its key
+  lists whether it is materialised here.
 - `local_attrs` on an inventory builder: the `attrs` that describe the local copy rather than the
   dataset. They stay in the inventory and are left out of every published record, so a pack's
   lists are the same whoever builds them.

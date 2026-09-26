@@ -113,6 +113,10 @@ def test_list_json(run, monkeypatch, tmp_path):
     _install_toyone(monkeypatch, tmp_path)
     data = json.loads(run("protocols", "list", "--json").out)
     rows = {(r["dataset_id"], r["scheme"]): r for r in data}
+    # toyone's card leaves its terms undecided, and its pack ships its lists.
+    assert rows[("toyone", "official")]["distribution"] == "undecided"
+    assert rows[("toyone", "official")]["materialized"] is None
+    assert "undecided" in run("protocols", "list").out
     assert rows[("toyone", "official")]["default"] is True
     assert rows[("toyone", "official")]["pack"] == "toyone-pack"
     assert rows[("toyone", "official")]["counts"] == {"train": 6, "val": 4, "test": 4}
@@ -918,10 +922,22 @@ def test_a_key_free_recipe_lints_materializes_and_loads_from_the_cli(run, monkey
     linted = run("protocols", "lint", str(paths["pack"]), "--release")
     assert linted.code == 0, linted.out
 
-    # Nothing materialized yet: the error names the command to run.
+    # Nothing materialized yet: the list says so, and loading names the command to run.
+    listed = run("protocols", "list")
+    assert "recipe: not materialised" in listed.out
+    rows = json.loads(run("protocols", "list", "--json").out)
+    assert {
+        (r["distribution"], r["materialized"]) for r in rows if r["dataset_id"] == "packdemo"
+    } == {("recipe", False)}
+    shown = json.loads(run("datasets", "info", "packdemo", "--json").out)
+    assert {(r["distribution"], r["materialized"]) for r in shown["schemes"]} == {("recipe", False)}
+    assert "recipe: not materialised" in run("datasets", "info", "packdemo").out
     before = run("protocols", "info", "packdemo/official")
-    assert before.code == 4
+    assert before.code == 4  # a recipe not materialised here
     assert "hint: run: dfwb protocols materialize packdemo\n" in before.err
+    no_inventory = run("protocols", "materialize", "packdemo", "--inventory", str(tmp_path / "x"))
+    assert no_inventory.code == 2  # nothing to materialise from
+    assert "hint: run: dfwb inventory build packdemo" in no_inventory.err
 
     result = run("protocols", "materialize", "packdemo/official", "--json")
     assert result.code == 0, result.err
@@ -943,6 +959,13 @@ def test_a_key_free_recipe_lints_materializes_and_loads_from_the_cli(run, monkey
     ]
 
     assert run("protocols", "info", "packdemo/benchmark").code == 0
+    rows = json.loads(run("protocols", "list", "--json").out)
+    assert {
+        (r["distribution"], r["materialized"]) for r in rows if r["dataset_id"] == "packdemo"
+    } == {("recipe", True)}
+    assert "recipe: materialised" in run("protocols", "list").out
+    shown = json.loads(run("datasets", "info", "packdemo", "--json").out)
+    assert {(r["distribution"], r["materialized"]) for r in shown["schemes"]} == {("recipe", True)}
     verified = run("protocols", "verify", "packdemo/official", "--json")
     assert verified.code == 0, verified.err
     assert json.loads(verified.out)["counts"]["have"] == 30

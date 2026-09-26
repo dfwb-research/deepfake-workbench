@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from dfwb.cli._output import emit_json, hint_line, json_option, table
+from dfwb.cli._output import distribution_text, emit_json, hint_line, json_option, table
 
 
 @click.group()
@@ -26,13 +26,19 @@ def _info_row(info: Any) -> dict[str, Any]:
         "default": info.default,
         "counts": info.counts,
         "broken": info.broken,
+        "distribution": info.distribution,
+        "materialized": info.materialized,
     }
 
 
 @protocols.command("list")
 @json_option
 def list_(as_json: bool) -> None:
-    """List every scheme of every dataset in every installed pack (``*`` marks the default)."""
+    """List every scheme of every dataset in every installed pack (``*`` marks the default).
+
+    DISTRIBUTION is the dataset's: list, undecided, or recipe, and for a recipe shipped without
+    its key lists whether it is materialised here (dfwb protocols materialize DATASET).
+    """
     from dfwb.protocols.protocol import list_protocols
 
     rows = list_protocols()
@@ -42,16 +48,17 @@ def list_(as_json: bool) -> None:
 
     healthy = [r for r in rows if r.broken is None]
     broken = [r for r in rows if r.broken is not None]
-    headers = ["PROTOCOL", "PACK", "VERSION", "KIND", "TRAIN", "VAL", "TEST"]
+    headers = ["PROTOCOL", "PACK", "VERSION", "KIND", "DISTRIBUTION", "TRAIN", "VAL", "TEST"]
     table_rows = []
     for r in healthy:
         name = f"{r.dataset_id}/{r.scheme}" + ("*" if r.default else "")
         counts = r.counts or {}
         train, val, test = (counts.get(s, "-") for s in ("train", "val", "test"))
-        table_rows.append([name, r.pack, r.version, r.kind, train, val, test])
+        distribution = distribution_text(r.distribution, r.materialized)
+        table_rows.append([name, r.pack, r.version, r.kind, distribution, train, val, test])
     for r in broken:
         name = r.dataset_id or f"({r.pack})"
-        table_rows.append([name, r.pack, r.version or "-", "BROKEN", "-", "-", "-"])
+        table_rows.append([name, r.pack, r.version or "-", "BROKEN", "-", "-", "-", "-"])
     if table_rows:
         click.echo(table(headers, table_rows))
     else:
