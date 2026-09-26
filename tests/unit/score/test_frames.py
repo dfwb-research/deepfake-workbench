@@ -16,6 +16,7 @@ from tests.unit.score._toy import (
     write_toy_store,
 )
 
+from dfwb.core.records.scores import read_scores
 from dfwb.score.harness import _frame_records, score
 from dfwb.score.writer import frames_path_for
 
@@ -225,3 +226,54 @@ def test_frames_false_after_a_frames_run_unlinks_the_stale_frames_file(score_roo
     assert without_frames.csv_path == with_frames.csv_path
     assert without_frames.frames_path is None
     assert not frames_path_for(without_frames.csv_path).is_file()
+
+
+# ------------------------------------------------------------------ validating frame_scores
+
+
+@pytest.mark.parametrize("bad", ["frames-shape", "frames-nan", "frames-range"])
+def test_bad_frame_scores_mark_their_videos_error_and_scoring_continues(score_roots, tmp_path, bad):
+    """``frame_scores`` is checked like ``score``: ``[B, T]``, finite, in ``[0, 1]``. A batch
+    that fails marks its own videos ``error``; it never aborts the run."""
+    pytest.importorskip("pyarrow")
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, f"fake:bad={bad}&frames=2", batch_size=4, frames=True)
+
+    scored = read_scores(result.csv_path)
+    assert {row.status for row in scored.rows} == {"error"}
+    assert result.coverage == {"expected": 8, "ok": 0, "missing": 0, "error": 8}
+    assert result.frames_path is None
+
+
+def test_bad_frame_scores_do_not_matter_without_frames(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=frames-nan&frames=2", batch_size=4)
+
+    assert result.coverage["ok"] == 8
+
+
+def test_valid_frame_scores_reach_the_parquet_file(score_roots, tmp_path):
+    pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pq
+
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, "fake:bad=frames-ok&frames=2", clips_per_video=1, frames=True)
+
+    assert result.coverage["ok"] == 8
+    frame_scores = sorted(
+        {round(r["frame_score"], 4) for r in pq.read_table(result.frames_path).to_pylist()}
+    )
+    assert frame_scores == [0.1, 0.9]
+
+
+def test_frame_records_refuses_frame_scores_that_are_not_a_tensor():
+    from types import SimpleNamespace
+
+    batch = _batch([0], [[0, 1]])
+    output = SimpleNamespace(frame_scores=[[0.1, 0.2]])
+
+    with pytest.raises(ValueError, match="not a Tensor"):
+        _frame_records(batch, [("d", "k", None)], [0.5], output)

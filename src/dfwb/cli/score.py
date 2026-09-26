@@ -3,6 +3,7 @@ score files, reusing a cached file unless ``--force``."""
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -123,6 +124,13 @@ def _row(entry: _Entry, result: ScoreResult) -> dict[str, Any]:
     is_flag=True,
     help="Also write per-clip/per-frame scores (needs the [eval] extra: pyarrow).",
 )
+@click.option(
+    "--min-coverage",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.99,
+    show_default=True,
+    help="Exit 3 (after writing and reporting every file) when a file's ok fraction is lower.",
+)
 @json_option
 def score(
     detector_uri: str,
@@ -142,19 +150,29 @@ def score(
     force: bool,
     seed: int,
     frames: bool,
+    min_coverage: float,
     as_json: bool,
 ) -> None:
     """Score a protocol split, or every entry of a suite, with --detector.
 
     Writes one C5 score file per entry (contract C5), reusing a cached file that already matches
-    this request's configuration unless --force is given.
+    this request's configuration unless --force is given. Exits 3 when any file's coverage (its
+    ok fraction) is below --min-coverage; every file is still written and reported first.
     """
     where = parse_where(where_pairs)
     entries = _entries(protocol_ref, split, where, suite_name)
 
+    from dfwb.core.paths import resolve_roots
+    from dfwb.core.runmeta import sanitize_command
+    from dfwb.score.harness import check_options
     from dfwb.score.harness import score as run_score
+    from dfwb.score.sources import resolve_detector
 
+    command = sanitize_command(sys.argv, resolve_roots())
     shipped = _shipped_profiles()
+    # Refuse a bad option before the detector is resolved, then resolve it once for every entry.
+    check_options(precision=precision, aggregate=aggregate, device=device, frames=frames)
+    detector = resolve_detector(detector_uri, seed=seed)
     rows: list[dict[str, Any]] = []
     for entry in entries:
         result = run_score(
@@ -175,9 +193,16 @@ def score(
             seed=seed,
             frames=frames,
             shipped_profiles=shipped,
+            command=command,
+            detector=detector,
         )
         rows.append(_row(entry, result))
 
+    _report(rows, as_json=as_json)
+    _check_coverage(rows, min_coverage)
+
+
+def _report(rows: list[dict[str, Any]], *, as_json: bool) -> None:
     if as_json:
         emit_json({"results": rows})
         return
@@ -195,3 +220,28 @@ def score(
         for r in rows
     ]
     click.echo(table(headers, data))
+
+
+def _fraction(coverage: dict[str, int]) -> float:
+    """``ok / expected``; ``1.0`` for an empty file (nothing was expected, nothing is missing)."""
+    return coverage["ok"] / coverage["expected"] if coverage["expected"] else 1.0
+
+
+def _check_coverage(rows: list[dict[str, Any]], min_coverage: float) -> None:
+    low = [row for row in rows if _fraction(row["coverage"]) < min_coverage]
+    if not low:
+        return
+    from dfwb.core.errors import CoverageError
+
+    detail = "; ".join(
+        f"{row['csv']}: {_fraction(row['coverage']):.4f} "
+        f"(ok={row['coverage']['ok']}/{row['coverage']['expected']}, "
+        f"missing={row['coverage']['missing']}, error={row['coverage']['error']})"
+        for row in low
+    )
+    raise CoverageError(
+        f"coverage below --min-coverage {min_coverage}: {detail}",
+        hint="missing rows are videos with no processed clip (run `dfwb preprocess` for them, "
+        "then score again); error rows are batches the detector failed on (the log says why, "
+        "and scoring again retries them); or pass a lower --min-coverage",
+    )

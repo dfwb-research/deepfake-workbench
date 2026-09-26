@@ -79,7 +79,16 @@ a cached file for that detector: every scoring run recomputes, logged when it ha
 `fingerprint_extra`, `cacheable`) a source may set on the detector it returns.
 
 A factory that raises, or returns something missing `meta`, `predict` or `to`, is reported by name
-rather than as a bare traceback — try, for instance, a factory that returns `None`.
+rather than as a bare traceback — try, for instance, a factory that returns `None`. A factory that
+leaves `meta.source` as `None` has it set to `py:<module>:<factory>`, so the score file still says
+which code produced it.
+
+Before scoring, `dfwb score` calls `eval()` on any detector that has one — a torch module
+returned in training mode would otherwise score with dropout active and batch norm updating its
+statistics — and runs `predict()` under `torch.inference_mode()`. A detector that also returns
+`frame_scores` has them checked like its clip scores (`[B, T]`, finite, in `[0, 1]`) when
+`--frames` asks for them; a batch that fails either check marks its videos `error` and scoring
+continues.
 
 ## The full way: an adapter card
 
@@ -117,10 +126,11 @@ reported:
   - {protocol: ffpp/official, split: test, metric: auc, value: 0.97, source: "paper, Table 2"}
 ```
 
-- **`code_strategy`** says how the adapter's upstream model code is obtained:
+- **`code_strategy`** (required; there is no default) says how the adapter's upstream model code
+  is obtained:
   - **`pip`** — the card's `install.extra` pins the upstream package (`pip install
-    "deepfake-workbench[<extra>]"`), and the adapter imports it normally. This is the default, and
-    what both dummy adapters use (with no real upstream package to install).
+    "deepfake-workbench[<extra>]"`), and the adapter imports it normally. Both dummy adapters use
+    it (with no real upstream package to install).
   - **`vendored`** — upstream code under an MIT/BSD/Apache-compatible licence, small enough to
     copy verbatim into `dfwb/zoo/_vendor/<name>/`, alongside its own `LICENSE`, a `NOTICE`
     (upstream repo, commit, files, any modifications) and a `HASHES.sha256` list proving the copy

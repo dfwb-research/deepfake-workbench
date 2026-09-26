@@ -30,13 +30,18 @@ dfwb score --detector "run:runs/toy-cpu/latest#best" --suite toyfake
 
 Either form writes one C5 file per suite entry, each named and cached exactly as a single
 `--protocol`/`--split` score would be (`docs/concepts/score-files.md`), and prints where each one
-landed:
+landed. The detector is resolved once and reused for every entry:
 
 ```
 protocol                 split  group      csv                                     coverage   cached  frames
 toyfake/official          test  in-domain  runs/scores/random/.../test-....scores.csv  ok=41/41   False
 toyfake/ident-72-14-14    test  cross      runs/scores/random/.../test-....scores.csv  ok=12/12   False
 ```
+
+`dfwb score` exits `3` when any file's coverage — the fraction of its rows that are `ok` — is
+below `--min-coverage` (default `0.99`, the same as `dfwb eval`), after every file is written and
+reported, with a hint on what the `missing` and `error` rows mean; it exits `0` only when every
+file's coverage is sufficient.
 
 ## Evaluating a suite: metrics, bootstrap CIs and the aggregate
 

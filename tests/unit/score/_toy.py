@@ -243,13 +243,20 @@ def write_toy_store(
 #: e.g. ``str(uuid.uuid4())``) rather than clearing these dicts.
 SPY_CALLS: dict[str, int] = {}
 SPY_INFERENCE_MODE: dict[str, list[bool]] = {}
+#: ``{spy_id: [training flag seen by each predict() call]}``, for a ``fake:spy=<id>`` detector
+#: that has an ``eval()`` method (``eval=1``): whether the harness put it in inference mode first.
+SPY_TRAINING: dict[str, list[bool]] = {}
+#: ``{spy_id: how many times the fake: source built a detector}``.
+SPY_LOADS: dict[str, int] = {}
 
 
 class FakeDetector:
     """An in-memory C4 detector: scores a clip by its mean pixel value (already in ``[0, 1]``
     once adapted), and can be told to raise for a chosen set of video keys, or to return a bad
     output (``bad_output``: ``"nan"``, ``"length"`` or ``"shape"``) to exercise the harness's own
-    output validation.
+    output validation. ``bad_output`` values starting ``frames-`` keep a valid clip score and set
+    ``frame_scores`` instead: ``frames-ok`` (valid, ``[B, T]``, a known ramp), ``frames-shape``
+    (``[B]``), ``frames-nan`` (non-finite) and ``frames-range`` (above 1).
 
     ``scripted``, when given, replaces the pixel-mean score with a fixed, known-in-advance score
     per clip: clip ``i`` of every video gets ``scripted[i % len(scripted)]``, read off
@@ -271,6 +278,7 @@ class FakeDetector:
         bad_output: str | None = None,
         spy_id: str | None = None,
         scripted: tuple[float, ...] | None = None,
+        has_eval: bool = False,
     ) -> None:
         self.meta = DetectorMeta(
             name="fake-detector",
@@ -287,6 +295,13 @@ class FakeDetector:
         self._spy_id = spy_id
         self._scripted = scripted
         self.saw_inference_mode: list[bool] = []
+        self.training = True  # like a freshly built torch module, until eval() is called
+        if has_eval:
+            self.eval = self._eval  # an instance attribute: only some fake detectors have one
+
+    def _eval(self) -> FakeDetector:
+        self.training = False
+        return self
 
     def to(self, device: Any) -> FakeDetector:
         return self
@@ -301,6 +316,7 @@ class FakeDetector:
             SPY_INFERENCE_MODE.setdefault(self._spy_id, []).append(
                 torch.is_inference_mode_enabled()
             )
+            SPY_TRAINING.setdefault(self._spy_id, []).append(self.training)
         if self._raise_for.intersection(batch.keys):
             raise RuntimeError("fake detector: configured to fail on this batch")
         n = len(batch.keys)
@@ -323,7 +339,22 @@ class FakeDetector:
             score = mean + 1.5  # pushes every value past 1.0
         else:
             score = mean
+        if self._bad_output is not None and self._bad_output.startswith("frames-"):
+            return DetectorOutput(score=mean, frame_scores=self._frame_scores(batch))
         return DetectorOutput(score=score)
+
+    def _frame_scores(self, batch: Any) -> Any:
+        import torch
+
+        n, t = batch.clips.shape[0], batch.clips.shape[1]
+        ramp = torch.linspace(0.1, 0.9, t).repeat(n, 1)  # [B, T], every value in [0, 1]
+        if self._bad_output == "frames-shape":
+            return ramp[:, 0]  # [B], not [B, T]
+        if self._bad_output == "frames-nan":
+            return torch.full((n, t), float("nan"))
+        if self._bad_output == "frames-range":
+            return ramp + 1.0
+        return ramp
 
 
 def load_fake(ref: str) -> FakeDetector:
@@ -332,8 +363,9 @@ def load_fake(ref: str) -> FakeDetector:
     (default ``32``), ``frames`` (``InputSpec.frames``, default ``1``), ``preferred``
     (``InputSpec.preferred_profile``), ``raise`` (a comma-separated list of video keys
     :meth:`FakeDetector.predict` raises for), ``bad`` (see ``bad_output`` above), ``spy`` (see
-    :data:`SPY_CALLS` above) and ``scripted`` (a comma-separated list of floats, see
-    :attr:`FakeDetector._scripted` above)."""
+    :data:`SPY_CALLS` above; also counts loads in :data:`SPY_LOADS`), ``scripted`` (a
+    comma-separated list of floats, see :attr:`FakeDetector._scripted` above) and ``eval``
+    (``1`` gives the detector an ``eval()`` method, see :data:`SPY_TRAINING`)."""
     options: dict[str, str] = {}
     for part in ref.split("&"):
         if not part:
@@ -356,12 +388,16 @@ def load_fake(ref: str) -> FakeDetector:
         frames=frames,
         preferred_profile=preferred,
     )
+    spy_id = options.get("spy")
+    if spy_id is not None:
+        SPY_LOADS[spy_id] = SPY_LOADS.get(spy_id, 0) + 1
     return FakeDetector(
         spec,
         raise_for=raise_for,
         bad_output=options.get("bad"),
-        spy_id=options.get("spy"),
+        spy_id=spy_id,
         scripted=scripted,
+        has_eval=options.get("eval") == "1",
     )
 
 

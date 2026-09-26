@@ -777,3 +777,24 @@ def test_a_pack_label_release_is_rescored(score_roots, scoretoy_pack, tmp_path):
     assert second.cached is False
     assert second.csv_path != first.csv_path
     assert read_scores(second.csv_path).meta.protocol.pack_version == "1.0.1"
+
+
+def test_the_command_it_is_given_reaches_the_meta(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path, command="dfwb score --detector fake: --split test")
+
+    assert read_scores(result.csv_path).meta.command == "dfwb score --detector fake: --split test"
+
+
+def test_a_detector_with_eval_is_put_in_inference_mode_before_scoring(score_roots, tmp_path):
+    """A ``py:`` factory may return a torch module in training mode (dropout on, batch norm
+    updating its statistics); the harness calls ``eval()`` on any detector that has one."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+
+    _score(tmp_path, f"fake:eval=1&spy={spy_id}")
+
+    seen = _toy.SPY_TRAINING[spy_id]
+    assert seen
+    assert not any(seen)

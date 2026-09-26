@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from dfwb.core.records.local import ProcessingProfile
     from dfwb.data.adapt import AdaptResult
 
-__all__ = ["ScoreResult", "score"]
+__all__ = ["ScoreResult", "check_options", "score"]
 
 _log = logging.getLogger(__name__)
 
@@ -245,17 +245,52 @@ def _validated_scores(output: Any, batch_size: int) -> Tensor:
     return score
 
 
+def _validated_frame_scores(output: Any, batch: Any) -> list[list[float]] | None:
+    """``output.frame_scores`` as plain per-clip lists, checked against what C4 promises: a
+    tensor of shape ``[B, T]`` (one per frame of each clip, the shape of ``batch.frame_indices``),
+    every value finite and in ``[0, 1]``. ``None`` when the detector set none.
+
+    Raises:
+        ValueError: ``frame_scores`` is not a tensor, has another shape, or holds a non-finite
+            value or one outside ``[0, 1]``.
+    """
+    import torch
+
+    frame_scores = getattr(output, "frame_scores", None)
+    if frame_scores is None:
+        return None
+    if not isinstance(frame_scores, torch.Tensor):
+        raise ValueError(
+            f"predict() returned frame_scores of type {type(frame_scores).__name__}, not a Tensor"
+        )
+    expected = tuple(batch.frame_indices.shape)
+    if tuple(frame_scores.shape) != expected:
+        raise ValueError(
+            f"predict() returned frame_scores of shape {tuple(frame_scores.shape)}, "
+            f"expected {expected}"
+        )
+    values = frame_scores.detach().float().cpu()
+    if not bool(torch.isfinite(values).all()):
+        raise ValueError("predict() returned a non-finite frame score")
+    if bool((values < 0.0).any()) or bool((values > 1.0).any()):
+        raise ValueError("predict() returned a frame score outside [0, 1]")
+    per_clip: list[list[float]] = values.tolist()
+    return per_clip
+
+
 def _frame_records(
     batch: Any, keys: Sequence[VideoKey], scores: Sequence[float], output: Any
 ) -> list[FrameRecord]:
     """One :class:`~dfwb.score.writer.FrameRecord` per clip per frame of a successfully scored
-    batch. ``output.frame_scores`` (``[B, T]``) is used when the detector set it; a detector that
-    scores a clip as a whole (``frame_scores`` left ``None``) has its clip score repeated across
-    the clip's own frames instead, so every clip still contributes a row per frame it drew on."""
-    frame_scores = getattr(output, "frame_scores", None)
-    per_clip_frame_scores = (
-        frame_scores.detach().float().cpu().tolist() if frame_scores is not None else None
-    )
+    batch. ``output.frame_scores`` (``[B, T]``, checked by :func:`_validated_frame_scores`) is
+    used when the detector set it; a detector that scores a clip as a whole (``frame_scores``
+    left ``None``) has its clip score repeated across the clip's own frames instead, so every
+    clip still contributes a row per frame it drew on.
+
+    Raises:
+        ValueError: ``output.frame_scores`` fails validation.
+    """
+    per_clip_frame_scores = _validated_frame_scores(output, batch)
     records: list[FrameRecord] = []
     for i, key in enumerate(keys):
         dataset, video_key, compression = key
@@ -295,10 +330,14 @@ def _score_videos(
     Returns ``(clip_scores, errored, frame_records)``: ``clip_scores`` maps a video key to its
     clip scores (``ok``); ``errored`` maps a video key to why its batch failed; ``frame_records``
     is every scored clip's per-frame record (see :func:`_frame_records`), collected only when
-    ``collect_frames`` is true. A video's clips never split across two batches
+    ``collect_frames`` is true -- and then built inside the same per-batch guard as the clip
+    scores, so a batch whose ``frame_scores`` fail validation marks its videos ``error`` rather
+    than aborting the run. A video's clips never split across two batches
     (:class:`~dfwb.data.samplers.VideoGrouped`), so a key lands in exactly one of the two.
     ``batch.labels`` is cleared before ``predict()``: contract C4 gives labels to training and
-    validation batches only, never a scoring one.
+    validation batches only, never a scoring one. A detector with an ``eval()`` method (a torch
+    module, typically) is switched to inference behaviour first -- no dropout, batch norm using
+    its stored statistics -- whatever state its source left it in.
     """
     import torch
     from torch.utils.data import DataLoader
@@ -308,6 +347,9 @@ def _score_videos(
 
     torch_device = torch.device(device)
     detector = detector.to(torch_device)
+    set_eval = getattr(detector, "eval", None)
+    if callable(set_eval):
+        set_eval()
     loader: DataLoader[Any] = DataLoader(
         dataset,
         batch_sampler=VideoGrouped(dataset, batch_size),
@@ -336,6 +378,7 @@ def _score_videos(
                     output = detector.predict(batch)
                 validated = _validated_scores(output, len(keys))
             scores = validated.detach().float().cpu().tolist()
+            records = _frame_records(batch, keys, scores, output) if collect_frames else []
         except Exception as exc:  # a detector may fail for any reason; scoring continues
             reason = f"{type(exc).__name__}: {exc}"
             unique = sorted(set(keys))
@@ -345,8 +388,7 @@ def _score_videos(
             continue
         for key, value in zip(keys, scores, strict=True):
             clip_scores.setdefault(key, []).append(float(value))
-        if collect_frames:
-            frame_records.extend(_frame_records(batch, keys, scores, output))
+        frame_records.extend(records)
     return clip_scores, errored, frame_records
 
 
@@ -439,6 +481,28 @@ def _missing_rows(
 # -------------------------------------------------------------------------------------------- API
 
 
+def check_options(*, precision: str | None, aggregate: str, device: str, frames: bool) -> str:
+    """Check the options of a scoring request before any work -- resolving the detector, reading
+    the store -- and return ``device`` normalised to what :func:`torch.device` accepts.
+    :func:`score` calls this itself; a caller that resolves the detector once for several
+    requests (``dfwb score --suite``) calls it first, so a bad option is still refused before
+    that.
+
+    Raises:
+        ConfigError: ``precision``/``aggregate`` is not one of the accepted values, or ``device``
+            names no known scheme or asks for CUDA when none is available.
+        InstallationError: ``frames`` is true and pyarrow (the ``[eval]`` extra) is not
+            installed.
+    """
+    if precision is not None:
+        _check_choice(precision, _PRECISIONS, name="precision")
+    _check_choice(aggregate, _AGGREGATE_MODES, name="aggregate")
+    normalized = _normalize_device(device)
+    if frames:
+        require_pyarrow()
+    return normalized
+
+
 def score(
     detector_uri: str,
     *,
@@ -458,6 +522,8 @@ def score(
     seed: int = 0,
     frames: bool = False,
     shipped_profiles: Sequence[ProcessingProfile] = (),
+    command: str | None = None,
+    detector: Any = None,
 ) -> ScoreResult:
     """Score every video of ``protocol``'s ``split`` with the detector named by ``detector_uri``.
 
@@ -479,6 +545,15 @@ def score(
     ``ContractError`` below also names the shipped profiles that would serve the detector once data
     is processed with one of them.
 
+    ``detector``, when given, is what ``resolve_detector(detector_uri, seed=seed)`` already
+    returned for this very URI and seed, and is used as it is instead of resolving it again: a
+    caller scoring several splits with one detector (``dfwb score --suite``) loads its checkpoint,
+    or hashes its weights, once rather than once per split.
+
+    ``command`` is the command line recorded in the C5 meta (``dfwb score`` passes its own,
+    sanitised by :func:`~dfwb.core.runmeta.sanitize_command`, so it names no absolute path); a
+    cache hit keeps the command of the run that wrote the file.
+
     Raises:
         ConfigError: ``precision``/``aggregate`` is not one of the values below, ``device`` names
             no known scheme or asks for CUDA when none is available, or no local processing
@@ -488,12 +563,7 @@ def score(
         InstallationError: ``frames=True`` and pyarrow (the ``[eval]`` extra) is not installed --
             checked before any clip is scored, not discovered afterwards.
     """
-    if precision is not None:
-        _check_choice(precision, _PRECISIONS, name="precision")
-    _check_choice(aggregate, _AGGREGATE_MODES, name="aggregate")
-    device = _normalize_device(device)
-    if frames:
-        require_pyarrow()
+    device = check_options(precision=precision, aggregate=aggregate, device=device, frames=frames)
     # Canonicalised once, here, and threaded through everything below that hashes, stores or
     # compares it (the cache key, the C5 meta a run is recorded under, a cache hit's own match
     # against that meta, and the split join) -- never canonicalised again at each of those points
@@ -505,7 +575,8 @@ def score(
     from dfwb.data.adapt import available_profiles
     from dfwb.data.dataset import ClipDataset
 
-    detector = resolve_detector(detector_uri, seed=seed)
+    if detector is None:
+        detector = resolve_detector(detector_uri, seed=seed)
     spec: InputSpec = detector.meta.input
     identity = DetectorIdentity.of(detector)
     effective_seed = identity.effective_seed(seed)
@@ -627,6 +698,7 @@ def score(
         device=device,
         precision=resolved_precision,
         store_index_sha256=store_sha256,
+        command=command,
     )
 
     target.parent.mkdir(parents=True, exist_ok=True)

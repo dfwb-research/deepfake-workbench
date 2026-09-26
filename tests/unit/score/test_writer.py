@@ -74,7 +74,7 @@ def test_every_c5_meta_field_is_present(scoretoy_pack, tmp_path):
     assert payload["env"]["store_index_sha256"] == "a" * 64
     git = payload["git"]  # null outside a git checkout is still valid C5
     assert git is None or (isinstance(git, dict) and set(git) == {"commit", "dirty"})
-    assert payload["command"] is None  # assemble_meta is never given one in this task
+    assert payload["command"] is None  # no command was passed
     assert payload["created"].endswith("Z") or "+" in payload["created"]
 
 

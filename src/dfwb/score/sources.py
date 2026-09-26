@@ -20,9 +20,10 @@ about one simply leaves it unset.
 
 ``py:<module>:<factory>`` (:func:`load_py`) imports the user's own module -- explicit user code,
 run with whatever trust anything else importable on this interpreter's path already has -- and
-calls the named factory, which must return a C4 ``Detector``. Because the factory's own
-``meta.source`` is not a reliable cache identity (it may be left ``None``, or never change across
-edits to the user's code), ``load_py`` instead sets ``fingerprint_extra`` to
+calls the named factory, which must return a C4 ``Detector``. A factory that leaves
+``meta.source`` unset gets ``py:<module>:<factory>`` there, so a score file always says which
+module and factory produced it. Because ``meta.source`` is still not a reliable cache identity
+(it never changes across edits to the user's code), ``load_py`` also sets ``fingerprint_extra`` to
 ``<module>:<factory>:<sha256 of the module's source file>``, so an edit to that file changes a
 detector's cache key even when its declared ``meta.source`` does not. When the module has no
 readable source file (a compiled extension, a namespace package, one that has since gone
@@ -35,6 +36,7 @@ already sitting at its (still stable, still reused) output path.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import inspect
 import logging
@@ -144,8 +146,10 @@ def load_py(ref: str) -> Detector:
     directly.
 
     Sets ``fingerprint_extra`` (and, when the module's source cannot be read, ``cacheable``) on
-    the returned detector (see the module docstring); never sets ``checkpoint_sha256`` (a module's
-    source sha is not a checkpoint sha) or ``training_seed``.
+    the returned detector (see the module docstring), and ``meta.source`` to
+    ``py:<module>:<factory>`` when the factory left it ``None`` (and ``meta`` is the contract's
+    frozen ``DetectorMeta`` dataclass, replaced with that one field changed); never sets
+    ``checkpoint_sha256`` (a module's source sha is not a checkpoint sha) or ``training_seed``.
 
     Raises:
         ConfigError: ``ref`` is not ``<module>:<factory>``, ``<module>`` cannot be imported, it has
@@ -182,6 +186,9 @@ def load_py(ref: str) -> Detector:
             hint=f"{ref_text} raised {type(exc).__name__}: {exc}",
         ) from exc
     _require_detector_contract(detector)
+    meta = detector.meta
+    if getattr(meta, "source", None) is None and dataclasses.is_dataclass(meta):
+        detector.meta = dataclasses.replace(meta, source=ref_text)
     # Duck-typed, like checkpoint_sha256 (see the module docstring): not part of contract C4, so
     # not on the Detector protocol itself -- set dynamically rather than fought past with mypy.
     fingerprint_extra, cacheable = _py_fingerprint(module_name, factory_name, module)

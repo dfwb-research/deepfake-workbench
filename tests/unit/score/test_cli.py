@@ -472,3 +472,135 @@ def test_score_suite_then_eval_suite_round_trips_with_list_filters(cli, score_ro
         "pair": 1,
         "in-domain": 1,
     }
+
+
+# ------------------------------------------------------------------------ the command in the meta
+
+
+def test_the_meta_records_the_command_without_absolute_paths(
+    cli, score_roots, tmp_path, monkeypatch
+):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    out = tmp_path / "elsewhere" / "scores"
+    argv = [
+        "/opt/venv/bin/dfwb",
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--where",
+        "identity=r00",
+        "--out",
+        str(out),
+        "--json",
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+
+    result = cli(*argv[1:])
+
+    assert result.code == 0, result.err
+    (row,) = json.loads(result.out)["results"]
+    command = read_scores(row["csv"]).meta.command
+    assert command.startswith("dfwb score --detector fake: --protocol ")
+    assert "--where identity=r00" in command
+    assert "'<abs>/scores'" in command
+    assert str(tmp_path) not in command
+
+
+# ------------------------------------------------------------------------------ --min-coverage
+
+
+def test_score_exits_3_when_coverage_is_below_min_coverage(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"), skip=["FAKE/f03", "REAL/r03"])
+
+    result = cli(
+        "score", "--detector", "fake:", "--protocol", PROTOCOL, "--split", "test", "--json"
+    )
+
+    assert result.code == 3
+    (row,) = json.loads(result.out)["results"]  # the results are still written and reported
+    assert row["coverage"] == {"expected": 8, "ok": 6, "missing": 2, "error": 0}
+    assert "0.7500" in result.err
+    assert "hint: " in result.err
+
+
+def test_score_min_coverage_can_be_lowered(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"), skip=["FAKE/f03", "REAL/r03"])
+
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--min-coverage",
+        "0.75",
+    )
+
+    assert result.code == 0
+    assert "ok=6/8" in result.out
+
+
+def test_score_exits_3_when_every_row_errored(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = cli("score", "--detector", "fake:bad=nan", "--protocol", PROTOCOL, "--split", "test")
+
+    assert result.code == 3
+    assert "ok=0/8" in result.out
+    assert "hint: " in result.err
+
+
+def test_score_an_empty_split_is_full_coverage(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--where",
+        "identity=nobody",
+    )
+
+    assert result.code == 0
+
+
+# ----------------------------------------------------------------------- --suite resolves once
+
+
+def test_suite_resolves_the_detector_once_for_every_entry(cli, score_roots):
+    import uuid
+
+    from tests.unit.score import _toy
+
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+
+    result = cli("score", "--detector", f"fake:spy={spy_id}", "--suite", SUITE, "--json")
+
+    assert result.code == 0
+    assert len(json.loads(result.out)["results"]) == 2
+    assert _toy.SPY_LOADS[spy_id] == 1
+
+
+def test_an_invalid_device_is_refused_before_the_detector_is_resolved(cli, score_roots):
+    import uuid
+
+    from tests.unit.score import _toy
+
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    spy_id = str(uuid.uuid4())
+
+    result = cli("score", "--detector", f"fake:spy={spy_id}", "--suite", SUITE, "--device", "tpu")
+
+    assert result.code == 2
+    assert spy_id not in _toy.SPY_LOADS

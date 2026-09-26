@@ -301,3 +301,38 @@ def test_an_unreadable_module_source_disables_caching(score_roots, tmp_path, mon
     assert third.cached is False
     assert third.csv_path == second.csv_path  # the stable "no readable source" path, every time
     assert third_mtime != second_mtime  # actually rewritten on disk, not silently left alone
+
+
+# ------------------------------------------------------------------------ py: and meta.source
+
+
+def test_a_py_detector_with_no_source_of_its_own_is_recorded_by_its_uri(
+    score_roots, tmp_path, monkeypatch
+):
+    """The factory above leaves ``meta.source`` unset; the score file must still say which module
+    and factory produced it, not ``unknown``."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    module_name = _write_module(tmp_path, monkeypatch, _VALID_FACTORY)
+
+    result = _score_via_py(tmp_path, module_name, "make_detector")
+
+    source = read_scores(result.csv_path).meta.detector.source
+    assert source == f"py:{module_name}:make_detector"
+
+
+def test_a_py_detectors_own_source_is_kept(tmp_path, monkeypatch):
+    body = _VALID_FACTORY.replace("source=None", 'source="https://example.org/mine@abc"')
+    module_name = _write_module(tmp_path, monkeypatch, body)
+
+    detector = resolve_detector(f"py:{module_name}:make_detector")
+
+    assert detector.meta.source == "https://example.org/mine@abc"
+
+
+def test_resolving_a_py_detector_sets_its_source_to_the_uri(tmp_path, monkeypatch):
+    module_name = _write_module(tmp_path, monkeypatch, _VALID_FACTORY)
+
+    detector = resolve_detector(f"py:{module_name}:make_detector")
+
+    assert detector.meta.source == f"py:{module_name}:make_detector"
+    assert detector.fingerprint_extra.startswith(f"{module_name}:make_detector:")
