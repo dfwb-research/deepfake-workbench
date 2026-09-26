@@ -218,3 +218,20 @@ def test_scaffolded_package_builds_and_ships_its_pack_yaml(tmp_path):
     with zipfile.ZipFile(wheels[0]) as archive:
         names = archive.namelist()
     assert any(name.endswith("my_pack/packs/pack.yaml") for name in names), names
+
+
+def test_the_readme_describes_list_and_recipe_datasets_and_the_dfwb_they_need(tmp_path):
+    directory = tmp_path / "my-pack"
+
+    new_pack(directory, name="my-pack")
+
+    readme = " ".join((directory / "README.md").read_text("utf-8").split())
+    assert "`distribution: list`" in readme
+    assert "`distribution: recipe`" in readme
+    assert "dfwb protocols materialize <dataset_id>" in readme
+    assert "dfwb protocols lint --release" in readme
+    assert "a dfwb that reads the recipe hash fields: 0.1.0b3 or later, once released" in readme
+    assert "its `pyproject.toml` pins no dfwb version" in readme
+    # The scaffold stays dependency-free; the requirement lives in the README instead.
+    pyproject = tomllib.loads((directory / "pyproject.toml").read_text("utf-8"))
+    assert pyproject["project"]["dependencies"] == []
