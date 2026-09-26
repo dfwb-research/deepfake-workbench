@@ -241,10 +241,10 @@ def _seed_table(
 
 
 def _suite_table(
-    suite_arg: Suite | str, files: Sequence[ScoreFile], points: list[dict[str, float]]
+    suite_arg: Suite | str, files: Sequence[ScoreFile], values: list[dict[str, float | None]]
 ) -> list[dict[str, Any]]:
     suite = load_suite(suite_arg) if isinstance(suite_arg, str) else suite_arg
-    entry_results: dict[int, dict[str, float]] = {}
+    entry_results: dict[int, dict[str, float | None]] = {}
     for entry_index, entry in enumerate(suite.entries):
         entry_where = _where_key(entry.where)
         for file_index, score_file in enumerate(files):
@@ -255,7 +255,7 @@ def _suite_table(
                 and meta.protocol.split == entry.split
                 and _where_key(meta.protocol.where) == entry_where
             ):
-                entry_results[entry_index] = points[file_index]
+                entry_results[entry_index] = values[file_index]
                 break
     return aggregate_suite(suite, entry_results)
 
@@ -317,7 +317,9 @@ def evaluate(
 
     ``suite`` (a loaded :class:`~dfwb.eval.suites.Suite`, or a name registered in the
     ``eval_suites`` data registry) matches each of its entries to the input file whose meta
-    protocol/split/where agree, and adds a ``tables["suite"]`` row per aggregate.
+    protocol/split/where agree, and adds a ``tables["suite"]`` row per aggregate; a group whose
+    matched files all have the metric undefined gets an undefined row (``value`` ``None``, the
+    reason in ``undefined``).
 
     Raises:
         ConfigError: ``files`` is empty.
@@ -331,14 +333,16 @@ def evaluate(
     loaded = [read_scores(f) for f in files]
 
     coverages = [coverage_of(sf.rows) for sf in loaded]
-    points: list[dict[str, float]] = []
+    points: list[dict[str, float]] = []  # defined values only
+    values: list[dict[str, float | None]] = []  # every requested metric; None where undefined
     file_rows: list[dict[str, Any]] = []
     for score_file, coverage in zip(loaded, coverages, strict=True):
         y, p, kept = labels_and_scores(score_file.rows, missing=missing)
         metric_table = _score_metrics(
             metrics, y, p, n_boot=bootstrap, seed=seed, skip_undefined=False
         )
-        points.append({m: v["value"] for m, v in metric_table.items() if v["value"] is not None})
+        values.append({m: v["value"] for m, v in metric_table.items()})
+        points.append({m: v for m, v in values[-1].items() if v is not None})
         file_rows.append(_file_row(score_file, coverage, len(kept), metric_table))
     if metrics and not any(points):
         _raise_nothing_defined(loaded, file_rows)
@@ -355,7 +359,7 @@ def evaluate(
         tables["seeds"] = seed_rows
 
     if suite is not None:
-        tables["suite"] = _suite_table(suite, loaded, points)
+        tables["suite"] = _suite_table(suite, loaded, values)
 
     exit_code = 3 if any(not c.meets(min_coverage) for c in coverages) else 0
     return EvalResult(

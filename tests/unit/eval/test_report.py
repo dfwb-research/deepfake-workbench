@@ -385,6 +385,45 @@ def test_an_undefined_metric_is_left_out_of_the_seed_and_suite_numbers(tmp_path)
     assert "seeds" not in result.tables  # only one seed has a defined auc
 
 
+def test_a_suite_group_whose_only_file_is_single_class_is_an_undefined_row(tmp_path):
+    cov = {"expected": 20, "ok": 20, "missing": 0, "error": 0}
+    path_a = _write(
+        tmp_path,
+        "a.scores.csv",
+        make_rows(10, 10),
+        make_meta(protocol={**_PROTO, "id": "alpha/official"}, coverage=cov),
+    )
+    path_b = _write(
+        tmp_path,
+        "b.scores.csv",
+        _all_fake_rows(20),
+        make_meta(protocol={**_PROTO, "id": "beta/official"}, coverage=cov),
+    )
+    suite = Suite.model_validate(
+        {
+            "name": "demo",
+            "entries": [
+                {"protocol": "alpha/official", "split": "test", "group": "in-domain"},
+                {"protocol": "beta/official", "split": "test", "group": "cross-dataset"},
+            ],
+            "aggregates": [
+                {"group": "in-domain", "metric": "auc"},
+                {"group": "cross-dataset", "metric": "auc"},
+            ],
+        }
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], suite=suite, bootstrap=0)
+
+    suite_rows = {row["group"]: row for row in result.tables["suite"]}
+    assert suite_rows["in-domain"]["value"] == pytest.approx(1.0)
+    assert suite_rows["cross-dataset"]["value"] is None
+    assert suite_rows["cross-dataset"]["n_entries"] == 0
+    assert suite_rows["cross-dataset"]["undefined"]
+    assert result.exit_code == 0
+    json.dumps(result.to_json(), allow_nan=False)  # the undefined row is still valid JSON
+
+
 def test_evaluate_raises_only_when_no_metric_is_defined_for_any_file(tmp_path):
     from dfwb.eval.metrics import MetricUndefined
 

@@ -46,8 +46,11 @@ A row is never silently left out of the file, so a score file's own row count ne
 protocol split and pack version, the label mapping, the processing profile and any input
 adaptation, the clip -> video aggregation, the seed, the environment (versions, the device, the
 precision, and the hash of the processed store's index the run read), the git state of the
-working directory, and the command line (with no absolute path in it: a path under a DFWB root is
-written as `$DFWB_*_ROOT/...`, any other keeps only its final component):
+working directory, and the command line. `dfwb score` records its own command with no absolute
+path in it (a path under a DFWB root is written as `$DFWB_*_ROOT/...`, any other keeps only its
+final component); a file written by `dfwb zoo parity`, or through the Python API without
+`command=`, has `"command": null`, and a cache hit keeps the command of the run that wrote the
+file:
 
 ```json
 {

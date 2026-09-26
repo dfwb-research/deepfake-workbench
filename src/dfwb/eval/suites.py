@@ -109,19 +109,23 @@ def load_suite(name: str) -> Suite:
 
 
 def aggregate_suite(
-    suite: Suite, results: Mapping[int, Mapping[str, float]]
+    suite: Suite, results: Mapping[int, Mapping[str, float | None]]
 ) -> list[dict[str, Any]]:
     """Reduce per-entry metric values into the suite's aggregate rows.
 
     ``results`` maps an entry's index in ``suite.entries`` to ``{metric: value}`` for the score
     file that entry ran (typically one metric's point estimate; a caller wanting the aggregate of
-    a bootstrap CI's bounds too can pass those under different metric names). Every aggregate row
-    names the entries it drew from, so a suite that includes an unscored entry is visible rather
-    than silently averaging over fewer files than it defined.
+    a bootstrap CI's bounds too can pass those under different metric names). A value of ``None``
+    means the entry was scored but the metric is undefined on its rows (a two-class metric on a
+    single-class file): the mean leaves it out, and a group with no defined value at all gets an
+    undefined row -- ``value`` ``None``, ``n_entries`` 0 and the reason in ``undefined`` -- rather
+    than an error. Every aggregate row names the entries it drew from, so a suite that includes an
+    unscored or undefined entry is visible rather than silently averaging over fewer files than it
+    defined.
 
     Raises:
         ConfigError: an aggregate names a ``group`` no entry has, or a ``metric`` missing from
-            every one of that group's results.
+            every one of that group's results (no entry of the group was scored).
     """
     by_group: dict[str, list[int]] = {}
     for index, entry in enumerate(suite.entries):
@@ -135,22 +139,25 @@ def aggregate_suite(
                 f"{did_you_mean(agg.group, by_group)}",
                 hint="groups: " + ", ".join(sorted(by_group)),
             )
-        have = [i for i in indices if agg.metric in results.get(i, {})]
-        if not have:
+        scored = [i for i in indices if agg.metric in results.get(i, {})]
+        if not scored:
             raise ConfigError(
                 f"suite {suite.name!r}: no result for metric {agg.metric!r} in group {agg.group!r}",
                 hint="score every entry of the suite before aggregating it",
             )
-        values = [results[i][agg.metric] for i in have]
-        value = sum(values) / len(values)  # "mean" is the only "how" today
-        rows.append(
-            {
-                "group": agg.group,
-                "metric": agg.metric,
-                "how": agg.how,
-                "value": value,
-                "n_entries": len(have),
-                "n_expected": len(indices),
-            }
-        )
+        values = [v for i in scored if (v := results[i][agg.metric]) is not None]
+        row: dict[str, Any] = {
+            "group": agg.group,
+            "metric": agg.metric,
+            "how": agg.how,
+            "value": sum(values) / len(values) if values else None,  # "mean" is the only "how"
+            "n_entries": len(values),
+            "n_expected": len(indices),
+        }
+        if not values:
+            row["undefined"] = (
+                f"{agg.metric} is undefined for each of the group's {len(scored)} scored "
+                "entr" + ("y" if len(scored) == 1 else "ies")
+            )
+        rows.append(row)
     return rows

@@ -149,7 +149,7 @@ def _suite_block(rows: Sequence[dict[str, Any]]) -> Block:
             row["group"],
             row["metric"],
             row["how"],
-            f"{row['value']:.4f}",
+            "undefined" if row["value"] is None else f"{row['value']:.4f}",
             row["n_entries"],
             row["n_expected"],
         ]

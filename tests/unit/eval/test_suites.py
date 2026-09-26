@@ -96,6 +96,61 @@ def test_aggregate_suite_unknown_group_raises():
         aggregate_suite(suite, {0: {"auc": 0.9}})
 
 
+def test_aggregate_suite_group_with_only_undefined_values_is_an_undefined_row():
+    """An entry that was scored but whose metric is undefined (``None``: a single-class file under
+    a two-class metric) is not an unscored entry: its group gets an undefined row, not an abort."""
+    suite = Suite.model_validate(
+        {
+            "name": "demo",
+            "entries": [
+                {"protocol": "a/official", "split": "test", "group": "in-domain"},
+                {"protocol": "b/official", "split": "test", "group": "cross-dataset"},
+            ],
+            "aggregates": [
+                {"group": "in-domain", "metric": "auc"},
+                {"group": "cross-dataset", "metric": "auc"},
+            ],
+        }
+    )
+    rows = aggregate_suite(suite, {0: {"auc": 0.9}, 1: {"auc": None}})
+    by_group = {row["group"]: row for row in rows}
+    assert by_group["in-domain"]["value"] == pytest.approx(0.9)
+    assert "undefined" not in by_group["in-domain"]
+    undefined = by_group["cross-dataset"]
+    assert undefined["value"] is None
+    assert undefined["n_entries"] == 0
+    assert undefined["n_expected"] == 1
+    assert "auc" in undefined["undefined"]
+
+
+def test_aggregate_suite_mean_leaves_out_an_undefined_entry():
+    suite = Suite.model_validate(
+        {
+            "name": "demo",
+            "entries": [
+                {"protocol": "a/official", "split": "test", "group": "cross-dataset"},
+                {"protocol": "b/official", "split": "test", "group": "cross-dataset"},
+            ],
+            "aggregates": [{"group": "cross-dataset", "metric": "auc"}],
+        }
+    )
+    (row,) = aggregate_suite(suite, {0: {"auc": 0.8}, 1: {"auc": None}})
+    assert row["value"] == pytest.approx(0.8)
+    assert (row["n_entries"], row["n_expected"]) == (1, 2)
+
+
+def test_aggregate_suite_unscored_group_still_raises():
+    suite = Suite.model_validate(
+        {
+            "name": "demo",
+            "entries": [{"protocol": "a/official", "split": "test", "group": "in-domain"}],
+            "aggregates": [{"group": "in-domain", "metric": "auc"}],
+        }
+    )
+    with pytest.raises(ConfigError, match="no result for metric 'auc'"):
+        aggregate_suite(suite, {})
+
+
 def test_builtin_toyfake_suite_is_registered_and_loadable():
     assert "toyfake" in list_suites()
     suite = load_suite("toyfake")

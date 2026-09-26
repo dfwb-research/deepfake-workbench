@@ -225,6 +225,41 @@ def test_eval_exits_4_only_when_no_metric_is_defined_for_any_file(run, tmp_path)
     assert "hint: " in result.err
 
 
+@pytest.mark.parametrize("fmt", ["md", "csv", "latex"])
+def test_eval_renders_an_undefined_suite_row_as_undefined(fmt):
+    """``--suite`` takes a registered name, so the rendering of an undefined suite row (a group
+    whose files are all single-class, say) is checked on the tables directly."""
+    from dfwb.cli.eval import _render
+
+    tables = {
+        "files": [],
+        "suite": [
+            {
+                "group": "in-domain",
+                "metric": "auc",
+                "how": "mean",
+                "value": 0.9,
+                "n_entries": 1,
+                "n_expected": 1,
+            },
+            {
+                "group": "cross",
+                "metric": "auc",
+                "how": "mean",
+                "value": None,
+                "n_entries": 0,
+                "n_expected": 1,
+                "undefined": "auc is undefined for every entry",
+            },
+        ],
+    }
+
+    text = _render(fmt, tables, ["auc"])
+
+    assert "0.9000" in text
+    assert "undefined" in text
+
+
 def _strict_json(text):
     def _refuse(constant):
         raise ValueError(f"not valid JSON: {constant}")

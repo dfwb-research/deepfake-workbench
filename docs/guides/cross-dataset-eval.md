@@ -73,7 +73,9 @@ or `--json` to see the aggregate itself:
 
 A metric that is undefined for a file — a two-class metric such as `auc` on a file whose rows
 are all one class — is an `undefined` cell (in JSON, a `null` value with the reason in
-`undefined`) rather than an error, so one such file never hides every other file's numbers. The
+`undefined`) rather than an error, so one such file never hides every other file's numbers. With
+`--suite`, the group mean leaves such a file out, and a group whose files all have the metric
+undefined gets an `undefined` row (`null` value, `n_entries` 0, the reason in `undefined`). The
 command exits `4` only when no requested metric is defined for any file.
 
 `--by method|family|compression|label_key` breaks each file down further, using the pack's own

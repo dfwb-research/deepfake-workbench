@@ -75,7 +75,8 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - `dfwb eval`: a metric undefined for one file (a two-class metric on a single-class file, say) is
-  an `undefined` cell (in JSON, a `null` value with the reason) instead of aborting the whole run;
+  an `undefined` cell (in JSON, a `null` value with the reason) instead of aborting the whole run,
+  and with `--suite` a group whose files all have the metric undefined gets an `undefined` row;
   the command exits `4` only when no requested metric is defined for any file. The seeds table
   also requires the label mapping, aggregation and processing profile to agree, and warns (keeping
   the first) when two files share a seed as well.
