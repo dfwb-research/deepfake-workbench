@@ -948,3 +948,16 @@ def test_parity_weights_for_a_card_with_none_is_a_config_error(run, monkeypatch)
     assert result.code == 2
     assert "has no weights" in result.err
     assert "hint:" in result.err
+
+
+def test_parity_plain_text_below_min_coverage_writes_nothing(run, scoretoy, monkeypatch):
+    from tests.unit.score._toy import toy_run_profile, write_toy_store
+
+    write_toy_store(scoretoy, toy_run_profile(), skip=["FAKE/f03", "REAL/r03"])
+    _install_reported_chance("parity-low-plain", monkeypatch)
+
+    result = run("zoo", "parity", "parity-low-plain")
+
+    assert result.code == 3
+    assert "0.7500" in result.out  # the COVERAGE column
+    assert "wrote " not in result.out

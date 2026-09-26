@@ -127,7 +127,7 @@ def delong_test(y: IntArray, p_a: FloatArray, p_b: FloatArray) -> tuple[float, f
     Raises:
         InstallationError: scipy (the ``[eval]`` extra) is not installed.
         MetricUndefined: a class has fewer than two rows, so the covariance the test needs cannot
-            be estimated (or it is not finite for any other reason).
+            be estimated, or a score is not finite.
     """
     try:
         from scipy.stats import norm
@@ -145,13 +145,13 @@ def delong_test(y: IntArray, p_a: FloatArray, p_b: FloatArray) -> tuple[float, f
             hint="the DeLong covariance needs at least two fake and two real rows",
         )
     predictions = np.vstack([np.asarray(p_a)[order], np.asarray(p_b)[order]])
+    if not bool(np.isfinite(predictions).all()):
+        raise MetricUndefined(
+            "delong: undefined, a score is not finite",
+            hint="scores are P(fake), finite and in [0, 1]; check the files being compared",
+        )
     aucs, cov = _fast_delong(predictions, n_pos)
     variance = float(cov[0, 0] + cov[1, 1] - 2.0 * cov[0, 1])
-    if not math.isfinite(variance):
-        raise MetricUndefined(
-            "delong: undefined, the paired variance of the AUC difference is not finite",
-            hint="check the scores are finite and both classes have at least two rows",
-        )
     difference = float(aucs[0] - aucs[1])
     if variance <= 0.0:
         if math.isclose(difference, 0.0, abs_tol=1e-12):

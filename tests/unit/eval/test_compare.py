@@ -358,3 +358,22 @@ def test_compare_refuses_files_that_disagree_on_a_shared_rows_label(tmp_path):
     assert "k1" in info.value.message
     assert "a.scores.csv" in info.value.message
     assert "b.scores.csv" in info.value.message
+
+
+def test_delong_with_a_non_finite_score_is_undefined_not_nan():
+    y = np.array([0, 0, 1, 1])
+    p_a = np.array([0.1, np.nan, 0.8, 0.9])
+    p_b = np.array([0.2, 0.3, 0.7, 0.6])
+
+    with pytest.raises(MetricUndefined, match="not finite"):
+        delong_test(y, p_a, p_b)
+
+
+def test_json_rendering_writes_nan_as_null_and_infinities_as_text():
+    from dfwb.eval.compare import _json_value
+
+    assert _json_value(float("nan")) is None
+    assert _json_value(float("inf")) == "inf"
+    assert _json_value(float("-inf")) == "-inf"
+    assert _json_value(0.25) == 0.25
+    assert _json_value(None) is None
