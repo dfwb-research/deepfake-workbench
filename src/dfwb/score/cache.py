@@ -3,13 +3,16 @@ trusted, so re-running :func:`dfwb.score.harness.score` with an identical config
 instead of rescoring every clip.
 
 The cache key is a hash of everything a scoring run depends on -- the detector's exact identity,
-the protocol split (including its scheme hash and any ``where`` filter), the processing profile,
-the aggregation mode and clip count, and the label mapping -- so the *path* a score file is
-written to already encodes its own configuration (``dfwb.score.harness``'s output naming appends
-the first 8 hex characters of this key). A file already at that path is then read back and its
-meta is checked field by field against what this request expects, rather than trusted on the path
-alone: a hash collision, or a stale/foreign file left there by hand, is recomputed rather than
-served.
+the protocol split (including its scheme hash, the pack's version and any ``where`` filter), the
+processing profile, what the processed store actually serves (the hash of its ``index.jsonl``),
+the aggregation mode and clip count, the label mapping and the precision -- so the *path* a score
+file is written to already encodes its own configuration (``dfwb.score.harness``'s output naming
+appends the first 8 hex characters of this key). A file already at that path is then read back
+and its meta is checked field by field against what this request expects, rather than trusted on
+the path alone: a hash collision, or a stale/foreign file left there by hand, is recomputed rather
+than served. The precision and the store's index hash have no field of their own in a C5 meta, so
+they are recorded in its free-form ``env`` (as ``precision`` and ``store_index_sha256``) and
+checked there.
 
 A detector source may set plain attributes on the ``Detector`` it returns, beyond contract C4
 (``meta``, ``to()``, ``predict()``): ``checkpoint_sha256`` (the sha256 of the exact weights file
@@ -115,11 +118,17 @@ def cache_key(
     aggregate_mode: str,
     clips_per_video: int,
     labels: str,
+    precision: str,
+    store_index_sha256: str | None,
+    pack_version: str,
 ) -> str:
     """sha256 of the canonical JSON of everything a scoring run depends on: the detector's
     fingerprint, the protocol scheme hash, the split, any ``where`` filter, the processing
-    profile's hash, the aggregation mode and clip count, and the label mapping. Changing any one
-    of these changes the key, and so the output path (see :func:`score_path`)."""
+    profile's hash, the aggregation mode and clip count, the label mapping, the resolved
+    ``precision`` (``"fp32"`` when no autocast was asked for), the hash of the processed store's
+    ``index.jsonl`` (``None`` for a store with no index yet) and the pack's version (a release
+    can fix labels without touching the split file, so the scheme hash alone cannot see it).
+    Changing any one of these changes the key, and so the output path (see :func:`score_path`)."""
     payload = {
         "detector": _fingerprint_payload(detector, identity),
         "seed": effective_seed,
@@ -130,6 +139,9 @@ def cache_key(
         "aggregation": aggregate_mode,
         "clips_per_video": clips_per_video,
         "labels": labels,
+        "precision": precision,
+        "store_index_sha256": store_index_sha256,
+        "pack_version": pack_version,
     }
     return fingerprint(payload)
 
@@ -164,15 +176,21 @@ def cache_matches(
     aggregate_mode: str,
     clips_per_video: int,
     labels: str,
+    precision: str,
+    store_index_sha256: str | None,
+    pack_version: str,
 ) -> bool:
     """Whether a cached file's meta actually matches this request -- the cache path is already
     the request's own hash, so a mismatch would mean a hash collision or a stale/foreign file left
     at that path by hand; either way, the honest thing is to recompute rather than trust it. Checks
-    every field :func:`cache_key` itself hashed, not just the ones most likely to collide."""
+    the fields of :func:`cache_key` that a C5 meta records, not just the ones most likely to
+    collide; a meta written before ``precision`` and ``store_index_sha256`` were recorded in its
+    ``env`` never matches, so such a file is recomputed once rather than trusted."""
     return (
         meta.detector.source == (identity.source or "unknown")
         and meta.detector.checkpoint_sha256 == identity.checkpoint_sha256
         and meta.protocol.scheme_sha256 == scheme_sha256
+        and meta.protocol.pack_version == pack_version
         and meta.protocol.split == split
         and canonical_where(meta.protocol.where) == canonical_where(where)
         and meta.processing_profile is not None
@@ -181,6 +199,9 @@ def cache_matches(
         and meta.aggregation.clip_to_video == aggregate_mode
         and meta.aggregation.clips_per_video == clips_per_video
         and meta.labels == labels
+        and meta.env.get("precision") == precision
+        and "store_index_sha256" in meta.env
+        and meta.env["store_index_sha256"] == store_index_sha256
     )
 
 

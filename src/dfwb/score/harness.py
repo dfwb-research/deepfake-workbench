@@ -36,7 +36,7 @@ from dfwb.core.detector import InputSpec
 from dfwb.core.errors import ConfigError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.core.records import ScoreRow, canonical_where, write_scores
-from dfwb.data.index import SourceSpec, VideoIndex
+from dfwb.data.index import SourceSpec, VideoIndex, store_index_sha256
 from dfwb.eval.aggregate import aggregate as aggregate_scores
 from dfwb.protocols.protocol import Protocol
 from dfwb.protocols.protocol import load as load_protocol
@@ -64,6 +64,7 @@ VideoKey = tuple[str, str, str | None]  # (dataset, key, compression)
 
 _SCORES_SUBDIR = "scores"
 _PRECISIONS = ("fp16", "bf16", "fp32")
+_NO_AUTOCAST = "fp32"
 _AGGREGATE_MODES = ("mean-prob", "mean-logit", "max", "median")
 
 
@@ -531,17 +532,24 @@ def score(
     # work (joining the split with the store, building a dataset, running the detector).
     out_root = Path(out) if out is not None else require_root("runs", roots) / _SCORES_SUBDIR
     profile_sha256 = chosen_profile.sha256()
+    resolved_precision = precision or _NO_AUTOCAST
+    store_sha256 = store_index_sha256(
+        work_root, loaded_protocol.dataset, chosen_profile.profile_id()
+    )
+    key_parts: dict[str, Any] = {
+        "scheme_sha256": loaded_protocol.sha256,
+        "split": split,
+        "where": where,
+        "profile_sha256": profile_sha256,
+        "aggregate_mode": aggregate,
+        "clips_per_video": clips_per_video,
+        "labels": labels,
+        "precision": resolved_precision,
+        "store_index_sha256": store_sha256,
+        "pack_version": loaded_protocol.pack_version,
+    }
     key = cache_key(
-        detector=detector,
-        identity=identity,
-        effective_seed=effective_seed,
-        scheme_sha256=loaded_protocol.sha256,
-        split=split,
-        where=where,
-        profile_sha256=profile_sha256,
-        aggregate_mode=aggregate,
-        clips_per_video=clips_per_video,
-        labels=labels,
+        detector=detector, identity=identity, effective_seed=effective_seed, **key_parts
     )
     target = score_path(
         out_root,
@@ -551,17 +559,7 @@ def score(
         key=key,
     )
     if not force and identity.cacheable and target.is_file():
-        hit = look_up(
-            target,
-            identity=identity,
-            scheme_sha256=loaded_protocol.sha256,
-            split=split,
-            where=where,
-            profile_sha256=profile_sha256,
-            aggregate_mode=aggregate,
-            clips_per_video=clips_per_video,
-            labels=labels,
-        )
+        hit = look_up(target, identity=identity, **key_parts)
         if hit is not None:
             cached_frames_path = frames_path_for(hit.csv_path)
             if not frames:
@@ -627,6 +625,8 @@ def score(
         rows=rows,
         seed=effective_seed,
         device=device,
+        precision=resolved_precision,
+        store_index_sha256=store_sha256,
     )
 
     target.parent.mkdir(parents=True, exist_ok=True)

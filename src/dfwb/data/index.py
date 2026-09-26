@@ -29,10 +29,11 @@ from pathlib import Path
 from typing import Any
 
 from dfwb.core.errors import ConfigError, ContractError
+from dfwb.core.hashing import sha256_file
 from dfwb.core.records import PackProvenance, ProcessedRecord, VideoRecord, read_jsonl
 from dfwb.protocols.protocol import LabelMapping, Protocol, load
 
-__all__ = ["SourceSpec", "VideoIndex", "VideoItem"]
+__all__ = ["SourceSpec", "VideoIndex", "VideoItem", "store_index_sha256"]
 
 _log = logging.getLogger(__name__)
 
@@ -120,6 +121,22 @@ def _resolve_store_dir(work_root: Path, dataset: str, profile: str) -> Path:
         f"({detail})",
         hint="pass the exact profile id, or process this dataset with that profile first",
     )
+
+
+def store_index_sha256(work_root: Path, dataset: str, profile: str) -> str | None:
+    """sha256 of the ``index.jsonl`` of ``dataset``'s processed store for ``profile`` (a full
+    profile id, or its slug, resolved exactly as :meth:`VideoIndex.build` resolves it), or
+    ``None`` when the store has no index yet.
+
+    The index is the one file a join reads, and a store only ever appends to it -- a newly
+    processed video, or a redo of one already there -- so its hash changes whenever what the
+    store serves could have changed, even when the processing profile's own hash has not.
+
+    Raises:
+        ConfigError: ``profile`` resolves to zero or several store directories.
+    """
+    index_path = _resolve_store_dir(work_root, dataset, profile) / _INDEX_FILE
+    return sha256_file(index_path) if index_path.is_file() else None
 
 
 def _read_pack_builder_version(provenance_path: Path) -> str | None:

@@ -684,3 +684,96 @@ def test_cache_keys_where_membership_list_order_does_not_bust_the_cache(score_ro
 
     meta = read_scores(unsorted.csv_path).meta
     assert meta.protocol.where == {"identity": ["f00", "r00"]}  # stored canonical (sorted)
+
+
+# ---------------------------------------------------- precision, store contents and pack version
+
+
+def test_the_meta_records_the_resolved_precision(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    default = _score(tmp_path)
+    bf16 = _score(tmp_path, precision="bf16")
+
+    assert read_scores(default.csv_path).meta.env["precision"] == "fp32"
+    assert read_scores(bf16.csv_path).meta.env["precision"] == "bf16"
+
+
+def test_an_fp32_file_is_not_reused_for_a_bf16_request(score_roots, tmp_path):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    fp32 = _score(tmp_path)
+    bf16 = _score(tmp_path, precision="bf16")
+
+    assert bf16.cached is False
+    assert bf16.csv_path != fp32.csv_path
+
+
+def test_no_precision_and_fp32_are_the_same_request(score_roots, tmp_path):
+    """Both mean "no autocast": the same scores, so the same cache entry."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+
+    unset = _score(tmp_path)
+    explicit = _score(tmp_path, precision="fp32")
+
+    assert explicit.cached is True
+    assert explicit.csv_path == unset.csv_path
+
+
+def test_a_store_that_gained_videos_is_rescored(score_roots, tmp_path):
+    """Scoring, then processing the videos that were missing, then scoring again must score the
+    new videos, not serve the old file with its missing rows."""
+    profile = toy_profile("toy-face")
+    write_toy_store(score_roots, profile, skip=["FAKE/f03", "REAL/r03"])
+    first = _score(tmp_path)
+    assert first.coverage["missing"] == 2
+
+    write_toy_store(score_roots, profile)  # the two videos are processed now
+    second = _score(tmp_path)
+
+    assert second.cached is False
+    assert second.coverage == {"expected": 8, "ok": 8, "missing": 0, "error": 0}
+
+
+def test_a_reprocessed_store_is_rescored(score_roots, tmp_path):
+    """Re-processing videos (a backend fix, say) keeps the profile's hash but changes what the
+    store serves; its index changes, and so does the cache key."""
+    profile = toy_profile("toy-face")
+    write_toy_store(score_roots, profile)
+    first = _score(tmp_path)
+
+    write_toy_store(score_roots, profile, n_frames=6)
+    second = _score(tmp_path)
+
+    assert second.cached is False
+    assert second.csv_path != first.csv_path
+
+
+def test_the_meta_records_the_store_index_hash(score_roots, tmp_path):
+    from dfwb.core.hashing import sha256_file
+
+    store_dir = write_toy_store(score_roots, toy_profile("toy-face"))
+
+    result = _score(tmp_path)
+
+    meta = read_scores(result.csv_path).meta
+    assert meta.env["store_index_sha256"] == sha256_file(store_dir / "index.jsonl")
+
+
+def test_a_pack_label_release_is_rescored(score_roots, scoretoy_pack, tmp_path):
+    """A pack release can fix labels without touching the split file (so the scheme hash stays
+    the same); the pack version is part of the cache key, so the old file is not served."""
+    import yaml
+
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    first = _score(tmp_path)
+
+    pack_yaml = scoretoy_pack.parent / "pack.yaml"
+    card = yaml.safe_load(pack_yaml.read_text())
+    card["version"] = "1.0.1"
+    pack_yaml.write_text(yaml.safe_dump(card, sort_keys=False))
+    second = _score(tmp_path)
+
+    assert second.cached is False
+    assert second.csv_path != first.csv_path
+    assert read_scores(second.csv_path).meta.protocol.pack_version == "1.0.1"

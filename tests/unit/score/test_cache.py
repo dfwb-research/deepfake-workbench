@@ -47,6 +47,9 @@ _BASE_KWARGS = {
     "aggregate_mode": "mean-prob",
     "clips_per_video": 4,
     "labels": "binary",
+    "precision": "fp32",
+    "store_index_sha256": "i" * 64,
+    "pack_version": "1.0.0",
 }
 
 
@@ -196,6 +199,24 @@ def test_cache_key_changes_with_labels():
     assert changed != baseline
 
 
+def test_cache_key_changes_with_precision():
+    baseline = _key()
+    changed = _key(precision="bf16")
+    assert changed != baseline
+
+
+def test_cache_key_changes_with_the_store_index():
+    baseline = _key()
+    changed = _key(store_index_sha256="j" * 64)
+    assert changed != baseline
+
+
+def test_cache_key_changes_with_pack_version():
+    baseline = _key()
+    changed = _key(pack_version="1.0.1")
+    assert changed != baseline
+
+
 def test_cache_key_ignores_where_key_order():
     a = _key(where={"compression": "c23", "identity": "000"})
     b = _key(where={"identity": "000", "compression": "c23"})
@@ -263,7 +284,7 @@ def _meta_payload(**overrides) -> dict:
         "aggregation": {"clip_to_video": "mean-prob", "clips_per_video": 4},
         "coverage": {"expected": 1, "ok": 1, "missing": 0, "error": 0},
         "seed": 0,
-        "env": {"dfwb": "0.1.0"},
+        "env": {"dfwb": "0.1.0", "precision": "fp32", "store_index_sha256": "i" * 64},
         "git": None,
         "command": None,
         "created": "2026-01-01T00:00:00Z",
@@ -291,6 +312,9 @@ _EXPECTED = {
     "aggregate_mode": "mean-prob",
     "clips_per_video": 4,
     "labels": "binary",
+    "precision": "fp32",
+    "store_index_sha256": "i" * 64,
+    "pack_version": "0.1.0",
 }
 
 
@@ -458,3 +482,26 @@ def test_look_up_matches_a_stored_where_that_was_never_canonicalised(tmp_path):
     expected = {**_EXPECTED, "where": {"identity": ["000", "002"]}}
 
     assert look_up(csv_path, **expected) is not None
+
+
+def test_look_up_returns_none_on_precision_mismatch(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path)
+    mismatched = {**_EXPECTED, "precision": "bf16"}
+    assert look_up(csv_path, **mismatched) is None
+
+
+def test_look_up_returns_none_when_the_meta_records_no_precision(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path, env={"dfwb": "0.1.0", "store_index_sha256": "i" * 64})
+    assert look_up(csv_path, **_EXPECTED) is None
+
+
+def test_look_up_returns_none_on_store_index_mismatch(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path)
+    mismatched = {**_EXPECTED, "store_index_sha256": "j" * 64}
+    assert look_up(csv_path, **mismatched) is None
+
+
+def test_look_up_returns_none_on_pack_version_mismatch(tmp_path):
+    csv_path, _ = _write_meta_only(tmp_path)
+    mismatched = {**_EXPECTED, "pack_version": "0.1.1"}
+    assert look_up(csv_path, **mismatched) is None

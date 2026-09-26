@@ -91,13 +91,21 @@ you pass `--force`.
 
 - **The output path already encodes the request.** `dfwb score` writes to
   `<out>/<detector-slug>/<protocol-slug>/<split>-<key[:8]>.scores.csv`, where `<key>` is a sha256
-  of everything the run depends on: the detector's exact identity, the protocol's scheme hash, the
-  split, any `--where` filter, the processing profile's hash, the aggregation mode and clip count,
-  and the label mapping. Two requests that agree on all of that always land at the same path;
-  changing any one of them changes the path.
+  of everything the run depends on: the detector's exact identity, the protocol's scheme hash and
+  the pack's version, the split, any `--where` filter, the processing profile's hash, the hash of
+  the processed store's `index.jsonl`, the aggregation mode and clip count, the label mapping, and
+  the precision (`--precision`; none means `fp32`). Two requests that agree on all of that always
+  land at the same path; changing any one of them changes the path.
+- **The store's contents are part of the request.** Processing more videos, or re-processing some,
+  appends to the store's `index.jsonl`, so its hash changes and the next `dfwb score` scores the
+  store as it is now, instead of serving a file whose `missing` rows are no longer missing. A pack
+  release that fixes labels without touching the split file changes the pack's version, and so
+  the key, the same way.
 - **A file found there is still checked, not just trusted by its path.** Its meta is read back and
   compared field by field against what the new request expects. A mismatch — a hash collision, or
-  a stale or hand-placed file — is recomputed rather than served.
+  a stale or hand-placed file — is recomputed rather than served. The precision and the store's
+  index hash have no field of their own in the meta, so they are recorded in `env` (as
+  `precision` and `store_index_sha256`) and checked there.
 - **A cached file with any `error` row is never reused.** A detector failure is usually transient
   (an out-of-memory error, a flaky device fault), so the reuse rule is about an identical
   *successful* result: an errored cache entry is retried, not served as if it were complete.

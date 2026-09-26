@@ -50,6 +50,8 @@ def assemble_meta(
     rows: Sequence[ScoreRow],
     seed: int,
     device: str,
+    precision: str,
+    store_index_sha256: str | None,
     command: str | None = None,
 ) -> ScoreMeta:
     """Build the C5 meta for one scoring run.
@@ -60,12 +62,17 @@ def assemble_meta(
     ``training_seed`` when it has one, else the ``seed`` argument it was called with); ``device``
     is the device the run actually scored on, recorded verbatim rather than
     :func:`~dfwb.core.runmeta.capture_env`'s own guess (which reports a CUDA device whenever one
-    happens to be available on the machine, whether or not this run used it).
+    happens to be available on the machine, whether or not this run used it). ``precision`` (the
+    resolved autocast precision, ``"fp32"`` for none) and ``store_index_sha256`` (the hash of the
+    processed store's ``index.jsonl`` the run read, ``None`` when it had none) change the scores
+    but have no field of their own in the C5 meta, so both are recorded in its free-form ``env``.
     """
     from dfwb.core.runmeta import capture_env, utc_now
 
     env = capture_env()
     env["device"] = device
+    env["precision"] = precision
+    env["store_index_sha256"] = store_index_sha256
     return ScoreMeta.model_validate(
         {
             "detector": {

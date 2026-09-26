@@ -42,6 +42,8 @@ def test_every_c5_meta_field_is_present(scoretoy_pack, tmp_path):
         rows=_rows(),
         seed=7,
         device="cpu",
+        precision="bf16",
+        store_index_sha256="a" * 64,
     )
 
     payload = meta.model_dump(mode="json", by_alias=True)
@@ -68,6 +70,8 @@ def test_every_c5_meta_field_is_present(scoretoy_pack, tmp_path):
     assert payload["env"]["dfwb"]
     assert payload["env"]["python"]
     assert payload["env"]["device"] == "cpu"
+    assert payload["env"]["precision"] == "bf16"
+    assert payload["env"]["store_index_sha256"] == "a" * 64
     git = payload["git"]  # null outside a git checkout is still valid C5
     assert git is None or (isinstance(git, dict) and set(git) == {"commit", "dirty"})
     assert payload["command"] is None  # assemble_meta is never given one in this task
@@ -97,6 +101,8 @@ def test_env_device_is_what_was_actually_used_not_capture_envs_own_guess(scoreto
         rows=_rows(),
         seed=0,
         device="cuda:3",
+        precision="fp32",
+        store_index_sha256=None,
     )
     assert meta.env["device"] == "cuda:3"
 
@@ -122,6 +128,8 @@ def test_coverage_is_recomputed_from_rows_not_trusted(scoretoy_pack, tmp_path):
         rows=rows,
         seed=0,
         device="cpu",
+        precision="fp32",
+        store_index_sha256=None,
     )
     assert meta.coverage.expected == 1
     assert meta.coverage.ok == 1
