@@ -91,6 +91,13 @@ TORCH_FREE_COMMANDS = [
     ["runs", "--help"],
     ["runs", "list"],
     ["runs", "list", "--json"],
+    ["zoo", "list"],
+    ["zoo", "list", "--json"],
+    ["zoo", "info", "chance"],
+    ["zoo", "licenses"],
+    ["zoo", "verify", "chance"],
+    ["zoo", "fetch", "chance"],
+    ["zoo", "parity", "chance"],
 ]
 
 

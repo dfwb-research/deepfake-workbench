@@ -44,6 +44,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
         "Run a detector over a protocol split (or a suite) and write score files.",
     ),
     "train": ("dfwb.cli.train:train", "Train a config, or resume an interrupted run."),
+    "zoo": (
+        "dfwb.cli.zoo:zoo",
+        "List, inspect, fetch and check parity of registered zoo adapters.",
+    ),
 }
 
 ISSUES_URL = "https://github.com/dfwb-research/deepfake-workbench/issues"

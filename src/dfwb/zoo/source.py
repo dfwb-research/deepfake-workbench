@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from dfwb.core.detector import Detector
     from dfwb.zoo.card import AdapterCard, WeightSpec
 
-__all__ = ["load_zoo"]
+__all__ = ["load_zoo", "select_weight"]
 
 # What contract C4 requires of anything an adapter's load() hands back, and what the `detectors`
 # registry requires of an adapter class itself (mirrors dfwb.score.sources's own py: check).
@@ -56,7 +56,16 @@ def _require_detector_contract(detector: Any, ref: str) -> None:
         )
 
 
-def _select_weight(card: AdapterCard, weights_id: str | None) -> WeightSpec:
+def select_weight(card: AdapterCard, weights_id: str | None) -> WeightSpec:
+    """The weight variant ``weights_id`` names, or ``card``'s only one when ``weights_id`` is
+    ``None`` and there is exactly one -- the same resolution :func:`load_zoo` itself uses for a
+    bare ``zoo:<name>``, exposed so a caller (``dfwb zoo fetch``) can resolve a variant the same
+    way without downloading it.
+
+    Raises:
+        ConfigError: ``weights_id`` is ``None`` and ``card`` has more than one weight variant.
+        UnknownKeyError: ``weights_id`` names none of ``card``'s own weight variants.
+    """
     if weights_id is None:
         if len(card.weights) == 1:
             return card.weights[0]
@@ -114,7 +123,7 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
     checkpoint_sha256: str | None = None
     resolved_id: str | None = None
     if card.weights:
-        spec = _select_weight(card, weights_id if has_id else None)
+        spec = select_weight(card, weights_id if has_id else None)
         weights_path = ensure_weights(card.name, spec)
         # `ensure_weights` has already hashed this exact file and confirmed it matches
         # `spec.sha256` (or raised) -- reuse that already-verified value instead of hashing a

@@ -46,7 +46,9 @@ __all__ = [
     "clone_at_commit",
     "clone_cache_dir",
     "ensure_clone",
+    "head_commit",
     "import_pinned_entry",
+    "is_clean_worktree",
     "private_module_name",
 ]
 
@@ -215,12 +217,15 @@ def clone_cache_dir(name: str, commit: str) -> Path:
     return cache_root / "zoo" / name / "code" / commit
 
 
-def _is_clean_worktree(repo_dir: Path) -> bool:
+def is_clean_worktree(repo_dir: Path) -> bool:
+    """Whether ``repo_dir`` (a git working tree) has no local modifications."""
     status = _run_git(["-C", str(repo_dir), "status", "--porcelain"])
     return status.returncode == 0 and status.stdout.strip() == ""
 
 
-def _head_commit(repo_dir: Path) -> str | None:
+def head_commit(repo_dir: Path) -> str | None:
+    """``repo_dir``'s checked-out commit sha (lower-case), or ``None`` if it is not a git
+    working tree (or the command otherwise fails)."""
     head = _run_git(["-C", str(repo_dir), "rev-parse", "HEAD"])
     return head.stdout.strip().lower() if head.returncode == 0 else None
 
@@ -228,13 +233,13 @@ def _head_commit(repo_dir: Path) -> str | None:
 def _reuse_existing_clone(name: str, commit: str, dest: Path) -> Path:
     """``dest``, if it is a clean clone still at ``commit``; otherwise raises, naming ``dest`` and
     how to clear it."""
-    head = _head_commit(dest)
+    head = head_commit(dest)
     if head != commit:
         raise ContractError(
             f"zoo:{name}: {dest} is at commit {head!r}, not the pinned {commit!r}",
             hint=f"remove {dest} and let it clone again",
         )
-    if not _is_clean_worktree(dest):
+    if not is_clean_worktree(dest):
         raise ContractError(
             f"zoo:{name}: {dest} has local modifications",
             hint=f"remove {dest} and let it clone again",

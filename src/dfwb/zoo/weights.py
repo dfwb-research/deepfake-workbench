@@ -24,7 +24,7 @@ from dfwb.core.hashing import sha256_file
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.zoo.card import WeightSpec
 
-__all__ = ["cache_dir", "ensure_weights", "load_weights", "weights_filename"]
+__all__ = ["cache_dir", "ensure_weights", "load_weights", "verify_weights", "weights_filename"]
 
 _EXTENSIONS: dict[str, str] = {"safetensors": ".safetensors", "pytorch": ".pt"}
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -50,9 +50,10 @@ def weights_filename(spec: WeightSpec) -> str:
     return f"weights{_EXTENSIONS[spec.format]}"
 
 
-def _verify(path: Path, spec: WeightSpec) -> None:
+def verify_weights(path: Path, spec: WeightSpec) -> None:
     """Raise :class:`ContractError`, naming ``path``, unless it hashes and sizes to what ``spec``
-    declares."""
+    declares. Exposed (beyond :func:`ensure_weights`'s own use of it) so a caller can check an
+    already-cached file without downloading anything (``dfwb zoo verify``)."""
     actual_sha256 = sha256_file(path)
     if actual_sha256 != spec.sha256:
         raise ContractError(
@@ -86,7 +87,7 @@ def ensure_weights(name: str, spec: WeightSpec) -> Path:
     dest = cache_dir(name, spec.sha256) / weights_filename(spec)
     if dest.is_file():
         try:
-            _verify(dest, spec)
+            verify_weights(dest, spec)
         except ContractError:
             if _offline():
                 raise ContractError(
@@ -99,7 +100,7 @@ def ensure_weights(name: str, spec: WeightSpec) -> Path:
         else:
             return dest
     fetch(spec.url, spec.sha256, dest)
-    _verify(dest, spec)
+    verify_weights(dest, spec)
     return dest
 
 
