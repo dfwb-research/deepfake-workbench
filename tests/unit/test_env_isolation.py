@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 
-from dfwb.cli.main import main
+from tests._dfwb_cli import run_dfwb
+
 from dfwb.core import envfile
 
 _PROBE = "DFWB_ISOLATION_PROBE"
@@ -19,8 +20,7 @@ def test_an_in_process_command_applies_its_env_file(tmp_path, monkeypatch, capsy
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DFWB_ENV_FILE", raising=False)
     (tmp_path / ".env").write_text(f"{_PROBE}=set\n")
-    assert main(["doctor", "--json"]) == 0
-    capsys.readouterr()
+    assert run_dfwb(capsys, "doctor", "--json").code == 0
     assert os.environ[_PROBE] == "set"
     assert envfile.last_applied() is not None
 

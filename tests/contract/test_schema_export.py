@@ -8,16 +8,16 @@ import os
 from pathlib import Path
 
 import pytest
-
-from dfwb.cli.main import main
+from tests._dfwb_cli import run_dfwb
 
 GOLDEN = Path(__file__).parent / "golden"
 
 
 @pytest.mark.parametrize("contract", ["c1", "c2", "c3", "c4", "c5"])
 def test_schema_export_matches_golden(contract, capsys):
-    assert main(["--no-env-file", "schema", "export", contract]) == 0
-    text = capsys.readouterr().out
+    result = run_dfwb(capsys, "--no-env-file", "schema", "export", contract)
+    assert result.code == 0
+    text = result.out
     golden = GOLDEN / f"{contract}.schema.json"
     if os.environ.get("DFWB_UPDATE_GOLDEN") == "1":
         golden.parent.mkdir(exist_ok=True)
@@ -28,8 +28,8 @@ def test_schema_export_matches_golden(contract, capsys):
 
 
 def test_c3_and_c5_list_every_record(capsys):
-    main(["--no-env-file", "schema", "export", "c3"])
-    names = set(json.loads(capsys.readouterr().out)["$defs"])
+    result = run_dfwb(capsys, "--no-env-file", "schema", "export", "c3")
+    names = set(json.loads(result.out)["$defs"])
     assert {
         "PackCard",
         "DatasetCard",
@@ -40,19 +40,21 @@ def test_c3_and_c5_list_every_record(capsys):
         "ProcessingProfile",
         "ProcessedRecord",
     } <= names
-    main(["--no-env-file", "schema", "export", "C5"])
-    c5 = json.loads(capsys.readouterr().out)["$defs"]
+    result = run_dfwb(capsys, "--no-env-file", "schema", "export", "C5")
+    c5 = json.loads(result.out)["$defs"]
     assert c5["ScoreRow"]["additionalProperties"] is False
     assert "schema" in c5["ScoreMeta"]["properties"]
 
 
 def test_export_to_file(tmp_path, capsys):
-    assert (
-        main(["--no-env-file", "schema", "export", "c4", "--out", str(tmp_path / "c4.json")]) == 0
+    result = run_dfwb(
+        capsys, "--no-env-file", "schema", "export", "c4", "--out", str(tmp_path / "c4.json")
     )
+    assert result.code == 0
     assert json.loads((tmp_path / "c4.json").read_text())["x-dfwb-contract"]["version"] == "1.0"
 
 
 def test_group_without_a_subcommand_shows_its_help(capsys):
-    assert main(["--no-env-file", "schema"]) == 0
-    assert "Commands:" in capsys.readouterr().out
+    result = run_dfwb(capsys, "--no-env-file", "schema")
+    assert result.code == 0
+    assert "Commands:" in result.out

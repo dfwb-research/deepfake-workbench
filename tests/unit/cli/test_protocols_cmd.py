@@ -170,6 +170,7 @@ def test_verify_cli_exit_codes_and_json(run, monkeypatch, tmp_path):
     result = run("protocols", "verify", "toyone")
     assert result.code == 3
     assert "missing_requested: 1" in result.out
+    assert "dfwb inventory build toyone" in result.err
 
     # Relabel a video: exits 4 (contract mismatch).
     write_jsonl(
@@ -185,6 +186,7 @@ def test_verify_cli_exit_codes_and_json(run, monkeypatch, tmp_path):
     assert data["counts"]["label_mismatch"] == 1
     assert data["exit_code"] == 4
     assert data["report_path"] == str(report_path)
+    assert "dfwb inventory build toyone" in result.err
 
 
 def test_verify_cli_refuses_a_work_root_inside_a_datasets_root(run, monkeypatch, tmp_path):
@@ -228,6 +230,7 @@ def test_verify_cli_prints_release_mismatch_warning(run, monkeypatch, tmp_path):
     result = run("protocols", "verify", "release")
 
     assert "warning: FAKE_A: 10 missing and 10 extra" in result.out
+    assert "dfwb inventory build release" in result.err
 
 
 def test_verify_without_inventory_hints_inventory_build(run, monkeypatch, tmp_path):
@@ -325,6 +328,7 @@ def test_lint_cli_release_flag_turns_the_warning_into_an_error(run, tmp_path):
 
     assert result.code == 4
     assert "error: toy/dataset.yaml: distribution is undecided" in result.out
+    assert "hint: fix each error above, then run `dfwb protocols lint` again" in result.err
 
 
 def test_lint_cli_exits_4_when_any_error_is_found(run, tmp_path):
@@ -335,6 +339,7 @@ def test_lint_cli_exits_4_when_any_error_is_found(run, tmp_path):
 
     assert result.code == 4
     assert "error: toy/NOTICE.md: file is missing" in result.out
+    assert "hint: fix each error above, then run `dfwb protocols lint` again" in result.err
 
 
 def test_lint_cli_json_output(run, tmp_path):
@@ -453,6 +458,21 @@ def test_diff_cli_expect_bump_exits_4_when_the_claimed_bump_is_smaller_than_requ
     assert result.code == 4
     assert "'minor'" in result.err
     assert "'major'" in result.err
+    assert "hint: bump the version to at least 'major'" in result.err
+
+
+def test_diff_cli_expect_bump_shortfall_keeps_json_stdout_pure(run, tmp_path):
+    # The `--json` form of the same failure: the error and hint still land on stderr, and stdout
+    # stays parseable JSON with no trailing hint text mixed in.
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "2.0.0", _moved_rows())
+
+    result = run("protocols", "diff", str(old), str(new), "--expect-bump", "minor", "--json")
+
+    assert result.code == 4
+    data = json.loads(result.out)
+    assert data["required_bump"] == "major"
+    assert "hint: bump the version to at least 'major'" in result.err
 
 
 def test_diff_cli_expect_bump_passes_when_the_claim_covers_the_changes(run, tmp_path):
@@ -496,6 +516,7 @@ def test_diff_cli_expect_bump_none_fails_on_a_text_change(run, tmp_path):
     assert result.code == 4
     assert "'none'" in result.err
     assert "'patch'" in result.err
+    assert "hint: bump the version to at least 'patch'" in result.err
 
 
 def test_diff_cli_lists_relabelled_videos(run, tmp_path):

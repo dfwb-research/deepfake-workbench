@@ -55,6 +55,7 @@ def test_subcommand_usage_error_hint_names_the_subcommand(run):
 TEST_COMMANDS = {
     "contract-error": "tests.unit.cli._commands:contract_error",
     "crash": "tests.unit.cli._commands:crash",
+    "abort": "tests.unit.cli._commands:abort",
     "not-a-command": "tests.unit.cli._commands:NOT_A_COMMAND",
 }
 
@@ -81,6 +82,13 @@ def test_unexpected_error_hint_and_debug_traceback(run, test_commands, monkeypat
     assert "Traceback" in run("--debug", "crash").err
     monkeypatch.setenv("DFWB_DEBUG", "1")
     assert "Traceback" in run("crash").err
+
+
+def test_abort_prints_hint_and_exits_1(run, test_commands):
+    # What a user sees when they Ctrl+C a command, or it hits EOF reading input.
+    result = run("abort")
+    assert result.code == 1
+    assert result.err.splitlines() == ["aborted", "hint: re-run the command to try again"]
 
 
 def test_lazy_entry_that_is_not_a_command(run, test_commands):

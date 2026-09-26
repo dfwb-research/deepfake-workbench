@@ -15,4 +15,11 @@ def crash() -> None:
     raise RuntimeError("kaput")
 
 
+@click.command()
+def abort() -> None:
+    # What click itself raises when a command reading input hits EOF or Ctrl+C; simulated
+    # directly here since neither actually happens in a non-interactive test.
+    raise click.Abort()
+
+
 NOT_A_COMMAND = "just a string"

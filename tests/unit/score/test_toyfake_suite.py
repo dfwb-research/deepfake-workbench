@@ -7,16 +7,14 @@ from __future__ import annotations
 import gzip
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("torch")
 
+from tests._dfwb_cli import run_dfwb
 from tests.unit.data.conftest import processed_record, write_store_frames, write_store_index
 from tests.unit.score._toy import toy_profile
-
-from dfwb.cli.main import main
 
 _REPO = Path(__file__).resolve().parents[3]
 _TOYFAKE_PACK = _REPO / "src" / "dfwb" / "_packs" / "toyfake" / "toyfake"
@@ -31,10 +29,8 @@ def cli(capsys, monkeypatch, tmp_path, score_roots):
     intercepted to *add* the scoretoy fixtures, never to replace the framework's own builtins)."""
     monkeypatch.chdir(tmp_path)
 
-    def _run(*args: str) -> SimpleNamespace:
-        code = main(list(args))
-        captured = capsys.readouterr()
-        return SimpleNamespace(code=code, out=captured.out, err=captured.err)
+    def _run(*args: str):
+        return run_dfwb(capsys, *args)
 
     return _run
 
