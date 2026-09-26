@@ -27,6 +27,23 @@ All notable changes to this project are documented here. The format follows
   --expect-bump`, `dfwb zoo verify` and `dfwb zoo parity`. A command aborted mid-run (Ctrl+C, or
   input hitting EOF) also prints a hint alongside `aborted`.
 
+### Fixed
+
+- A directory named in `extends`, a config file that is not valid UTF-8 (a `dfwb.toml` or a YAML
+  config), and a `dfwb.toml`/user `config.toml` that is not valid UTF-8, are now a `ConfigError`
+  (exit 2) naming the file, instead of an unhandled exception (exit 1). An error while reading an
+  `extends` parent now also names the file that referenced it, alongside the parent itself.
+- `dfwb doctor` on a broken `dfwb.toml`/user `config.toml` reports the problem as a failed check,
+  with its hint, and still reports everything else (torch, extras, plugins, licences), instead of
+  aborting the whole command.
+- A `.env` file starting with a UTF-8 byte-order mark no longer breaks parsing of its first line.
+  Text left over after a quoted value's closing quote (including what looked like a trailing
+  comment) is now a `ConfigError` with a hint, instead of being silently dropped.
+- `dfwb datasets info <id>` now works for a dataset known only from an installed protocol pack --
+  one with no local inventory builder, the way `dfwb datasets list` already shows it -- reporting
+  what the pack knows (its card and schemes) and that no local builder is registered, instead of
+  failing with an unknown-key error.
+
 ## [0.1.0b2] - 2026-09-26
 
 ### Added
