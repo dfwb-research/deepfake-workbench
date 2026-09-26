@@ -41,6 +41,12 @@ def test_a_uri_with_no_scheme_is_rejected():
         resolve_detector("no-colon-here")
 
 
+def test_accepts_seed_is_false_for_an_uninspectable_target():
+    from dfwb.score.sources import _accepts_seed
+
+    assert _accepts_seed(object()) is False
+
+
 # ------------------------------------------------------------------------------------------ py:
 
 # A factory that builds a full C4 detector by hand (no torch weights, just the mean of the

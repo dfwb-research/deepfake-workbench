@@ -497,7 +497,7 @@ def score(
     from dfwb.data.adapt import available_profiles
     from dfwb.data.dataset import ClipDataset
 
-    detector = resolve_detector(detector_uri)
+    detector = resolve_detector(detector_uri, seed=seed)
     spec: InputSpec = detector.meta.input
     identity = DetectorIdentity.of(detector)
     effective_seed = identity.effective_seed(seed)

@@ -1,10 +1,13 @@
 """Resolves a detector URI (``<scheme>:<rest>``) into a C4 :class:`~dfwb.core.detector.Detector`,
 through the ``detector_sources`` registry.
 
-A scheme is a registry key (``run``, ``py``, later ``zoo``, ``hf``); ``<rest>`` is passed verbatim
+A scheme is a registry key (``run``, ``py``, ``zoo``, later ``hf``); ``<rest>`` is passed verbatim
 to whatever that scheme's loader expects. This module never imports a source's own package
-(``dfwb.models`` for ``run:``, and so on) -- the registry loads it lazily, by import path, exactly
-as it does for any other pluggable component.
+(``dfwb.models`` for ``run:``, ``dfwb.zoo`` for ``zoo:``, and so on) -- the registry loads it
+lazily, by import path, exactly as it does for any other pluggable component. A loader that
+declares a ``seed`` keyword parameter also receives whatever seed :func:`resolve_detector` itself
+was given (see :func:`_accepts_seed`); one that does not is called with no seed at all, exactly as
+before.
 
 A loader may set plain attributes on the ``Detector`` it returns, beyond contract C4: a
 ``checkpoint_sha256`` (``str``, the sha256 of the exact weights file scored) and a
@@ -33,6 +36,7 @@ already sitting at its (still stable, still reused) output path.
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any, Final
 
@@ -53,8 +57,15 @@ _log = logging.getLogger(__name__)
 _DETECTOR_ATTRS: Final = ("meta", "predict", "to")
 
 
-def resolve_detector(uri: str) -> Detector:
+def resolve_detector(uri: str, *, seed: int | None = None) -> Detector:
     """Resolve ``<scheme>:<rest>`` to a :class:`~dfwb.core.detector.Detector`.
+
+    ``seed`` is passed on to the scheme's own loader only when that loader declares a ``seed``
+    parameter (checked by inspecting its signature): today, only the ``zoo:`` source
+    (:func:`dfwb.zoo.source.load_zoo`) does, for adapters such as ``zoo:random`` whose own
+    identity depends on the seed they were scored with. A loader that does not declare it (``run:``,
+    ``py:``) is called exactly as before, so this stays backwards compatible with every existing
+    scheme.
 
     Raises:
         UnknownKeyError: ``uri`` has no ``<scheme>:`` prefix, or names a scheme that is not
@@ -69,8 +80,18 @@ def resolve_detector(uri: str) -> Detector:
             hint="known schemes: " + (", ".join(known) or "(none registered)"),
         )
     loader = registry.load(scheme)
-    detector: Detector = loader(rest)
+    if _accepts_seed(loader):
+        detector: Detector = loader(rest, seed=seed)
+    else:
+        detector = loader(rest)
     return detector
+
+
+def _accepts_seed(loader: Any) -> bool:
+    try:
+        return "seed" in inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _require_detector_contract(obj: Any) -> None:

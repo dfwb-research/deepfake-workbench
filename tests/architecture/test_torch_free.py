@@ -13,7 +13,7 @@ from dfwb.core.records import write_scores
 DFWB = Path(sys.executable).parent / "dfwb"  # the console script of this environment
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-TORCH_FREE = ("dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess", "dfwb.cli")
+TORCH_FREE = ("dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess", "dfwb.cli", "dfwb.zoo")
 
 IMPORT_ALL = """
 import importlib, json, pkgutil, sys

@@ -302,6 +302,21 @@ def register(api: PluginAPI) -> None:
         target="dfwb.score.sources:load_py",
         summary="Call a user's own factory function to build a Detector (runs user code)",
     )
+    api.detector_sources.add(
+        "zoo",
+        target="dfwb.zoo.source:load_zoo",
+        summary="Build a Detector from a registered zoo adapter (zoo:<name>[@<weights id>])",
+    )
+    api.detectors.add(
+        "chance",
+        target="dfwb.zoo.adapters.chance:ChanceAdapter",
+        summary="Sanity floor: predicts P(fake) = 0.5 for everything",
+    )
+    api.detectors.add(
+        "random",
+        target="dfwb.zoo.adapters.random:RandomAdapter",
+        summary="Sanity floor: seeded uniform scores, independent of batch or clip order",
+    )
     for dataset_id, target, name, folder in INVENTORY_BUILDERS:
         api.inventory_builders.add(
             dataset_id, target=f"{_BUILDERS_PACKAGE}.{target}", summary=name, folder=folder
