@@ -353,8 +353,9 @@ def _key_free_lists(
     """The materialised split, videos and pairs of a dataset whose pack ships no key list.
 
     Raises:
-        ContractError: the card is not a recipe's (a broken pack), nothing is materialised, or
-            the copy was materialised against other video or pair hashes than the card's.
+        ContractError: the card is not a recipe's (a broken pack), nothing is materialised,
+            the copy was materialised against other video or pair hashes than the card's, or
+            before the scheme was added to the pack.
     """
     canonical_ref = f"{parsed.dataset}/{scheme}"
     if card.distribution != "recipe":
@@ -368,7 +369,7 @@ def _key_free_lists(
     split = materialized / "splits" / f"{scheme}.tsv.gz"
     videos = materialized / "videos.jsonl.gz"
     recorded = _read_hashes(materialized / HASHES_FILE)
-    if recorded is None or not split.is_file() or not videos.is_file():
+    if recorded is None or not videos.is_file():
         raise ContractError(
             f"{canonical_ref}: {parsed.dataset} is a recipe dataset, whose pack ships no key "
             f"list, and nothing is materialised for it under {materialized}",
@@ -382,6 +383,13 @@ def _key_free_lists(
                 f"{name} {recorded.get(name)}, and the installed card's is {published}",
                 hint=f"the pack changed since it was materialised; run: {command}",
             )
+    if not split.is_file():
+        # The same lists, but the pack has gained a scheme since (an upgrade adding one).
+        raise ContractError(
+            f"{canonical_ref}: the lists under {materialized} were materialised before scheme "
+            f"{scheme!r} was added to the pack",
+            hint=f"run again: {command}",
+        )
     pairs = materialized / "pairs.jsonl.gz"
     return split, videos, pairs if pairs.is_file() else None
 

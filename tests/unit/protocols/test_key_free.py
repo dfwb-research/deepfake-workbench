@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -487,9 +491,14 @@ def test_a_failed_swap_puts_the_earlier_materialization_back(recipe, monkeypatch
         return real_rename(self, target)
 
     monkeypatch.setattr(Path, "rename", failing_rename)
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(ConfigError) as info:
         _materialize(recipe)
 
+    materialized = recipe["work"] / "packdemo" / "materialized"
+    assert info.value.exit_code == 2
+    assert info.value.message == f"cannot write the materialised lists to {materialized}: disk full"
+    assert "permission" in info.value.hint
+    assert "space" in info.value.hint
     assert _tree(recipe["work"]) == before
     assert sorted(p.name for p in (recipe["work"] / "packdemo").iterdir()) == [
         "inventory.jsonl",
@@ -498,11 +507,27 @@ def test_a_failed_swap_puts_the_earlier_materialization_back(recipe, monkeypatch
     ]
 
 
+def _dead_pid() -> int:
+    """The pid of a process that has exited (and been reaped)."""
+    done = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.getpid())"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(done.stdout)
+
+
+def _leave(parent: Path, *names: str) -> None:
+    for name in names:
+        (parent / name / "splits").mkdir(parents=True)
+        (parent / name / "videos.jsonl.gz").write_bytes(b"half written")
+
+
 def test_leftovers_of_a_killed_run_are_cleaned_up_by_the_next_one(recipe):
     parent = recipe["work"] / "packdemo"
-    for leftover in (".materialized.tmp-424242", ".materialized.old-424242"):
-        (parent / leftover / "splits").mkdir(parents=True)
-        (parent / leftover / "videos.jsonl.gz").write_bytes(b"half written")
+    dead = _dead_pid()
+    _leave(parent, f".materialized.tmp-{dead}", f".materialized.old-{dead}")
 
     _materialize(recipe)
 
@@ -511,3 +536,50 @@ def test_leftovers_of_a_killed_run_are_cleaned_up_by_the_next_one(recipe):
         "inventory.meta.json",
         "materialized",
     ]
+
+
+def test_the_staging_folder_of_a_run_still_going_is_left_alone(recipe):
+    parent = recipe["work"] / "packdemo"
+    running = os.getppid()  # a live process on this host, not this one
+    _leave(parent, f".materialized.tmp-{running}", ".materialized.tmp-not-a-pid")
+
+    _materialize(recipe)
+
+    assert (parent / f".materialized.tmp-{running}" / "videos.jsonl.gz").is_file()
+    assert (parent / ".materialized.tmp-not-a-pid").is_dir()
+
+
+def test_a_leftover_that_cannot_be_removed_is_a_warning(recipe, monkeypatch, caplog):
+    parent = recipe["work"] / "packdemo"
+    stuck = parent / f".materialized.old-{_dead_pid()}"
+    _leave(parent, stuck.name)
+    real_rmtree = shutil.rmtree
+
+    def refusing_rmtree(path, *args, **kwargs):
+        if Path(path) == stuck:
+            raise PermissionError("read-only")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", refusing_rmtree)
+    with caplog.at_level(logging.WARNING, logger="dfwb.protocols.materialization"):
+        result = _materialize(recipe)
+
+    assert result.n_videos == 30
+    assert stuck.is_dir()
+    assert f"cannot remove {stuck}, left by an earlier run: read-only" in caplog.text
+
+
+def test_a_scheme_added_since_materialising_asks_to_materialise_again(recipe):
+    _materialize(recipe)
+    card = yaml.safe_load((recipe["dataset"] / "dataset.yaml").read_text("utf-8"))
+    card["schemes"]["all-test-again"] = card["schemes"]["all-test"]
+    _set_card(recipe["dataset"], schemes=card["schemes"])
+
+    with pytest.raises(ContractError) as info:
+        load("packdemo/all-test-again", work_root=recipe["work"])
+
+    assert "materialised before scheme 'all-test-again' was added" in info.value.message
+    assert "nothing is materialised" not in info.value.message
+    assert info.value.hint == "run again: dfwb protocols materialize packdemo"
+    # The schemes materialised then are still served.
+    assert load("packdemo/all-test", work_root=recipe["work"]).scheme == "all-test"

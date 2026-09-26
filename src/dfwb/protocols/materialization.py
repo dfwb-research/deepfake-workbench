@@ -25,6 +25,7 @@ split in as ``official``, and the pairs as ``pairs``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from collections import Counter
@@ -99,6 +100,8 @@ _VERIFY_HINT: Final = (
 )
 # The order split counts are given in.
 _SPLIT_ORDER: Final = ("train", "val", "test", "exclude")
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -524,6 +527,44 @@ def _check_pairing_rule(pairs: Sequence[PairRecord], card: DatasetCard) -> None:
         )
 
 
+def _running(pid: int) -> bool:
+    """Whether ``pid`` is a live process on this host, other than this one."""
+    if pid == os.getpid():
+        return False  # an earlier process's leftover, under a pid now reused by this one
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # alive, but another user's
+    except (OverflowError, ValueError):
+        return False
+    return True
+
+
+def _remove(path: Path, *, what: str) -> None:
+    """Remove the folder ``path``; a failure is a warning, never silent and never fatal."""
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _log.warning("cannot remove %s, %s: %s", path, what, exc.strerror or exc)
+
+
+def _clear_leftovers(target: Path) -> None:
+    """Remove the hidden siblings of ``target`` a killed run left behind.
+
+    Each carries the pid of the run that made it: a folder whose run is still going on this host
+    (a concurrent materialize) is left alone, and so is one whose name carries no pid.
+    """
+    for pattern in (f".{target.name}.tmp-*", f".{target.name}.old-*"):
+        for leftover in target.parent.glob(pattern):
+            pid = leftover.name.rsplit("-", 1)[1]
+            if pid.isdigit() and not _running(int(pid)):
+                _remove(leftover, what="left by an earlier run")
+
+
 def _write_materialized(
     target: Path,
     *,
@@ -536,13 +577,13 @@ def _write_materialized(
 
     Whatever was materialised before is replaced as a whole, so the folder never mixes lists
     from two versions of a pack; a failure part way, the swap included, leaves the previous
-    folder in place. The hidden siblings a killed run left behind are removed first.
+    folder in place. The hidden siblings a killed run left behind are removed first (see
+    :func:`_clear_leftovers`).
+
+    Raises:
+        ConfigError: the folder cannot be written (no permission, no space left, ...).
     """
-    for leftover in (
-        *target.parent.glob(f".{target.name}.tmp-*"),
-        *target.parent.glob(f".{target.name}.old-*"),
-    ):
-        shutil.rmtree(leftover, ignore_errors=True)
+    _clear_leftovers(target)
     staging = target.with_name(f".{target.name}.tmp-{os.getpid()}")
     retired = target.with_name(f".{target.name}.old-{os.getpid()}")
     try:
@@ -563,9 +604,15 @@ def _write_materialized(
             if retired.exists() and not target.exists():
                 retired.rename(target)
             raise
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot write the materialised lists to {target}: {exc.strerror or exc}",
+            hint="check that you have permission to write under the work root (DFWB_WORK_ROOT) "
+            "and that its disk has space left",
+        ) from None
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(retired, ignore_errors=True)
+        _remove(staging, what="the folder the lists were written to")
+        _remove(retired, what="the folder the lists replaced")
 
 
 def _counts_text(rebuilt: Mapping[str, int], published: Mapping[str, int]) -> str:
@@ -704,7 +751,8 @@ def materialize_dataset(
     Raises:
         UnknownKeyError: the dataset, pack or scheme is unknown.
         ConfigError: there is no inventory at ``inventory``, a rule needs ``official`` and it is
-            ``None``, or the materialized folder would be inside a datasets root.
+            ``None``, the materialized folder would be inside a datasets root, or it cannot be
+            written (no permission, no space left).
         ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, a scheme's rule
             cannot be recomputed, a pin does not match, ``pairs`` were drawn by another rule than
             the card's, the inventory repeats a video, or any rebuilt list does not hash to its
