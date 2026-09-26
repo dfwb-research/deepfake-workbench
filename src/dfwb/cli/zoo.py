@@ -173,7 +173,7 @@ def info(name: str, as_json: bool) -> None:
 @json_option
 def fetch(name: str, weights_id: str | None, accept_license: bool, as_json: bool) -> None:
     """Download and verify NAME's code and weights, ready for zoo:NAME to use."""
-    from dfwb.core import licenses
+    from dfwb.zoo.adapter import accept_license as record_license_acceptance
     from dfwb.zoo.adapter import require_license_accepted
     from dfwb.zoo.source import select_weight
     from dfwb.zoo.strategies import ensure_clone
@@ -182,8 +182,8 @@ def fetch(name: str, weights_id: str | None, accept_license: bool, as_json: bool
     _entry, adapter = _load_adapter(name)
     card = adapter.card
 
-    if accept_license and card.license.requires_ack and not licenses.is_accepted(card.name):
-        licenses.accept(card.name, license=card.license.weights or card.license.code)
+    if accept_license:
+        record_license_acceptance(card)
 
     require_license_accepted(card)
 

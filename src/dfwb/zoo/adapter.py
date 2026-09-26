@@ -16,13 +16,21 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from dfwb import __version__ as _FRAMEWORK_VERSION
 from dfwb.core.detector import DetectorMeta
 from dfwb.core.errors import InstallationError
-from dfwb.core.licenses import require_accepted
+from dfwb.core.licenses import accept as _accept_licence
+from dfwb.core.licenses import is_accepted, require_accepted
 from dfwb.zoo.card import AdapterCard, read_card
 
 if TYPE_CHECKING:
     from dfwb.core.detector import Detector
 
-__all__ = ["Adapter", "meta_from_card", "read_builtin_card", "require_license_accepted"]
+__all__ = [
+    "Adapter",
+    "accept_license",
+    "license_text_for",
+    "meta_from_card",
+    "read_builtin_card",
+    "require_license_accepted",
+]
 
 _CARDS_DIR = Path(__file__).resolve().parent / "cards"
 
@@ -74,13 +82,23 @@ def meta_from_card(card: AdapterCard, *, version: str | None = None, source: str
     )
 
 
+def license_text_for(card: AdapterCard) -> str:
+    """The licence text ``card``'s acknowledgement is about: its *code* licence for a
+    ``"pinned-clone"`` strategy (the usual reason a card would use that strategy at all), or its
+    *weights* licence (falling back to its code licence when it declares none) for every other
+    strategy. :func:`require_license_accepted` gates on exactly this text, and
+    :func:`accept_license` records exactly this text, so a caller (``dfwb zoo fetch``) never has
+    to work out which licence a card's acknowledgement means -- and can never accidentally record
+    a different one than the gate itself checks."""
+    if card.code_strategy == "pinned-clone":
+        return card.license.code
+    return card.license.weights or card.license.code
+
+
 def require_license_accepted(card: AdapterCard) -> None:
     """Gate use of ``card`` on its own licence terms -- the same gate the face backends use
     (:func:`dfwb.core.licenses.require_accepted`), so there is exactly one implementation of
-    "has this licence been acknowledged" in the framework. When ``card.code_strategy`` is
-    ``"pinned-clone"``, the gate is framed as being about the adapter's *code* licence (the usual
-    reason a card would use that strategy at all); otherwise it is framed as being about its
-    weights, as for every other strategy.
+    "has this licence been acknowledged" in the framework.
 
     Raises:
         InstallationError: ``card.license.requires_ack`` is set and ``card.name`` has not yet
@@ -88,12 +106,12 @@ def require_license_accepted(card: AdapterCard) -> None:
     """
     if not card.license.requires_ack:
         return
-    if card.code_strategy == "pinned-clone":
-        what = "this adapter's code licence"
-        licence = card.license.code
-    else:
-        what = "these model weights"
-        licence = card.license.weights or card.license.code
+    what = (
+        "this adapter's code licence"
+        if card.code_strategy == "pinned-clone"
+        else "these model weights"
+    )
+    licence = license_text_for(card)
     try:
         require_accepted(card.name, terms=f"licensed under {licence}", what=what)
     except InstallationError as exc:
@@ -102,3 +120,15 @@ def require_license_accepted(card: AdapterCard) -> None:
             hint=f"licensed under {licence}; run `dfwb zoo fetch {card.name} "
             "--accept-license` once (this machine will not ask again)",
         ) from None
+
+
+def accept_license(card: AdapterCard) -> None:
+    """Record ``card``'s licence acknowledgement, under the exact text
+    :func:`require_license_accepted` gates on (:func:`license_text_for`) -- so whatever records an
+    acceptance and whatever later checks it always agree, and ``dfwb zoo licenses`` shows the
+    licence the user actually agreed to (a pinned-clone adapter's *code* licence, not its distinct
+    weights licence, say). A no-op if ``card`` needs no acknowledgement at all, or one has already
+    been recorded (the existing acknowledgement's timestamp is left untouched)."""
+    if not card.license.requires_ack or is_accepted(card.name):
+        return
+    _accept_licence(card.name, license=license_text_for(card))

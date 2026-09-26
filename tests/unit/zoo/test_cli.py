@@ -297,6 +297,45 @@ def test_fetch_records_the_acceptance_visible_via_licenses(run, server, monkeypa
     assert rows["fetch-gated-2"]["license"] == "MIT"
 
 
+def test_fetch_accept_license_for_a_pinned_clone_records_the_code_licence_not_weights(
+    run, tmp_path, monkeypatch
+):
+    """A ``pinned-clone`` card is gated on its *code* licence (the usual reason it uses that
+    strategy at all), not its weights licence -- ``require_license_accepted`` already frames the
+    gate and its hint that way. ``--accept-license`` must record (and ``dfwb zoo licenses`` must
+    later show) that same code licence, not whatever the card's distinct weights licence says."""
+    repo = tmp_path / "upstream"
+    repo.mkdir()
+    commit = _init_repo(repo)
+    get_registry("detectors").add(
+        "fetch-pinned-gated", target="tests.unit.zoo._fixtures:WeightedTestAdapter", summary="x"
+    )
+    card = parse_card(
+        f"""
+name: fetch-pinned-gated
+display_name: Pinned Clone Gated
+contract_version: [1, 0]
+upstream: {{repo: "{repo}", commit: "{commit}"}}
+license: {{code: Apache-2.0, weights: LicenseRef-CC-BY-NC-4.0, requires_ack: true}}
+code_strategy: pinned-clone
+input: {{}}
+"""
+    )
+    monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
+
+    blocked = run("zoo", "fetch", "fetch-pinned-gated")
+    assert blocked.code == 5
+    assert "Apache-2.0" in blocked.err
+    assert "LicenseRef-CC-BY-NC-4.0" not in blocked.err
+
+    accepted = run("zoo", "fetch", "fetch-pinned-gated", "--accept-license", "--json")
+    assert accepted.code == 0
+
+    result = run("zoo", "licenses", "--json")
+    rows = {row["name"]: row for row in json.loads(result.out)}
+    assert rows["fetch-pinned-gated"]["license"] == "Apache-2.0"
+
+
 def test_fetch_a_tampered_cache_hit_is_silently_refetched(run, server, monkeypatch):
     from dfwb.zoo.weights import cache_dir
 
