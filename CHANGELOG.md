@@ -30,7 +30,7 @@ All notable changes to this project are documented here. The format follows
   its card holds everything materialising needs, and `dfwb protocols diff` compares its lists by
   hash. A recipe needs every video of the release in each compression the card lists (rows of
   other compressions are left out), and an inventory built by the builder version the pack's
-  `PROVENANCE.json` records; a mismatch message gives the split counts, video count,
+  `PROVENANCE.json` records (with the dfwb version the pack was built by, or a later one); a mismatch message gives the split counts, video count,
   compressions and builder versions, and the hint the likely cause.
 - Three optional dataset card fields (contract C3, backward compatible: a card without them loads
   and lints as before): `videos_sha256` and `pairs_sha256`, the hashes of the video and pair lists,
@@ -46,6 +46,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The version is `0.1.0b3.dev0`, the development pre-release after `0.1.0b2`, so a pack this dfwb
+  builds records a dfwb version that can read its cards (`0.1.0b2` rejects the new card fields).
+  The built-in toyfake pack carries the same version; no scheme hash changes.
 - Every failing `dfwb` command now ends with a `hint: ` line explaining the remedy, including the
   commands that report a non-zero exit themselves rather than raising: `dfwb eval` under
   `--min-coverage`, `dfwb protocols verify`, `dfwb protocols lint`, `dfwb protocols diff

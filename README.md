@@ -10,7 +10,8 @@ inventory → face clips → trained detector → score file → evaluation repo
 pluggable and every result traceable to the protocol version it used and to how it was produced.
 One command, `dfwb`, covers every stage.
 
-> **Status:** pre-release (`0.1.0b2`). Nothing is released on PyPI yet; install from a clone.
+> **Status:** pre-release (`0.1.0b3.dev0`, in development after `0.1.0b2`). Nothing is
+> released on PyPI yet; install from a clone.
 > Linux is the only supported and tested OS. Python ≥ 3.12.
 
 ## Run from a clone

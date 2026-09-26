@@ -291,8 +291,9 @@ def test_another_builder_version_is_named_with_the_dfwb_version_to_use(recipe, t
         f"by version 1 (dfwb {__version__})"
     )
     assert error.hint == (
-        f"rebuild the inventory with dfwb {__version__}, whose packdemo inventory builder is "
-        "the version the pack was built with: dfwb inventory build packdemo"
+        f"rebuild the inventory with the dfwb version the pack's PROVENANCE.json records "
+        f"({__version__}) or a later one whose packdemo inventory builder is still version 1: "
+        "dfwb inventory build packdemo"
     )
 
 
@@ -306,6 +307,7 @@ def test_a_label_the_pack_does_not_know_points_to_rebuilding_the_inventory(recip
 
     assert "'PD-NOPE'" in error.message
     assert "dfwb inventory build packdemo" in error.hint
+    assert "PROVENANCE.json records, or a later one" in error.hint
     assert "verify" not in error.hint
 
 

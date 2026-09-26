@@ -236,7 +236,9 @@ dfwb protocols materialize my-dataset
 work root only when all of them match, and every other command then reads them from there (see
 `docs/concepts/protocols.md`). Say in your pack's README what that needs: every video of the
 release, in each compression the card lists, and an inventory built by the builder version the
-pack was built with, which `PROVENANCE.json` records. A partial copy cannot be materialised.
+pack was built with. `PROVENANCE.json` records it, with the dfwb version the pack was built by:
+that dfwb version, or a later one whose builder is still the same version, will do. A partial
+copy cannot be materialised.
 Because the lists are rebuilt by your builder (its records, `pairing_rule`, `pair_candidates` and
 `local_attrs`), a change to any of them changes the pack: rebuild it and release a new version.
 

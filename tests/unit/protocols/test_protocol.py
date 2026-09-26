@@ -351,10 +351,10 @@ def test_a_pre_release_pack_version_pins(tmp_path):
     protocol = load("toyfake/official", work_root=tmp_path)
     version = protocol.pack_version
     assert load(f"toyfake/official@{version}", work_root=tmp_path).ref == "toyfake/official"
-    pre = re.fullmatch(r"(\d+\.\d+\.\d+)(a|b|rc)(\d+)", version)
+    pre = re.fullmatch(r"(\d+\.\d+\.\d+)(a|b|rc)(\d+)(\.dev\d+)?", version)
     assert pre, f"toyfake is expected to carry a pre-release version, got {version}"
-    release, kind, number = pre.groups()
-    spelled = f"{release}-{ {'a': 'alpha', 'b': 'beta', 'rc': 'pre'}[kind] }.{number}"
+    release, kind, number, dev = pre.groups()
+    spelled = f"{release}-{ {'a': 'alpha', 'b': 'beta', 'rc': 'pre'}[kind] }.{number}{dev or ''}"
     assert load(f"toyfake/official@{spelled}", work_root=tmp_path).pack_version == version
     with pytest.raises(ContractError, match=r"pinned @0\.1\.0a1"):
         load("toyfake/official@0.1.0a1", work_root=tmp_path)

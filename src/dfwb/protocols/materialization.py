@@ -628,8 +628,9 @@ def _mismatch(
             f"inventory builder, the pack by version {built_with} (dfwb {provenance.dfwb})"
         )
         hint = (
-            f"rebuild the inventory with dfwb {provenance.dfwb}, whose {dataset} inventory "
-            f"builder is the version the pack was built with: {rebuild}"
+            "rebuild the inventory with the dfwb version the pack's PROVENANCE.json records "
+            f"({provenance.dfwb}) or a later one whose {dataset} inventory builder is still "
+            f"version {built_with}: {rebuild}"
         )
     elif missing := [name for name in listed if name not in held]:
         hint = (
@@ -740,7 +741,8 @@ def materialize_dataset(
         dataset,
         hint="the inventory was made from another release, or by another version of the "
         f"{dataset} inventory builder than the pack's: rebuild it with the dfwb version the "
-        f"pack's PROVENANCE.json records: dfwb inventory build {dataset}",
+        "pack's PROVENANCE.json records, or a later one with the same builder version: "
+        f"dfwb inventory build {dataset}",
     )
     schemes: dict[str, list[SplitRow]] = {}
     for name, scheme_card in sorted(card.schemes.items()):

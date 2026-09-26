@@ -96,7 +96,9 @@ A recipe rebuilds the published lists exactly, so it needs an exact copy of the 
   compression the card does not list are left out before anything is rebuilt, so a copy that
   holds more compressions is fine;
 - an inventory built by the version of the dataset's inventory builder the pack was built with.
-  The pack's `PROVENANCE.json` records that version, and the dfwb version that shipped it.
+  The pack's `PROVENANCE.json` records that version and the dfwb version the pack was built by;
+  build the inventory with that dfwb version, or a later one whose builder for the dataset is
+  still the same version.
 
 A partial copy, such as one without one of the listed compressions, cannot be materialised: the
 published hashes cover the whole release, and there is no hash per compression. What describes
