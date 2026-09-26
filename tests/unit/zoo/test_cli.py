@@ -492,7 +492,19 @@ def test_verify_detects_a_sha_mismatch_without_touching_the_network(run, server,
     assert data["ok"] is False
     assert data["weights"][0]["status"] == "mismatch"
     assert server.requests == []  # verify never touches the network
-    assert "hint: re-run `dfwb zoo fetch verify-mismatch` to re-download" in result.err
+    assert (
+        "hint: re-run `dfwb zoo fetch verify-mismatch` to re-download the mismatched weights"
+        in result.err
+    )
+
+    # Following the hint actually fixes it: fetch re-verifies the cached file, finds the same
+    # mismatch, deletes it and re-downloads -- and a second verify then passes.
+    server.routes["/w.safetensors"] = CONTENT
+    fetched = run("zoo", "fetch", "verify-mismatch")
+    assert fetched.code == 0
+    refreshed = run("zoo", "verify", "verify-mismatch", "--json")
+    assert refreshed.code == 0
+    assert json.loads(refreshed.out)["ok"] is True
 
 
 def test_verify_plain_text_output(run, server, monkeypatch):
@@ -570,7 +582,8 @@ def test_verify_reports_a_dirty_pinned_clone(run, tmp_path, monkeypatch):
     card = _pinned_card("verify-clone-dirty", repo, commit)
     monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
     run("zoo", "fetch", "verify-clone-dirty")
-    (clone_cache_dir("verify-clone-dirty", commit) / "entry.py").write_text("VALUE = 999\n")
+    clone_dir = clone_cache_dir("verify-clone-dirty", commit)
+    (clone_dir / "entry.py").write_text("VALUE = 999\n")
 
     result = run("zoo", "verify", "verify-clone-dirty", "--json")
 
@@ -578,7 +591,21 @@ def test_verify_reports_a_dirty_pinned_clone(run, tmp_path, monkeypatch):
     data = json.loads(result.out)
     assert data["ok"] is False
     assert data["code"]["status"] == "dirty"
-    assert "hint: re-run `dfwb zoo fetch verify-clone-dirty` to re-download" in result.err
+    assert (
+        f"hint: remove {clone_dir}, then re-run `dfwb zoo fetch verify-clone-dirty` to re-clone it"
+        in result.err
+    )
+
+    # Following the hint actually fixes it: removing the dirty clone and re-fetching leaves a
+    # clean one at the pin, and a second verify then passes.
+    import shutil
+
+    shutil.rmtree(clone_dir)
+    refetched = run("zoo", "fetch", "verify-clone-dirty")
+    assert refetched.code == 0
+    refreshed = run("zoo", "verify", "verify-clone-dirty", "--json")
+    assert refreshed.code == 0
+    assert json.loads(refreshed.out)["ok"] is True
 
 
 def test_verify_reports_a_pinned_clone_at_the_wrong_commit(run, tmp_path, monkeypatch):
@@ -610,7 +637,20 @@ def test_verify_reports_a_pinned_clone_at_the_wrong_commit(run, tmp_path, monkey
 
     assert result.code == 4
     assert "wrong-commit" in result.out
-    assert "hint: re-run `dfwb zoo fetch verify-clone-wrong` to re-download" in result.err
+    assert (
+        f"hint: remove {clone_dir}, then re-run `dfwb zoo fetch verify-clone-wrong` to re-clone it"
+        in result.err
+    )
+
+    # Following the hint actually fixes it: removing the mis-pinned clone and re-fetching leaves
+    # one at the right commit, and a second verify then passes.
+    import shutil
+
+    shutil.rmtree(clone_dir)
+    refetched = run("zoo", "fetch", "verify-clone-wrong")
+    assert refetched.code == 0
+    refreshed = run("zoo", "verify", "verify-clone-wrong")
+    assert refreshed.code == 0
 
 
 # =============================================================================================
