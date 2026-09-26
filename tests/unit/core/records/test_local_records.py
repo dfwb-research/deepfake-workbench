@@ -152,29 +152,32 @@ def _video_record_line() -> str:
 
 @pytest.mark.slow
 def test_reading_250k_video_records_takes_under_a_second(tmp_path):
+    # Process CPU time (time.process_time()), not wall-clock: the budget is the code's own cost,
+    # not how much of another process's work this machine interleaves with it while it runs.
     path = tmp_path / "videos.jsonl"
     path.write_text((_video_record_line() + "\n") * 250_000)
-    start = time.perf_counter()
+    start = time.process_time()
     rows = read_jsonl(path, VideoRecord)
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
     assert len(rows) == 250_000
-    assert elapsed < 1.0, f"read took {elapsed:.2f}s"
+    assert elapsed < 1.0, f"read took {elapsed:.2f}s of CPU time"
 
 
 @pytest.mark.slow
 def test_reading_250k_video_records_from_gz_takes_under_a_second(tmp_path):
     """The ``.gz`` form of the same 250k-row budget: decompression is extra work on top of the
     plain form's JSON parsing and object construction, so it is benchmarked (and gated) on its
-    own rather than assumed to inherit the plain form's headroom."""
+    own rather than assumed to inherit the plain form's headroom. CPU time, not wall-clock -- see
+    the comment on the plain-form test above."""
     path = tmp_path / "videos.jsonl.gz"
     text = (_video_record_line() + "\n") * 250_000
     with gzip.open(path, "wt", encoding="utf-8") as handle:
         handle.write(text)
-    start = time.perf_counter()
+    start = time.process_time()
     rows = read_jsonl(path, VideoRecord)
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
     assert len(rows) == 250_000
-    assert elapsed < 1.0, f"gz read took {elapsed:.2f}s"
+    assert elapsed < 1.0, f"gz read took {elapsed:.2f}s of CPU time"
 
 
 def test_processing_profile_round_trips_through_yaml():
