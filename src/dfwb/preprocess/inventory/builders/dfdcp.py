@@ -175,6 +175,11 @@ class DFDCPreviewBuilder(BaseBuilder):
         "release": "the preview release of the Deepfake Detection Challenge dataset: 1,131 "
         "clips of paid actors and 4,119 face swaps made with two methods",
         "homepage": None,
+        "paper": {
+            "title": "The Deepfake Detection Challenge (DFDC) Preview Dataset",
+            "venue": "arXiv",
+            "year": 2019,
+        },
         "license": {
             "spdx": None,
             "summary": "the DFDC preview terms of use: non-commercial research only",

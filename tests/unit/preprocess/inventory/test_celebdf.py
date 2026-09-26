@@ -489,6 +489,24 @@ def test_the_benchmark_draws_from_the_testing_list(cdf_root):
 
 
 def test_dataset_cards():
+    celeb_df = (
+        "Celeb-DF: A Large-Scale Challenging Dataset for DeepFake Forensics",
+        "CVPR",
+        2020,
+        "10.1109/CVPR42600.2020.00327",
+    )
+    papers = {
+        # The v1 README asks for the CVPR 2020 paper too, the one v2 was published with.
+        "celebdf-v1": celeb_df,
+        "celebdf-v2": celeb_df,
+        "celebdf-v3": (
+            "Celeb-DF++: A Large-scale Challenging Video DeepFake Benchmark for Generalizable "
+            "Forensics",
+            "arXiv",
+            2025,
+            None,
+        ),
+    }
     names = {
         CelebDFv1Builder: ("celebdf-v1", "Celeb-DF v1", "Celeb-DF-v1"),
         CelebDFv2Builder: ("celebdf-v2", "Celeb-DF v2", "Celeb-DF-v2"),
@@ -508,7 +526,10 @@ def test_dataset_cards():
         assert builder.known_compressions == ()
         assert card.default_scheme == "official+ident-80-20"
         assert card.license.spdx is None
-        assert card.paper is None
+        assert card.paper is not None
+        assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == papers[
+            dataset_id
+        ]
 
 
 def test_each_card_names_its_own_release_terms_and_repository():

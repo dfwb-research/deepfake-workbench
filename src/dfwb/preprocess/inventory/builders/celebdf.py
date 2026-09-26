@@ -162,6 +162,7 @@ def _card(
     homepage: str,
     key_rule: str,
     *,
+    paper: dict[str, object],
     project: str = "Celeb-DF",
 ) -> dict[str, object]:
     """A release's card; ``project`` names whose repository and terms of use it comes under."""
@@ -170,6 +171,7 @@ def _card(
         "aliases": aliases,
         "release": release,
         "homepage": homepage,
+        "paper": paper,
         "license": {
             "spdx": None,
             "summary": f"the {project} terms of use: non-commercial research only",
@@ -193,6 +195,14 @@ _RANDOM_BENCHMARK: Final = (
     "a small, seeded evaluation set: up to 100 fakes drawn at random from the official test "
     f"list, {BENCHMARK_REALS}"
 )
+# The paper both v1 and v2 ask to be cited: v2 was published with it, and the v1 README cites
+# it too.
+_CELEB_DF_PAPER: Final = {
+    "title": "Celeb-DF: A Large-Scale Challenging Dataset for DeepFake Forensics",
+    "venue": "CVPR",
+    "year": 2020,
+    "doi": "10.1109/CVPR42600.2020.00327",
+}
 _V1_V2_KEY_RULE: Final = (
     "real: CR/<id>_<rec> or YTR/<n>; fake: FS_CS/<target>_<source>_<rec> (the file stem)"
 )
@@ -270,6 +280,7 @@ class CelebDFv1Builder(_CelebDFBuilder):
         "Celeb-synthesis face swaps",
         "https://github.com/yuezunli/celeb-deepfakeforensics",
         _V1_V2_KEY_RULE,
+        paper=_CELEB_DF_PAPER,
     )
     layout_notes = (
         f"The official test list goes in {testing_list} (the release's {_UPSTREAM_TESTING_LIST})."
@@ -294,6 +305,7 @@ class CelebDFv2Builder(_CelebDFBuilder):
         "590 Celeb-real and 300 YouTube-real videos and 5,639 Celeb-synthesis face swaps",
         "https://github.com/yuezunli/celeb-deepfakeforensics",
         _V1_V2_KEY_RULE,
+        paper=_CELEB_DF_PAPER,
     )
     layout_notes = (
         f"The official test list goes in {testing_list} (the release's {_UPSTREAM_TESTING_LIST})."
@@ -374,6 +386,12 @@ class CelebDFv3Builder(_CelebDFBuilder):
         "real: CR/<id>_<rec> or YTR/<n>; face swap and reenactment: "
         "<task>/<target>_<source>_<rec>; talking face: <task>/<target>_<rec>_test_<ref> "
         "(the file stem)",
+        paper={
+            "title": "Celeb-DF++: A Large-scale Challenging Video DeepFake Benchmark for "
+            "Generalizable Forensics",
+            "venue": "arXiv",
+            "year": 2025,
+        },
         project="Celeb-DF++",
     )
     layout_notes = (

@@ -391,7 +391,13 @@ def test_dataset_card():
     assert card.modalities == ["video", "audio"]
     assert card.default_scheme == "official"
     assert card.homepage == "https://github.com/xyyandxyy/IDForge"
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "Identity-Driven Multimedia Forgery Detection via Reference Assistance",
+        "ACM MM",
+        2024,
+        "10.1145/3664647.3680622",
+    )
     assert card.license.spdx is None
 
 

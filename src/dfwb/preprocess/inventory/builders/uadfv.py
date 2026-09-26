@@ -25,6 +25,11 @@ from dfwb.protocols.rules import local_key
 __all__ = ["UADFVBuilder"]
 
 _FAKE_SUFFIX: Final = "_fake"
+# UADFV has no homepage: the owners release it through this agreement form.
+_AGREEMENT_FORM: Final = (
+    "https://docs.google.com/forms/d/e/1FAIpQLScKPoOv15TIZ9Mn0nGScIVgKRM9tFWOmjh9eHKx57Yp-XcnxA/"
+    "viewform"
+)
 
 
 def _real_of(stem: str) -> str | None:
@@ -60,8 +65,20 @@ class UADFVBuilder(BaseBuilder):
         "aliases": [],
         "release": "49 real videos and their 49 face swaps",
         "homepage": None,
-        "license": {"spdx": None, "summary": "no terms of use recorded yet", "url": None},
-        "access": "obtain the release from its authors; dfwb never distributes media",
+        "paper": {
+            "title": "Exposing Deep Fakes Using Inconsistent Head Poses",
+            "venue": "ICASSP",
+            "year": 2019,
+            "doi": "10.1109/ICASSP.2019.8683164",
+        },
+        "license": {
+            "spdx": None,
+            "summary": "the Terms to use UADFV, agreed in the owners' agreement form; the terms "
+            "need review",
+            "url": None,
+        },
+        "access": f"request the download through the owners' agreement form ({_AGREEMENT_FORM}); "
+        "dfwb never distributes media",
         "modalities": ["video"],
         "compressions": None,
         "key_rule": "real: REAL/<n>; fake: FS_FAKE/<n>_fake (the file stem)",
