@@ -113,6 +113,11 @@ class DFDCBuilder(BaseBuilder):
         "release": "the public test set of the Deepfake Detection Challenge: 5,000 videos of "
         "paid actors, half of them manipulated",
         "homepage": "https://ai.meta.com/datasets/dfdc/",
+        "paper": {
+            "title": "The DeepFake Detection Challenge (DFDC) Dataset",
+            "venue": "arXiv",
+            "year": 2020,
+        },
         "license": {
             "spdx": None,
             "summary": "the DFDC dataset terms of use: non-commercial research only",

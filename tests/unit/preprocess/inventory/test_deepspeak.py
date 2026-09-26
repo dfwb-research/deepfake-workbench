@@ -595,7 +595,13 @@ def test_dataset_cards():
         assert card.default_scheme == "official+ident-80-20"
         assert card.homepage is not None
         assert card.homepage.startswith("https://huggingface.co/datasets/faridlab/")
-        assert card.paper is None
+        assert card.paper is not None
+        assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+            "The DeepSpeak Dataset",
+            "CVPR Findings",
+            2026,
+            None,
+        )
         assert card.license.spdx is None
 
 

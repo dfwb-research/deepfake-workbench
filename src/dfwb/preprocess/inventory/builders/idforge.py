@@ -177,6 +177,12 @@ class IDForgeV1Builder(BaseBuilder):
         "synthesised speech, and three of real video with cloned or synthesised speech, with "
         "the release's train/val/test split lists",
         "homepage": "https://github.com/xyyandxyy/IDForge",
+        "paper": {
+            "title": "Identity-Driven Multimedia Forgery Detection via Reference Assistance",
+            "venue": "ACM MM",
+            "year": 2024,
+            "doi": "10.1145/3664647.3680622",
+        },
         "license": {
             "spdx": None,
             "summary": "no licence statement found; the forged videos are released on request "

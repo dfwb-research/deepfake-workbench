@@ -754,7 +754,14 @@ def test_dataset_card():
     assert card.modalities == ["video", "audio"]
     assert card.default_scheme == "official"
     assert card.homepage == "https://huggingface.co/datasets/ControlNet/AV-Deepfake1M-PlusPlus"
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "AV-Deepfake1M++: A Large-Scale Audio-Visual Deepfake Benchmark with Real-World "
+        "Perturbations",
+        "ACM MM",
+        2025,
+        "10.1145/3746027.3761979",
+    )
     assert card.license.spdx is None
     assert "77,326" in card.release
 

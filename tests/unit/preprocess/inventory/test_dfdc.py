@@ -252,7 +252,13 @@ def test_dataset_card():
     assert card.compressions is None
     assert builder.known_compressions == ()
     assert card.default_scheme == "official"
-    assert card.paper is None
+    assert card.paper is not None
+    assert (card.paper.title, card.paper.venue, card.paper.year, card.paper.doi) == (
+        "The DeepFake Detection Challenge (DFDC) Dataset",
+        "arXiv",
+        2020,
+        None,
+    )
     assert card.homepage == "https://ai.meta.com/datasets/dfdc/"
 
 
