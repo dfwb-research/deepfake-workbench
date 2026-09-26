@@ -8,11 +8,12 @@ the ``preprocess`` and ``train`` extras (`dfwb.core.detector.ClipBatch.clips` is
 regardless of what the detector itself does with it).
 
 Reads its roots from ``DFWB_DATASETS_ROOT``, ``DFWB_WORK_ROOT`` and ``DFWB_RUNS_ROOT`` if already
-set (a test points these at a temporary directory); otherwise it creates
-``./dfwb-example-detector/{datasets,work,runs}``. It never touches a real datasets root,
+set (a test points these at a temporary directory); otherwise it creates and works inside
+``./dfwb-example-detector/`` (``{datasets,work,runs}`` plus the detector module itself), so nothing
+is left loose in the caller's own directory. It never touches a real datasets root,
 ``~/.cache/dfwb`` or ``~/.local/state/dfwb``.
 
-    python examples/score_custom_detector.py
+    uv run python examples/score_custom_detector.py
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ def _run(*args: str) -> None:
 
 
 def main_() -> None:
+    EXAMPLE_ROOT.mkdir(parents=True, exist_ok=True)
     datasets_root = _root("DFWB_DATASETS_ROOT", "datasets")
     work_root = _root("DFWB_WORK_ROOT", "work")
     runs_root = _root("DFWB_RUNS_ROOT", "runs")
@@ -83,8 +85,9 @@ def main_() -> None:
     os.environ["DFWB_WORK_ROOT"] = str(work_root)
     os.environ["DFWB_RUNS_ROOT"] = str(runs_root)
 
-    Path("my_detector.py").write_text(_DETECTOR_MODULE, encoding="utf-8")
-    sys.path.insert(0, str(Path.cwd()))  # what `PYTHONPATH=.` does for a real shell invocation
+    (EXAMPLE_ROOT / "my_detector.py").write_text(_DETECTOR_MODULE, encoding="utf-8")
+    # What `PYTHONPATH=<dir>` does for a real shell invocation.
+    sys.path.insert(0, str(EXAMPLE_ROOT))
 
     _run("datasets", "synth", "toyfake", "--out", str(datasets_root))
     _run("inventory", "build", "toyfake")

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """The "try it in five minutes" quickstart, run as a script instead of typed at a shell.
 
-Mirrors ``docs/quickstart.md`` exactly: synthesize toyfake, build its inventory, verify it,
+Mirrors ``docs/quickstart.md`` exactly: synthesise toyfake, build its inventory, verify it,
 process it, train a tiny model on it for two epochs, then score and evaluate the trained run.
 Needs the ``train`` and ``preprocess`` extras (``uv sync --extra train --extra preprocess``).
 
 Reads its three roots from ``DFWB_DATASETS_ROOT``, ``DFWB_WORK_ROOT`` and ``DFWB_RUNS_ROOT`` if
-already set (a test points these at a temporary directory); otherwise it creates
-``./dfwb-example-toyfake/{datasets,work,runs}`` next to wherever it is run from. It never touches
+already set (a test points these at a temporary directory); otherwise it creates and works inside
+``./dfwb-example-toyfake/`` (``{datasets,work,runs}`` plus its own training config) next to
+wherever it is run from, so nothing is left loose in the caller's own directory. It never touches
 a real datasets root, ``~/.cache/dfwb`` or ``~/.local/state/dfwb``.
 
-    python examples/quickstart_toyfake.py
+    uv run python examples/quickstart_toyfake.py
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ def _run(*args: str) -> None:
 
 
 def main_() -> None:
+    EXAMPLE_ROOT.mkdir(parents=True, exist_ok=True)
     datasets_root = _root("DFWB_DATASETS_ROOT", "datasets")
     work_root = _root("DFWB_WORK_ROOT", "work")
     runs_root = _root("DFWB_RUNS_ROOT", "runs")
@@ -50,7 +52,7 @@ def main_() -> None:
     _run("preprocess", "run", "toyfake", "--profile", "toy-64-center-8f")
     _run("preprocess", "status", "toyfake", "--profile", "toy-64-center-8f")
 
-    config = Path("toy-cpu.yaml")
+    config = EXAMPLE_ROOT / "toy-cpu.yaml"
     config.write_text(
         "schema: dfwb.train/1\nextends: [dfwb://templates/toy-cpu.yaml]\n", encoding="utf-8"
     )
