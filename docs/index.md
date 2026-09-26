@@ -1,7 +1,7 @@
 # Deepfake Workbench
 
-![Deepfake Workbench: a four-stage pipeline, each stage ticking green in turn: datasets (sha256-verified inventories), protocols (versioned splits), training (seed-locked runs) and evaluation (AUC with confidence intervals and coverage).](assets/hero-light.svg#only-light)
-![Deepfake Workbench: a four-stage pipeline, each stage ticking green in turn: datasets (sha256-verified inventories), protocols (versioned splits), training (seed-locked runs) and evaluation (AUC with confidence intervals and coverage).](assets/hero-dark.svg#only-dark)
+![Deepfake Workbench: a four-stage pipeline, each stage ticking green in turn: datasets (verified inventories), protocols (versioned splits), training (seed-locked runs) and evaluation (AUC with confidence intervals and coverage).](assets/hero-light.svg#only-light)
+![Deepfake Workbench: a four-stage pipeline, each stage ticking green in turn: datasets (verified inventories), protocols (versioned splits), training (seed-locked runs) and evaluation (AUC with confidence intervals and coverage).](assets/hero-dark.svg#only-dark)
 
 `dfwb` is a uniform, plugin-driven workbench for deepfake detection research: raw dataset →
 verified inventory → face clips → trained detector → score file → evaluation report, with every
