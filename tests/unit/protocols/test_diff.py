@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,11 @@ from dfwb.core.records import (
     LabelVocab,
     PackCard,
     PackProvenance,
+    PairRecord,
     SplitRow,
     VideoRecord,
     read_jsonl,
+    records_sha256,
     write_jsonl,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
@@ -550,3 +553,110 @@ def test_version_bump_rejects_a_downgrade():
 
 def test_bump_rank_orders_major_over_minor_over_patch_over_none():
     assert bump_rank("major") > bump_rank("minor") > bump_rank("patch") > bump_rank("none")
+
+
+# -------------------------------------------------------------------------------------------
+# Recipe datasets shipped without their key lists: compared by the card's list hashes.
+# -------------------------------------------------------------------------------------------
+
+
+def _hash_lists(pack: Path, *, pairs: list[PairRecord] | None = None) -> None:
+    """Record the shipped lists' hashes in the card (writing ``pairs`` first when given)."""
+    dataset = pack / DATASET_ID
+    if pairs is not None:
+        write_jsonl(dataset / "pairs.jsonl.gz", pairs)
+    card = yaml.safe_load((dataset / "dataset.yaml").read_text())
+    pairs_path = dataset / "pairs.jsonl.gz"
+    card["videos_sha256"] = records_sha256(read_jsonl(dataset / "videos.jsonl.gz", VideoRecord))
+    card["pairs_sha256"] = records_sha256(
+        read_jsonl(pairs_path, PairRecord) if pairs_path.is_file() else []
+    )
+    card["pairing_rule"] = "toy"
+    (dataset / "dataset.yaml").write_text(yaml.safe_dump(card, sort_keys=True))
+
+
+def _strip(pack: Path) -> None:
+    """Publish the dataset as a recipe without its key lists, as a release build does."""
+    dataset = pack / DATASET_ID
+    card = yaml.safe_load((dataset / "dataset.yaml").read_text())
+    card["distribution"] = "recipe"
+    (dataset / "dataset.yaml").write_text(yaml.safe_dump(card, sort_keys=True))
+    (dataset / "videos.jsonl.gz").unlink()
+    (dataset / "pairs.jsonl.gz").unlink(missing_ok=True)
+    shutil.rmtree(dataset / "splits")
+
+
+_PAIRS = [PairRecord("FAKE/f1", "REAL/r1", "toy"), PairRecord("FAKE/f2", "REAL/r2", "toy")]
+
+
+def test_a_relabel_between_two_key_free_recipes_requires_a_major_bump(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    _relabel(new, "FAKE/f2", method="FakeB")
+    for pack in (old, new):
+        _hash_lists(pack, pairs=_PAIRS)
+        _strip(pack)
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "major"
+    assert result.lists_changed == [f"{DATASET_ID}/videos"]
+    assert result.relabelled == []  # without the lists, no video can be named
+    assert [s.status for s in result.schemes] == ["same"]
+
+
+def test_a_changed_pair_list_between_key_free_recipes_is_reported(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    _hash_lists(old, pairs=_PAIRS)
+    _hash_lists(new, pairs=_PAIRS[:1])
+    for pack in (old, new):
+        _strip(pack)
+
+    result = diff_packs(old, new)
+
+    assert result.lists_changed == [f"{DATASET_ID}/pairs"]
+    # As for a pack that ships its pairs: a changed pair list is a changed file, a patch.
+    assert result.required_bump == "patch"
+
+
+def test_publishing_a_list_dataset_as_a_key_free_recipe_changes_no_records(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    for pack in (old, new):
+        _hash_lists(pack, pairs=_PAIRS)
+    _strip(new)
+
+    result = diff_packs(old, new)
+
+    assert result.lists_changed == []
+    assert result.relabelled == []
+    assert result.required_bump == "patch"  # the card and the files left out, nothing else
+
+
+def test_publishing_a_list_dataset_as_a_recipe_with_a_relabel_requires_a_major_bump(tmp_path):
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    _hash_lists(old, pairs=_PAIRS)
+    _relabel(new, "FAKE/f2", label_key="DIFFDS-REAL")
+    _hash_lists(new, pairs=_PAIRS)
+    _strip(new)
+
+    result = diff_packs(old, new)
+
+    assert result.required_bump == "major"
+    assert result.lists_changed == [f"{DATASET_ID}/videos"]
+
+
+def test_a_list_side_is_hashed_even_when_its_card_records_no_hashes(tmp_path):
+    # A list pack built before the cards recorded their hashes, then published as a recipe.
+    old = _write_pack(tmp_path / "old", "pack", "1.0.0", _official_only())
+    new = _write_pack(tmp_path / "new", "pack", "1.0.1", _official_only())
+    _hash_lists(new)
+    _strip(new)
+    assert yaml.safe_load((old / DATASET_ID / "dataset.yaml").read_text())["videos_sha256"] is None
+
+    result = diff_packs(old, new)
+
+    assert result.lists_changed == []
+    assert result.required_bump == "patch"

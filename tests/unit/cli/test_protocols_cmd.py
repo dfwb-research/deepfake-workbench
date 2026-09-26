@@ -22,6 +22,7 @@ from dfwb.core.records import (
     SplitRow,
     VideoRecord,
     read_jsonl,
+    records_sha256,
     write_jsonl,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
@@ -550,6 +551,42 @@ def test_diff_cli_lists_relabelled_videos(run, tmp_path):
     assert "required bump: major" in text.out
     assert data["relabelled"] == ["diffcli/FAKE/f1|"]
     assert data["relabelled_count"] == 1
+    assert data["required_bump"] == "major"
+
+
+def _publish_without_lists(pack: Path) -> None:
+    dataset = pack / "diffcli"
+    card = yaml.safe_load((dataset / "dataset.yaml").read_text("utf-8"))
+    card.update(
+        distribution="recipe",
+        videos_sha256=records_sha256(read_jsonl(dataset / "videos.jsonl.gz", VideoRecord)),
+        pairs_sha256=records_sha256([]),
+    )
+    (dataset / "dataset.yaml").write_text(yaml.safe_dump(card), "utf-8")
+    (dataset / "videos.jsonl.gz").unlink()
+    for split in (dataset / "splits").iterdir():
+        split.unlink()
+    (dataset / "splits").rmdir()
+
+
+def test_diff_cli_names_the_lists_of_a_recipe_that_changed_by_hash(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.0.1", _diff_rows())
+    videos = [
+        VideoRecord(v.key, v.compression, "DIFFCLI-REAL", v.method) if v.key == "FAKE/f1" else v
+        for v in read_jsonl(new / "diffcli" / "videos.jsonl.gz", VideoRecord)
+    ]
+    write_jsonl(new / "diffcli" / "videos.jsonl.gz", videos)
+    _publish_without_lists(old)
+    _publish_without_lists(new)
+
+    text = run("protocols", "diff", str(old), str(new))
+    data = json.loads(run("protocols", "diff", str(old), str(new), "--json").out)
+
+    assert "lists changed (compared by hash, no video named): diffcli/videos" in text.out
+    assert "required bump: major" in text.out
+    assert data["lists_changed"] == ["diffcli/videos"]
+    assert data["relabelled"] == []
     assert data["required_bump"] == "major"
 
 

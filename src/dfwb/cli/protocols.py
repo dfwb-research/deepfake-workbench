@@ -447,6 +447,10 @@ def _report_bump_shortfall(error_line: str, required_bump: str) -> None:
 def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
     """Compare two protocol pack directories and report the SemVer bump the changes require.
 
+    A recipe dataset that either pack ships without its key lists is compared by the hashes of
+    its video and pair lists; a changed video list requires a major bump, since a relabel cannot
+    be told apart from any other change to it.
+
     With ``--expect-bump``, the value is the bump the pack author claims for the release: the
     command exits 4, naming both, when that claim is smaller than the bump the changes require --
     the check a release pipeline runs before publishing. An unchanged pack requires ``none``,
@@ -481,6 +485,7 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
             "labels_added": result.labels_added,
             "relabelled": relabelled,
             "relabelled_count": len(result.relabelled),
+            "lists_changed": result.lists_changed,
             "required_bump": result.required_bump,
         }
         if expect_bump is not None:
@@ -502,6 +507,10 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         click.echo(f"videos relabelled: {len(result.relabelled)}{shown}")
         for key in relabelled:
             click.echo(f"  {key}")
+    if result.lists_changed:
+        click.echo(
+            "lists changed (compared by hash, no video named): " + ", ".join(result.lists_changed)
+        )
     click.echo(f"required bump: {result.required_bump}")
     if expect_bump is not None:
         click.echo(f"expected bump: {expect_bump}")
