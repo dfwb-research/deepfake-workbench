@@ -25,7 +25,8 @@ license:
 code_strategy: pinned-clone
 install: {extra: zoo-gend, pip: ["open_clip_torch>=2.24,<3"]}
 weights:
-  - {id: default, url: "https://example.org/w.safetensors", sha256: "aa", bytes: 123,
+  - {id: default, url: "https://example.org/w.safetensors",
+     sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", bytes: 123,
      format: safetensors, trained_on: [ffpp/official], redistribution: undecided}
 input: {crop: face, crop_scale: 1.3, size: [224, 224], frames: 1,
         mean: [0.481, 0.458, 0.408], std: [0.269, 0.261, 0.276]}
@@ -60,7 +61,7 @@ def test_parses_the_full_c4_example():
     assert card.install is not None
     assert card.install.extra == "zoo-gend"
     assert len(card.weights) == 1
-    assert card.weights[0].sha256 == "aa"
+    assert card.weights[0].sha256 == "a" * 64
     assert card.input.size == (224, 224)
     assert card.reported[0].value == 0.91
     assert card.parity[0].tolerance == 0.01
@@ -119,6 +120,70 @@ def test_read_card_names_a_missing_file(tmp_path):
 
     with pytest.raises(ContractError, match="cannot read"):
         read_card(tmp_path / "does-not-exist.yaml")
+
+
+@pytest.mark.parametrize("name", ["not/a-slug", "..", "Upper", "has space", "trailing-"])
+def test_a_name_that_is_not_a_safe_slug_is_rejected(name):
+    text = (
+        f"name: {name!r}\ndisplay_name: X\ncontract_version: [1, 0]\n"
+        "license: {code: MIT}\ncode_strategy: pip\ninput: {}\n"
+    )
+    with pytest.raises(ContractError):
+        parse_card(text)
+
+
+@pytest.mark.parametrize(
+    "sha256",
+    ["aa", "A" * 64, ("a" * 63) + "g", "a" * 65],
+    ids=["too-short", "uppercase", "non-hex", "too-long"],
+)
+def test_a_weight_sha256_that_is_not_64_lowercase_hex_is_rejected(sha256):
+    text = f"""
+name: x
+display_name: X
+contract_version: [1, 0]
+license: {{code: MIT}}
+code_strategy: pip
+input: {{}}
+weights:
+  - {{id: default, url: "https://example.org/w", sha256: "{sha256}", bytes: 1, format: safetensors}}
+"""
+    with pytest.raises(ContractError):
+        parse_card(text)
+
+
+def test_weight_bytes_is_optional():
+    text = """
+name: x
+display_name: X
+contract_version: [1, 0]
+license: {code: MIT}
+code_strategy: pip
+input: {}
+weights:
+  - {id: default, url: "https://example.org/w",
+     sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     format: safetensors}
+"""
+    card = parse_card(text)
+    assert card.weights[0].bytes is None
+
+
+@pytest.mark.parametrize(
+    "commit", ["main", "v1.0", "0123456789abcdef", "0123456789ABCDEF0123456789abcdef01234567"]
+)
+def test_an_upstream_commit_that_is_not_a_full_lowercase_sha_is_rejected(commit):
+    text = f"""
+name: x
+display_name: X
+contract_version: [1, 0]
+upstream: {{repo: "https://example.org/x", commit: "{commit}"}}
+license: {{code: MIT}}
+code_strategy: pinned-clone
+input: {{}}
+"""
+    with pytest.raises(ContractError):
+        parse_card(text)
 
 
 @pytest.mark.parametrize("name", ["chance", "random"])

@@ -4,12 +4,13 @@ offline mode -- all against a local HTTP server, never the real network."""
 from __future__ import annotations
 
 import hashlib
+import sys
 
 import pytest
 
 from dfwb.core.errors import ContractError, InstallationError
 from dfwb.zoo.card import WeightSpec
-from dfwb.zoo.weights import cache_dir, ensure_weights
+from dfwb.zoo.weights import cache_dir, ensure_weights, load_weights
 
 CONTENT = b"pretend these are model weights\n" * 50
 SHA256 = hashlib.sha256(CONTENT).hexdigest()
@@ -88,3 +89,113 @@ def test_weights_filename_matches_the_declared_format(server, isolated):
     path = ensure_weights("run-adapter", spec)
 
     assert path.name == "weights.pt"
+
+
+def test_a_size_mismatch_against_the_card_is_reported(server, isolated):
+    server.routes["/w.safetensors"] = CONTENT
+    spec = _spec(f"{server.url}/w.safetensors")
+    spec.bytes = len(CONTENT) + 1  # sha256 still matches CONTENT; only the declared size is wrong
+
+    with pytest.raises(ContractError, match="bytes"):
+        ensure_weights("gend", spec)
+
+
+# --------------------------------------------------------------------- a tampered cache hit
+
+
+def test_a_tampered_cache_hit_is_deleted_and_refetched(server, isolated):
+    server.routes["/w.safetensors"] = CONTENT
+    spec = _spec(f"{server.url}/w.safetensors")
+    dest = cache_dir("gend", SHA256) / "weights.safetensors"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"tampered content, wrong hash entirely")
+    server.requests.clear()
+
+    path = ensure_weights("gend", spec)
+
+    assert path == dest
+    assert path.read_bytes() == CONTENT
+    assert server.requests == ["/w.safetensors"]  # it really was re-downloaded
+
+
+def test_a_tampered_cache_hit_offline_raises_naming_the_path(server, isolated, monkeypatch):
+    spec = _spec(f"{server.url}/w.safetensors")
+    dest = cache_dir("gend", SHA256) / "weights.safetensors"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"tampered content, wrong hash entirely")
+
+    monkeypatch.setenv("DFWB_OFFLINE", "1")
+    with pytest.raises(ContractError) as info:
+        ensure_weights("gend", spec)
+    assert str(dest) in info.value.message
+    assert dest.is_file()  # left in place for the user to inspect or replace by hand
+
+
+# ---------------------------------------------------------------------------------- load_weights
+
+
+def test_load_weights_reads_a_safetensors_file(tmp_path):
+    from safetensors.torch import save_file
+
+    path = tmp_path / "weights.safetensors"
+    save_file({"w": __import__("torch").zeros(3)}, str(path))
+    spec = WeightSpec(
+        id="default", url="x://x", sha256="a" * 64, format="safetensors", bytes=path.stat().st_size
+    )
+
+    state = load_weights(path, spec)
+
+    assert list(state) == ["w"]
+
+
+def test_load_weights_reads_a_torch_checkpoint_under_weights_only(tmp_path):
+    import torch
+
+    path = tmp_path / "weights.pt"
+    torch.save({"w": torch.zeros(3)}, path)
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="pytorch")
+
+    state = load_weights(path, spec)
+
+    assert list(state) == ["w"]
+
+
+class _NotATensor:
+    """A module-level (picklable) stand-in for something a checkpoint should never hold."""
+
+
+def test_load_weights_refuses_a_pickle_holding_a_non_tensor_object(tmp_path):
+    import torch
+
+    path = tmp_path / "weights.pt"
+    torch.save({"w": _NotATensor()}, path)
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="pytorch")
+
+    with pytest.raises(ContractError):
+        load_weights(path, spec)
+
+
+def test_load_weights_reports_missing_safetensors(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "safetensors.torch", None)
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="safetensors")
+
+    with pytest.raises(InstallationError, match="safetensors"):
+        load_weights(tmp_path / "w.safetensors", spec)
+
+
+def test_load_weights_reports_missing_torch(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", None)
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="pytorch")
+
+    with pytest.raises(InstallationError, match="torch"):
+        load_weights(tmp_path / "w.pt", spec)
+
+
+def test_load_weights_refuses_an_unknown_format(tmp_path):
+    path = tmp_path / "weights.bin"
+    path.write_bytes(b"whatever")
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="safetensors")
+    spec.format = "onnx"  # bypasses the card's own Literal, as a defensive check would need to
+
+    with pytest.raises(ContractError, match="format"):
+        load_weights(path, spec)

@@ -100,6 +100,36 @@ def test_resolving_a_single_weight_variant_needs_no_explicit_id(server, isolated
     assert detector.weights_path.read_bytes() == CONTENT
 
 
+def test_checkpoint_sha256_is_the_measured_hash_not_the_cards_own_string(
+    server, isolated, monkeypatch, tmp_path
+):
+    # A defensive check: even if the weight manager ever returned a path whose content did not
+    # actually match the card (a bug in `ensure_weights`, say), `load_zoo` must record what the
+    # file on disk really hashes to, never just echo the card's own declared string back out.
+    _register_weighted()
+    card = parse_card(
+        _card_yaml(
+            "weighted-test",
+            f"""weights:
+  - {{id: default, url: "{server.url}/w.safetensors", sha256: "{SHA256}", bytes: {len(CONTENT)},
+     format: safetensors}}""",
+        )
+    )
+    monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
+
+    wrong_content = b"not what the card declares at all"
+    decoy = tmp_path / "decoy.safetensors"
+    decoy.write_bytes(wrong_content)
+    import dfwb.zoo.source as source_module
+
+    monkeypatch.setattr(source_module, "ensure_weights", lambda name, spec: decoy)
+
+    detector = resolve_detector("zoo:weighted-test")
+
+    assert detector.checkpoint_sha256 == hashlib.sha256(wrong_content).hexdigest()
+    assert detector.checkpoint_sha256 != SHA256
+
+
 def test_resolving_with_an_explicit_weights_id(server, isolated, monkeypatch):
     _register_weighted()
     server.routes["/a.safetensors"] = CONTENT

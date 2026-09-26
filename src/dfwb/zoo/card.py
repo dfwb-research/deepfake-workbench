@@ -10,10 +10,10 @@ same way whether or not the adapter it describes can currently be loaded.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 
 from dfwb.core.detector import InputSpec
 from dfwb.core.errors import ContractError, validation_messages
@@ -31,6 +31,13 @@ __all__ = [
     "parse_card",
     "read_card",
 ]
+
+# A name safe to use as a path component (cache dirs, module names): lower-kebab, the same
+# convention the plugin registries use for their own keys -- so it can never contain a "/" or a
+# ".." segment.
+Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")]
+Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+CommitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
 
 
 class _Strict(BaseModel):
@@ -52,7 +59,7 @@ class Upstream(_Strict):
     """Where the adapter's upstream code lives, and at which exact commit."""
 
     repo: str
-    commit: str
+    commit: CommitSha
     paper: UpstreamPaper | None = None
     bibtex: str | None = None
 
@@ -78,8 +85,8 @@ class WeightSpec(_Strict):
 
     id: str
     url: str
-    sha256: str
-    bytes: int
+    sha256: Sha256Hex
+    bytes: int | None = None
     format: Literal["safetensors", "pytorch"]
     trained_on: tuple[str, ...] = ()
     redistribution: Literal["undecided", "allowed", "forbidden"] = "undecided"
@@ -132,7 +139,7 @@ class ParityMetric(_Strict):
 class AdapterCard(_Strict):
     """The full adapter card: contract C4's schema, exactly, with unknown keys rejected."""
 
-    name: str
+    name: Slug
     display_name: str
     contract_version: tuple[int, int]
     upstream: Upstream | None = None

@@ -18,6 +18,7 @@ import dataclasses
 from typing import TYPE_CHECKING, Any
 
 from dfwb.core.errors import ConfigError, UnknownKeyError, did_you_mean
+from dfwb.core.hashing import sha256_file
 from dfwb.core.plugins import get_registry
 from dfwb.zoo.adapter import require_license_accepted
 from dfwb.zoo.weights import ensure_weights
@@ -59,10 +60,11 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
             weights, or leaves an ambiguous choice among several weight variants.
         UnknownKeyError: ``<name>`` names no registered adapter, or ``<weights id>`` is not one of
             the card's own weight variants.
-        ContractError: the adapter's licence must be acknowledged first
-            (:func:`~dfwb.zoo.adapter.require_license_accepted`).
-        InstallationError: its weights are not cached and cannot be downloaded (offline, or the
-            download itself failed).
+        InstallationError: the adapter's licence must be acknowledged first
+            (:func:`~dfwb.zoo.adapter.require_license_accepted`, exit code 5), or its weights are
+            not cached and cannot be downloaded (offline, or the download itself failed).
+        ContractError: a cached weights file does not match the card and cannot be re-downloaded
+            offline.
     """
     name, has_id, weights_id = ref.partition("@")
     if not name:
@@ -78,7 +80,10 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
     if card.weights:
         spec = _select_weight(card, weights_id if has_id else None)
         weights_path = ensure_weights(card.name, spec)
-        checkpoint_sha256 = spec.sha256
+        # The measured hash of the file actually on disk, not just an echo of the card's own
+        # declared string -- correct by construction once `ensure_weights` has verified it, and
+        # still correct even if that guarantee were ever violated by a bug.
+        checkpoint_sha256 = sha256_file(weights_path)
         resolved_id = spec.id
     elif has_id:
         raise ConfigError(
