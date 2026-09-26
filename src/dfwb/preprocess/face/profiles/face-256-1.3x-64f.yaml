@@ -1,4 +1,4 @@
-# Thesis-parity profile: reproduces the historical FaceForensics++ "64f insightface" stores.
+# Parity profile: reproduces the historical FaceForensics++ "64f insightface" stores.
 id: face-256-1.3x-64f
 backend: {name: insightface, model: buffalo_l, det_size: 256, min_score: 0.5}
 track: {iou: 0.3, strategy: largest-then-iou}

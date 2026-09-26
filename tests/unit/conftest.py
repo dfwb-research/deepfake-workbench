@@ -27,8 +27,8 @@ def _dump(model) -> str:
 def write_import_fixture_dataset(dataset_dir: Path, dataset_id: str) -> None:
     """5 ``CDF/0000N`` videos (2 real, 3 fake), all in ``test``.
 
-    A small, purpose-built pack for ``dfwb eval import`` tests: real keys already look like the
-    thesis convention (``<task>/<video_id>``), so a key template test can compose them exactly,
+    A small, purpose-built pack for ``dfwb eval import`` tests: real keys already follow a
+    ``<task>/<video_id>`` convention, so a key template test can compose them exactly,
     and mismatched keys (an extension, a foreign prefix, a missing task prefix) can be built
     against it precisely. Two label mappings: ``binary`` (no excludes, the default used by most
     tests) and ``binary-exclude-fake`` (the same, but ``CDF-FAKE`` maps to ``"exclude"``), for

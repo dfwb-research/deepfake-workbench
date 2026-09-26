@@ -7,8 +7,8 @@
 
 A uniform, plugin-driven workbench for deepfake detection research: raw dataset → verified
 inventory → face clips → trained detector → score file → evaluation report, with every stage
-pluggable and every result traceable to a protocol version, a processing profile and a config
-fingerprint.
+pluggable and every result traceable to the protocol version it used and to how it was produced.
+One command, `dfwb`, covers every stage.
 
 > **Status:** pre-release (`0.1.0b2`). Nothing is released on PyPI yet; install from a clone.
 > Linux is the only supported and tested OS. Python ≥ 3.12.
@@ -21,10 +21,22 @@ uv sync
 uv run dfwb doctor
 ```
 
+## Where to start
+
+| You have | Start with |
+|---|---|
+| Nothing yet | The [quickstart](#quickstart), on a synthetic dataset, with nothing to download |
+| Your own copies of public datasets | [I have my own datasets](#i-have-my-own-datasets) |
+| Score files from your own code | [I only have score files from my own code](#i-only-have-score-files-from-my-own-code) |
+| A detector of your own | [I want to add a detector](#i-want-to-add-a-detector) |
+| A dataset dfwb does not know yet | [Adding a dataset](docs/guides/add-a-dataset.md) |
+| A layer, backbone or loss of your own | [Writing a plugin](docs/guides/write-a-plugin.md) |
+
 ## Quickstart
 
 dfwb ships a synthetic dataset, toyfake, generated entirely from a seed, so the whole
-raw-dataset → inventory → protocol → training pipeline can be tried with nothing to download:
+raw-dataset → inventory → protocol → training → scoring → evaluation pipeline can be tried with
+nothing to download:
 
 ```bash
 export DFWB_DATASETS_ROOT=~/datasets
@@ -47,20 +59,21 @@ uv run dfwb runs list
 uv run dfwb runs show toy-cpu
 ```
 
-`datasets synth` writes a small set of synthetic real and blended-fake videos to
+`datasets synth` writes 200 synthetic real and blended-fake videos to
 `$DFWB_DATASETS_ROOT/toyfake`. `inventory build` scans that folder and writes
 `$DFWB_WORK_ROOT/toyfake/inventory.jsonl`. `protocols verify` joins that inventory against dfwb's
 built-in toyfake protocol pack and writes a coverage report; with the defaults above it reports
-full coverage. `preprocess run` crops and tracks a face through every video with the
-`toy-64-center-8f` profile, which has no detector and no model to download (like every profile, it
-needs the `preprocess` extra, which a clone's `uv sync` already installs), writing a lossless frame
-store under `$DFWB_WORK_ROOT/toyfake/processed/`; `preprocess status` then counts it by outcome.
-`train` needs the `train` extra (PyTorch, Lightning, timm) — `uv run --extra train` installs the
-CPU build for this one invocation; `docs/install.md` covers installing a GPU build instead. The
-`toy-cpu.yaml` file just extends the shipped `toy-cpu` template, which trains a tiny CNN on the
-toyfake tree just built, for two epochs, writing its run under `./runs/toy-cpu/`; `runs list` shows
-it, and `runs show` its full detail: data sources, validation metrics, and the config fingerprint
-that identifies the experiment.
+full coverage. `preprocess run` samples eight frames from every video and keeps each frame's
+centred 64-pixel square: the `toy-64-center-8f` profile has no face detector and no model to
+download. Like every profile, it needs the `preprocess` extra, which a clone's `uv sync` already
+installs. It writes a lossless (PNG) frame store under `$DFWB_WORK_ROOT/toyfake/processed/`, and
+`preprocess status` counts that store by outcome. `train` needs the `train` extra (PyTorch,
+Lightning, timm): `uv run --extra train` adds it to the clone's environment, with the CPU build of
+PyTorch that the lockfile pins; [`docs/install.md`](docs/install.md) covers installing a GPU
+build instead. The `toy-cpu.yaml` file just extends the shipped `toy-cpu` template, which trains a
+tiny CNN on the toyfake tree just built, for two epochs, writing its run under `./runs/toy-cpu/`.
+`runs list` shows it, and `runs show` its full detail: data sources, validation metrics, and the
+config fingerprint that identifies the experiment.
 
 From here, score the trained run and turn its scores into metrics with confidence intervals:
 
@@ -69,15 +82,48 @@ uv run dfwb score --detector "run:runs/toy-cpu/latest#best" --protocol toyfake/o
 uv run dfwb eval runs/scores/tiny-cnn-mean-linear/toyfake-official/*.scores.csv
 ```
 
-See `docs/concepts/protocols.md` for what `verify` checks and its exit codes,
-`docs/concepts/processing-profiles.md` for the shipped face-processing profiles and the processed
-store's layout, `docs/concepts/training.md` for what the training keys do,
-`docs/concepts/detectors.md` for the detector contract a trained run implements and how to load
-one back, `docs/concepts/score-files.md` for the C5 score file `dfwb score` writes,
-`docs/guides/cross-dataset-eval.md` for scoring a suite and comparing detectors,
-`docs/install.md` for installing the face-detection backends and a PyTorch build, and
-`docs/guides/add-a-dataset.md` / `docs/guides/write-a-plugin.md` for wiring up a real dataset or a
-model component of your own.
+A **suite** is a named set of protocol splits scored and evaluated together, with aggregate rows
+such as a mean AUC per group. The framework ships one, `toyfake`, which pairs the split just
+scored with a second, identity-disjoint split:
+
+```bash
+uv run dfwb score --detector "run:runs/toy-cpu/latest#best" --suite toyfake
+uv run dfwb eval runs/scores/tiny-cnn-mean-linear/toyfake-*/*.scores.csv --suite toyfake --out report
+```
+
+`dfwb score --suite` reuses the score file it already wrote for the first split and writes one for
+the second. `dfwb eval` prints one row per file, and with `--out` writes `report/report.md` and
+`report/metrics.json`, which also hold the suite's aggregate rows.
+[Cross-dataset evaluation](docs/guides/cross-dataset-eval.md) covers suites, the coverage policy,
+and comparing two detectors with `dfwb eval compare`.
+
+## Your own data, scores and detectors
+
+### I have my own datasets
+
+The framework knows the folder layout of 21 public datasets and ships protocols for toyfake
+only. The protocols of the public datasets, and the evaluation suites that span them, come from
+[dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols): install it into the clone's
+environment first, as [With dfwb-protocols and dfwb-torch](#with-dfwb-protocols-and-dfwb-torch)
+shows. Then point `DFWB_DATASETS_ROOT` at the folder that holds your copies:
+
+```bash
+export DFWB_DATASETS_ROOT=/data/datasets    # holds FaceForensics++/, Celeb-DF-v2/, ...
+export DFWB_WORK_ROOT=/data/dfwb-work
+uv run dfwb datasets list                   # every dataset, and where it was found
+uv run dfwb datasets info ffpp              # the folder layout dfwb expects for one dataset
+uv run dfwb inventory build ffpp
+uv run dfwb protocols verify ffpp           # your copy against the published lists
+```
+
+From there the steps are the quickstart's, on real data: `dfwb preprocess run` with one of the
+shipped face profiles (`dfwb preprocess profiles` lists them; each needs its face-detection
+extra, see [`docs/install.md`](docs/install.md)); `dfwb config init`, which writes a starter
+config extending the `binary-frame` template, then `dfwb train`; and `dfwb score` on another
+dataset's test split for a cross-dataset result, or on a suite such as dfwb-protocols'
+`cross-dataset-v1`, then `dfwb eval`. [Protocols](docs/concepts/protocols.md),
+[Processing profiles](docs/concepts/processing-profiles.md) and
+[Training](docs/concepts/training.md) cover each step.
 
 ### I only have score files from my own code
 
@@ -105,7 +151,9 @@ uv run dfwb eval imported/toyfake-official-test.scores.csv --bootstrap 500
 
 The six videos above are matched by key; the other 35 videos of the split's test set become
 `missing` rows, and the printed coverage (`{'expected': 41, 'ok': 6, 'missing': 35, 'error': 0}`)
-says so plainly rather than pretending the file covers more than it does.
+says so plainly rather than pretending the file covers more than it does. `dfwb eval` still
+prints its metrics, over the six scored videos, then exits with status 3, because the file's
+coverage (0.1463) is below `--min-coverage` (0.99 by default).
 
 ### I want to add a detector
 
@@ -158,15 +206,49 @@ PYTHONPATH=. uv run dfwb score --detector py:my_detector:make_detector \
 `<module>` must be importable on the interpreter's own path — `PYTHONPATH=.` puts the current
 directory on it, so `my_detector.py` next to it resolves; installed code needs no such override.
 
-See `docs/guides/add-a-detector.md` for the full guide, including how to package a detector as a
-shareable, licence-aware zoo adapter card instead of a one-off factory function; the framework's
-zoo ships only two sanity-check dummies (`zoo:chance`, `zoo:random`) in this release, no real
-third-party adapters.
+See [Adding a detector](docs/guides/add-a-detector.md) for the full guide, including how to
+package a detector as a shareable, licence-aware zoo adapter card instead of a one-off factory
+function. The framework's zoo ships only two sanity-check dummies (`zoo:chance`, `zoo:random`) in
+this release, no real third-party adapters.
 
-## Data policy
+## The commands
 
-DFWB never distributes media. Users obtain datasets from their owners; DFWB works with identifiers,
-labels and splits only.
+| Command | What it does |
+|---|---|
+| `dfwb doctor` | Checks Python, the roots, the installed extras and the plugins, and where each dataset was found |
+| `dfwb datasets` | Lists the supported datasets and shows the folder layout each expects; `synth` generates toyfake |
+| `dfwb inventory` | Builds and summarises a dataset's inventory |
+| `dfwb protocols` | Lists, inspects and verifies installed protocols, and materialises recipe schemes; builds, lints and diffs protocol packs, and scaffolds a new one |
+| `dfwb preprocess` | Lists the shipped processing profiles, runs the face pipeline with one, checks its progress, and merges sharded runs |
+| `dfwb config` | Starts a config from a template, and shows or validates the resolved config |
+| `dfwb train` | Trains a config, or resumes an interrupted run |
+| `dfwb runs` | Lists and shows training runs |
+| `dfwb score` | Runs a detector (a trained run, a zoo adapter or your own code) over a protocol split or a suite, and writes score files |
+| `dfwb eval` | Computes metrics with confidence intervals, per-group breakdowns and suite aggregates; `compare`, `calibrate` and `import` are its subcommands |
+| `dfwb zoo` | Lists, inspects, fetches and verifies zoo adapters, and checks their parity; this release registers only `zoo:chance` and `zoo:random` |
+| `dfwb plugins` | Lists and inspects plugins and the components they register |
+| `dfwb schema` | Exports the contracts' JSON Schemas |
+| `dfwb completion` | Prints the shell completion snippet |
+
+`dfwb <command> --help` gives every subcommand and option.
+
+## Documentation
+
+| Page | What it covers |
+|---|---|
+| [Installing extras](docs/install.md) | The optional extras, a PyTorch build (CPU or CUDA), and the face-detection backends |
+| [Protocols](docs/concepts/protocols.md) | Protocol references, split schemes, `verify` and its exit codes |
+| [Processing profiles](docs/concepts/processing-profiles.md) | The shipped face-processing profiles, the processed store, resuming and sharding |
+| [Training](docs/concepts/training.md) | What each training key does |
+| [Detectors](docs/concepts/detectors.md) | The C4 detector contract, and loading a trained run back |
+| [Score files](docs/concepts/score-files.md) | The C5 score file `dfwb score` writes, and its cache |
+| [Adding a dataset](docs/guides/add-a-dataset.md) | An inventory builder and a protocol pack of your own |
+| [Adding a detector](docs/guides/add-a-detector.md) | The `py:` detector source and zoo adapter cards |
+| [Cross-dataset evaluation](docs/guides/cross-dataset-eval.md) | Scoring and evaluating suites, the coverage policy, `compare` and DeLong |
+| [Reproducing a run](docs/guides/reproduce-a-run.md) | From a run directory to a score file comparable with others |
+| [Writing a plugin](docs/guides/write-a-plugin.md) | Layers, backbones, losses and other components, registered through `register(api)` |
+
+[`CHANGELOG.md`](CHANGELOG.md) lists what each version added.
 
 ## Data in several places, several machines
 
@@ -201,27 +283,75 @@ datasets = ["/fast/datasets", "/nfs/datasets"]
 kodf = "/fast/KoDF-mirror"
 ```
 
+## With dfwb-protocols and dfwb-torch
+
+Both install into the framework's environment from a clone, and register themselves through the
+`dfwb.plugins` entry point; `dfwb plugins list` then shows what each one added. From inside the
+framework's clone:
+
+```bash
+git clone https://github.com/dfwb-research/dfwb-protocols ../dfwb-protocols
+uv pip install ../dfwb-protocols
+uv run dfwb protocols list
+```
+
+dfwb-protocols adds the protocols of the public datasets, which `dfwb protocols list` shows, and
+three evaluation suites; it needs this framework at 0.1.0b2 or later.
+
+`dfwb-torch-srm` depends on PyTorch, so install it after the quickstart, once the environment
+holds the `train` extra's CPU build of PyTorch:
+
+```bash
+git clone https://github.com/dfwb-research/dfwb-torch ../dfwb-torch
+uv pip install ../dfwb-torch/packages/srm
+uv run dfwb plugins list
+```
+
+It adds the `srm` layer, which a training config puts in front of any image backbone as a model
+stem:
+
+```yaml
+model:
+  stem: {name: srm, bank: srm30, mode: gray}
+```
+
+A later `uv sync` removes both again, since the lockfile does not list them; `uv sync --inexact`
+keeps them.
+
+## The DFWB repositories
+
+Three repositories make up [DFWB Research](https://github.com/dfwb-research); the organisation
+profile also lists the datasets in preparation.
+
+| Repository | What it holds |
+|---|---|
+| [deepfake-workbench](https://github.com/dfwb-research/deepfake-workbench) | The framework: verified dataset inventories, face preprocessing, training, scoring any detector, and evaluation with uncertainty. One `dfwb` command. |
+| [dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols) | Versioned train, validation and test splits for public deepfake datasets, CC BY 4.0. Installed next to the framework, it adds its protocols and evaluation suites. |
+| [dfwb-torch](https://github.com/dfwb-research/dfwb-torch) | Small, standalone PyTorch utilities for media forensics, starting with `dfwb-torch-srm`. Installed next to the framework, a package registers its layers as plugins. |
+
 ## Licence
 
 MIT. See [`LICENSE`](LICENSE).
 
 ## Principles
 
-**Never media.** DFWB works with identifiers, labels and splits only; every dataset still comes
-from its own owner, under the owner's terms.
+**Never media.** DFWB works with identifiers, labels and splits only, and never distributes
+media; every dataset still comes from its own owner, under the owner's terms.
 
-**Reproducible and traceable.** Every result carries a protocol version, a processing profile and
-a config fingerprint, so a score file or a trained run can always be traced back to exactly what
-produced it — and, wherever a detector has one, its own training seed.
+**Reproducible and traceable.** Every score file records the protocol version and scheme hash it
+covers, and how it was produced: for a trained run, the processing profile, the config
+fingerprint, the checkpoint's hash and the training seed. A result can always be traced back to
+exactly what produced it.
 
 **Progressive installs.** The base install pulls no `torch` at all: browsing protocols, building
-inventories and evaluating score files all work from it. Extras (`preprocess`, `train`, `zoo`) add
-exactly the heavier dependencies each stage needs, never more.
+inventories and evaluating score files all work from it. Extras such as `preprocess`, `eval`,
+`train` and `zoo` add the heavier dependencies each stage needs, only when you need them.
 
 ## Cite this work
 
-If DFWB helps your work, please consider citing it (see [`CITATION.cff`](CITATION.cff)); GitHub's
-"Cite this repository" button gives you the reference once this repository is public.
+If this work helps your research, please cite it. This repository carries a
+[`CITATION.cff`](CITATION.cff), so GitHub's "Cite this repository" button gives you the reference
+once the repository is public.
 
 ## Maintainer
 

@@ -72,7 +72,7 @@ def test_clips_per_mode_picks_train_or_eval():
 
 
 def test_uniform_t1_reproduces_32_evenly_spaced_frames():
-    # the thesis's 32FA regime: T=1, 32 evenly spaced frames per video.
+    # a 32-frames-per-video regime: T=1, 32 evenly spaced frames per video.
     spec = ClipSpec(frames=1, sampling="uniform", clips_per_video=ClipsPerVideo(train=32, eval=32))
     n = 200
     windows = clip_windows(n, spec, train=False, rng=None)
@@ -146,7 +146,7 @@ def test_uniform_train_positions_are_reproducible_for_one_seed_and_epoch():
 
 def test_uniform_train_uses_every_stored_frame_when_c_times_t_equals_the_frame_count():
     # 32 of 32: one frame per segment, so an epoch trains on every stored frame of every video,
-    # the thesis's 32-frames-all regime, whatever the seed
+    # a 32-frames-all regime, whatever the seed
     spec = ClipSpec(frames=1, sampling="uniform", clips_per_video=ClipsPerVideo(train=32, eval=32))
     for seed in range(5):
         windows = clip_windows(32, spec, train=True, rng=random.Random(seed))
