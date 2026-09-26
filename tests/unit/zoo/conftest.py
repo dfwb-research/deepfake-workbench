@@ -9,6 +9,7 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
+import platformdirs
 import pytest
 
 
@@ -25,6 +26,38 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Isolated:
     monkeypatch.setenv("DFWB_CACHE_ROOT", str(paths.cache))
     monkeypatch.setenv("DFWB_STATE_DIR", str(paths.state))
     return paths
+
+
+def _snapshot(root: Path) -> frozenset[tuple[str, int, int]]:
+    """``(relative path, size, mtime_ns)`` for every file under ``root``, or an empty set when
+    ``root`` does not exist -- comparable before/after so any write, delete or edit shows up,
+    including the directory coming into existence at all."""
+    if not root.is_dir():
+        return frozenset()
+    return frozenset(
+        (str(path.relative_to(root)), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    )
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_cache_or_state_dir() -> Iterator[None]:
+    """A safety net independent of ``isolated`` above: every zoo test is expected to redirect
+    ``DFWB_CACHE_ROOT``/``DFWB_STATE_DIR`` into ``tmp_path``, but if one ever does not (a bug, or
+    a stray ``monkeypatch.undo()`` reverting that redirection early), this catches it rather than
+    letting the test silently read from or write to the machine's real, shared directories --
+    which the controller (not this suite) is responsible for cleaning up, so this only asserts
+    and never deletes anything itself."""
+    real_cache = Path(platformdirs.user_cache_dir("dfwb"))
+    real_state = Path(platformdirs.user_state_dir("dfwb"))
+    before = (_snapshot(real_cache), _snapshot(real_state))
+    yield
+    after = (_snapshot(real_cache), _snapshot(real_state))
+    assert after == before, (
+        f"a zoo test wrote to the real {real_cache} or {real_state} instead of a redirected "
+        "DFWB_CACHE_ROOT/DFWB_STATE_DIR"
+    )
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
