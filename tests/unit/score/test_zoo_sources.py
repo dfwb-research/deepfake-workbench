@@ -49,6 +49,12 @@ def test_two_seeds_give_two_different_score_files_with_different_scores(score_ro
     first_scores = {(r.dataset, r.key): r.score for r in read_scores(first.csv_path).rows}
     second_scores = {(r.dataset, r.key): r.score for r in read_scores(second.csv_path).rows}
     assert first_scores != second_scores
+    first_meta = read_scores(first.csv_path).meta
+    second_meta = read_scores(second.csv_path).meta
+    assert first_meta is not None
+    assert second_meta is not None
+    assert first_meta.seed == 0
+    assert second_meta.seed == 1
 
 
 def test_the_same_seed_reproduces_its_scores_exactly(score_roots, tmp_path):

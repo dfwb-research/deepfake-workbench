@@ -17,8 +17,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from dfwb import __version__
-from dfwb.core.errors import ContractError
+from dfwb.core.errors import ContractError, validation_messages
 from dfwb.core.paths import require_root, resolve_roots
 from dfwb.zoo.card import AdapterCard, ParityMetric
 
@@ -101,12 +103,29 @@ def parity_path(name: str) -> Path:
     return cache_root / "zoo" / name / "parity.json"
 
 
+def _metric_key(metric: ParityMetric) -> MetricKey:
+    return (metric.protocol, metric.split, metric.metric)
+
+
 def write_parity_overlay(name: str, metrics: Sequence[ParityMetric]) -> Path:
-    """Write ``metrics`` (typically from :meth:`ParityCheck.as_metric`) to the local overlay
-    file, written atomically. Overwrites whatever the previous run left there."""
+    """Merge ``metrics`` (typically from :meth:`ParityCheck.as_metric`) into the local overlay
+    file, written atomically. A parity run only ever measures one protocol's worth of metrics at a
+    time, so this keeps whatever an earlier run already recorded for every other
+    ``(protocol, split, metric)`` and only replaces an entry that shares one of ``metrics``' own
+    keys -- never drops the rest of the file.
+
+    Raises:
+        ContractError: the existing overlay file (if any) is corrupt (see
+            :func:`read_parity_overlay`).
+    """
+    merged = {_metric_key(metric): metric for metric in read_parity_overlay(name)}
+    for metric in metrics:
+        merged[_metric_key(metric)] = metric
+    ordered = sorted(merged.values(), key=_metric_key)
+
     path = parity_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"parity": [metric.model_dump(mode="json") for metric in metrics]}
+    payload = {"parity": [metric.model_dump(mode="json") for metric in ordered]}
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     try:
@@ -118,9 +137,32 @@ def write_parity_overlay(name: str, metrics: Sequence[ParityMetric]) -> Path:
 
 
 def read_parity_overlay(name: str) -> list[ParityMetric]:
-    """The overlay file's own ``parity:`` entries, or ``[]`` if none has been written yet."""
+    """The overlay file's own ``parity:`` entries, or ``[]`` if none has been written yet.
+
+    Raises:
+        ContractError: the file exists but is not valid JSON, or does not validate as a list of
+            :class:`~dfwb.zoo.card.ParityMetric`.
+    """
     path = parity_path(name)
     if not path.is_file():
         return []
-    data = json.loads(path.read_text("utf-8"))
-    return [ParityMetric.model_validate(entry) for entry in data.get("parity", [])]
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ContractError(
+            f"{path}: parity overlay is corrupt (invalid JSON: {exc})",
+            hint="fix or delete the file; it is rebuilt by the next parity run",
+        ) from None
+    if not isinstance(data, dict):
+        raise ContractError(
+            f"{path}: parity overlay is corrupt (expected a JSON object, got "
+            f"{type(data).__name__})",
+            hint="fix or delete the file; it is rebuilt by the next parity run",
+        )
+    try:
+        return [ParityMetric.model_validate(entry) for entry in data.get("parity", [])]
+    except ValidationError as exc:
+        raise ContractError(
+            f"{path}: " + "; ".join(validation_messages(exc)),
+            hint="fix or delete the file; it is rebuilt by the next parity run",
+        ) from None

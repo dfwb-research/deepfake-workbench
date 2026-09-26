@@ -105,3 +105,94 @@ def test_read_parity_overlay_is_empty_before_any_run(isolated):
 def test_write_parity_overlay_is_under_the_cache_root(isolated):
     path = write_parity_overlay("x", [])
     assert path.parent == isolated.cache / "zoo" / "x"
+
+
+_CELEBDF_ONLY_CARD = """
+name: gend
+display_name: GenD
+contract_version: [1, 0]
+license: {code: Apache-2.0}
+code_strategy: pip
+input: {}
+reported:
+  - {protocol: celebdf-v2/official, split: test, metric: video_auc, value: 0.90, source: "Table 2"}
+"""
+
+_FFPP_ONLY_CARD = """
+name: gend
+display_name: GenD
+contract_version: [1, 0]
+license: {code: Apache-2.0}
+code_strategy: pip
+input: {}
+reported:
+  - {protocol: ffpp/official, split: test, metric: video_auc, value: 0.95, source: "Table 3"}
+"""
+
+
+def test_write_parity_overlay_merges_with_entries_for_other_protocols(isolated):
+    # Two separate runs, each against a different protocol -- as `dfwb zoo parity` naturally
+    # would, one protocol at a time -- must accumulate in the one overlay file, not overwrite it.
+    celebdf_check = compare_parity(
+        parse_card(_CELEBDF_ONLY_CARD), {("celebdf-v2/official", "test", "video_auc"): 0.905}
+    )
+    write_parity_overlay(
+        "gend", [c.as_metric(dfwb_version="0.1.0", date="2026-01-01") for c in celebdf_check]
+    )
+
+    ffpp_check = compare_parity(
+        parse_card(_FFPP_ONLY_CARD), {("ffpp/official", "test", "video_auc"): 0.95}
+    )
+    write_parity_overlay(
+        "gend", [c.as_metric(dfwb_version="0.1.0", date="2026-01-02") for c in ffpp_check]
+    )
+
+    overlay = read_parity_overlay("gend")
+    by_protocol = {m.protocol: m for m in overlay}
+    assert set(by_protocol) == {"celebdf-v2/official", "ffpp/official"}
+    assert by_protocol["celebdf-v2/official"].value == 0.905
+    assert by_protocol["ffpp/official"].value == 0.95
+
+
+def test_write_parity_overlay_replaces_a_later_measurement_of_the_same_metric(isolated):
+    card = parse_card(_CELEBDF_ONLY_CARD)
+    first = compare_parity(card, {("celebdf-v2/official", "test", "video_auc"): 0.905})
+    write_parity_overlay(
+        card.name, [c.as_metric(dfwb_version="0.1.0", date="2026-01-01") for c in first]
+    )
+
+    second = compare_parity(card, {("celebdf-v2/official", "test", "video_auc"): 0.912})
+    write_parity_overlay(
+        card.name, [c.as_metric(dfwb_version="0.1.1", date="2026-01-02") for c in second]
+    )
+
+    (overlay,) = read_parity_overlay(card.name)
+    assert overlay.value == 0.912
+    assert overlay.dfwb_version == "0.1.1"
+
+
+def test_read_parity_overlay_wraps_a_corrupt_file_in_contract_error(isolated):
+    path = parity_path("corrupt")
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+
+    with pytest.raises(ContractError, match="corrupt"):
+        read_parity_overlay("corrupt")
+
+
+def test_read_parity_overlay_wraps_a_non_object_top_level_in_contract_error(isolated):
+    path = parity_path("not-an-object")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([1, 2, 3]))
+
+    with pytest.raises(ContractError, match="not-an-object"):
+        read_parity_overlay("not-an-object")
+
+
+def test_read_parity_overlay_wraps_a_schema_violation_in_contract_error(isolated):
+    path = parity_path("bad-schema")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"parity": [{"protocol": "x"}]}))  # missing required fields
+
+    with pytest.raises(ContractError, match="bad-schema"):
+        read_parity_overlay("bad-schema")
