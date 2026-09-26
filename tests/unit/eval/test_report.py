@@ -247,3 +247,88 @@ def _row(task, i, compression, label, score, label_key, method):
         label_key=label_key,
         method=method,
     )
+
+
+# ------------------------------------------------------------------ list-valued ``where`` filters
+
+
+def test_evaluate_seed_grouping_handles_a_list_valued_where(tmp_path):
+    """An any-of ``where`` (``--where method=a --where method=b``) is stored as a list; grouping
+    files into "the same run, another seed" must not need it to be hashable."""
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    where = {"method": ["Deepfakes", "original"], "compression": "c23"}
+    protocol = {**_PROTO, "where": where}
+    path_a = _write(
+        tmp_path,
+        "s0.scores.csv",
+        make_rows(20, 20),
+        make_meta(seed=0, protocol=protocol, coverage=cov),
+    )
+    path_b = _write(
+        tmp_path,
+        "s1.scores.csv",
+        make_rows(20, 20, fake_score=0.9),
+        make_meta(seed=1, protocol=protocol, coverage=cov),
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert [row["seeds"] for row in result.tables["seeds"]] == [[0, 1]]
+
+
+def test_evaluate_seed_grouping_treats_list_order_as_irrelevant(tmp_path):
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    first = {**_PROTO, "where": {"method": ["Deepfakes", "original"]}}
+    second = {**_PROTO, "where": {"method": ["original", "Deepfakes"]}}
+    path_a = _write(
+        tmp_path,
+        "s0.scores.csv",
+        make_rows(20, 20),
+        make_meta(seed=0, protocol=first, coverage=cov),
+    )
+    path_b = _write(
+        tmp_path,
+        "s1.scores.csv",
+        make_rows(20, 20),
+        make_meta(seed=1, protocol=second, coverage=cov),
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert [row["seeds"] for row in result.tables["seeds"]] == [[0, 1]]
+
+
+def test_evaluate_suite_matches_a_list_where_whatever_its_order(tmp_path):
+    """A suite entry written the way dfwb-protocols' ``in-domain-ffpp`` writes one (``method:
+    [original, Deepfakes]``) matches the file ``dfwb score`` wrote for it, whose meta holds the
+    same list in canonical (sorted) order."""
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    stored = {"method": ["Deepfakes", "original"], "compression": "c23"}
+    path = _write(
+        tmp_path,
+        "df.scores.csv",
+        make_rows(20, 20),
+        make_meta(
+            seed=None, protocol={**_PROTO, "id": "ffpp/official", "where": stored}, coverage=cov
+        ),
+    )
+    suite = Suite.model_validate(
+        {
+            "name": "in-domain-like",
+            "entries": [
+                {
+                    "protocol": "ffpp/official",
+                    "split": "test",
+                    "where": {"method": ["original", "Deepfakes"], "compression": "c23"},
+                    "group": "in-domain",
+                }
+            ],
+            "aggregates": [{"group": "in-domain", "metric": "auc", "how": "mean"}],
+        }
+    )
+
+    result = evaluate([path], metrics=["auc"], suite=suite, bootstrap=0)
+
+    (row,) = result.tables["suite"]
+    assert row["n_entries"] == 1
+    assert row["value"] == pytest.approx(result.tables["files"][0]["metrics"]["auc"]["value"])

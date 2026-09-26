@@ -36,14 +36,13 @@ from typing import Any
 
 from dfwb.core.errors import ContractError
 from dfwb.core.hashing import fingerprint
-from dfwb.core.records.scores import ScoreMeta, meta_path_for, read_scores
+from dfwb.core.records.scores import ScoreMeta, canonical_where, meta_path_for, read_scores
 
 __all__ = [
     "CacheHit",
     "DetectorIdentity",
     "cache_key",
     "cache_matches",
-    "canonical_where",
     "look_up",
     "score_path",
     "slug",
@@ -102,22 +101,6 @@ def _fingerprint_payload(detector: Any, identity: DetectorIdentity) -> dict[str,
 
 
 # ------------------------------------------------------------------------------------ cache key
-
-
-def canonical_where(where: Mapping[str, Any] | None) -> dict[str, Any]:
-    """``where``, canonical: a membership list (repeated ``--where key=v``) is sorted, so asking
-    for the same set of values in a different order means the same thing everywhere ``where``
-    is used -- the cache key, the C5 meta a run is recorded under, and a cache hit's own
-    comparison against that meta. A top-level key's own order never matters on its own, since
-    :func:`~dfwb.core.hashing.canonical_json` already sorts object keys when hashing; call this
-    once, at the top of :func:`~dfwb.score.harness.score`, and thread the one canonical value
-    through everything else, rather than canonicalising it again at each point it is compared or
-    stored (that is exactly what let a first, raw ``where`` and a second, differently-ordered but
-    equal one land at the same cache path yet fail to match each other)."""
-    canonical: dict[str, Any] = {}
-    for key, value in (where or {}).items():
-        canonical[key] = sorted(value, key=str) if isinstance(value, list) else value
-    return canonical
 
 
 def cache_key(
@@ -191,7 +174,7 @@ def cache_matches(
         and meta.detector.checkpoint_sha256 == identity.checkpoint_sha256
         and meta.protocol.scheme_sha256 == scheme_sha256
         and meta.protocol.split == split
-        and meta.protocol.where == canonical_where(where)
+        and canonical_where(meta.protocol.where) == canonical_where(where)
         and meta.processing_profile is not None
         and meta.processing_profile.sha256 == profile_sha256
         and meta.aggregation is not None

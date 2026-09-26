@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from typing import Any, TypedDict
 
 from dfwb.core.errors import ConfigError
-from dfwb.core.records import ScoreFile, ScoreMeta, ScoreRow, read_scores
+from dfwb.core.hashing import canonical_json
+from dfwb.core.records import ScoreFile, ScoreMeta, ScoreRow, canonical_where, read_scores
 from dfwb.eval.bootstrap import bootstrap_ci, summarize_seeds
 from dfwb.eval.breakdown import group_rows
 from dfwb.eval.coverage import Coverage, FloatArray, IntArray, coverage_of, labels_and_scores
@@ -23,7 +24,7 @@ from dfwb.eval.suites import Suite, aggregate_suite, load_suite
 
 __all__ = ["EvalResult", "evaluate"]
 
-_Identity = tuple[str, str, str, tuple[tuple[str, Any], ...]]
+_Identity = tuple[str, str, str, str]
 
 
 class MetricEntry(TypedDict):
@@ -68,13 +69,19 @@ class EvalResult:
         }
 
 
+def _where_key(where: dict[str, Any]) -> str:
+    """A hashable, order-free text form of a ``where`` filter: two filters that select the same
+    videos (the same values, any list order, any key order) give the same text."""
+    return canonical_json(canonical_where(where))
+
+
 def _identity(meta: ScoreMeta) -> _Identity:
     """Everything about a run that must match for two files to be "the same run, another seed"."""
     return (
         meta.detector.source,
         meta.protocol.id,
         meta.protocol.split,
-        tuple(sorted(meta.protocol.where.items())),
+        _where_key(meta.protocol.where),
     )
 
 
@@ -218,13 +225,14 @@ def _suite_table(
     suite = load_suite(suite_arg) if isinstance(suite_arg, str) else suite_arg
     entry_results: dict[int, dict[str, float]] = {}
     for entry_index, entry in enumerate(suite.entries):
+        entry_where = _where_key(entry.where)
         for file_index, score_file in enumerate(files):
             meta = score_file.meta
             if (
                 meta is not None
                 and meta.protocol.id == entry.protocol
                 and meta.protocol.split == entry.split
-                and meta.protocol.where == entry.where
+                and _where_key(meta.protocol.where) == entry_where
             ):
                 entry_results[entry_index] = points[file_index]
                 break

@@ -30,6 +30,7 @@ __all__ = [
     "ScoreFile",
     "ScoreMeta",
     "ScoreRow",
+    "canonical_where",
     "coverage_counts",
     "meta_path_for",
     "read_scores",
@@ -175,6 +176,23 @@ class ScoreMeta(RecordModel):
     command: str | None = None
     created: AwareDatetime
     calibration: CalibrationInfo | None = None
+
+
+def canonical_where(where: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``where``, canonical: a membership value (a list, tuple or set of values, meaning any of
+    them -- repeated ``--where key=v``, or a suite entry's ``[a, b]``) becomes a list sorted by
+    each value's text, so the same set of values given in a different order means the same thing
+    everywhere a ``where`` is stored or compared: a score file's meta, the scoring cache's key, a
+    cache hit's check against that meta, ``dfwb eval``'s grouping of seeds, and a suite entry's
+    match against a score file. A scalar value (equality) is kept as it is. The order of the keys
+    themselves never matters: dict equality ignores it, and canonical JSON sorts them."""
+    canonical: dict[str, Any] = {}
+    for key, value in (where or {}).items():
+        if isinstance(value, (list, tuple, set, frozenset)):
+            canonical[key] = sorted(value, key=str)
+        else:
+            canonical[key] = value
+    return canonical
 
 
 @dataclass(frozen=True)

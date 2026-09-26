@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("torch")
 
-from tests.unit.score._toy import PROTOCOL, SUITE, toy_profile, write_toy_store
+from tests.unit.score._toy import PROTOCOL, SUITE, SUITE_ANY_OF, toy_profile, write_toy_store
 
 from dfwb.cli.main import main
 from dfwb.core.records import read_scores
@@ -377,3 +377,98 @@ def test_frames_without_pyarrow_exits_5_before_scoring_anything(cli, score_roots
     assert "hint: " in result.err
     assert "deepfake-workbench[eval]" in result.err
     assert result.out == ""  # nothing was ever scored or printed
+
+
+# ----------------------------------------------------------------------- score -> eval round trips
+
+
+def test_an_any_of_where_score_file_goes_through_eval(cli, score_roots):
+    """Repeating ``--where`` for one key (any of those values) stores a list in the meta; ``dfwb
+    eval`` must read and evaluate that file like any other."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    scored = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--where",
+        "identity=r00",
+        "--where",
+        "identity=f00",
+        "--json",
+    )
+    assert scored.code == 0
+    (row,) = json.loads(scored.out)["results"]
+    assert read_scores(row["csv"]).meta.protocol.where == {"identity": ["f00", "r00"]}
+
+    result = cli("eval", row["csv"], "--metrics", "auc", "--bootstrap", "0", "--json")
+
+    assert result.code == 0, result.err
+    data = json.loads(result.out)
+    assert data["tables"]["files"][0]["n"] == 2
+
+
+def test_eval_suite_matches_list_filters_written_in_another_order(cli, score_roots):
+    """The suite lists ``identity: [r00, f00]`` and ``method: [swap, original]``; the files were
+    scored from ``--where`` values in yet another order, and a score file's meta stores them
+    sorted. Every entry must still find its file."""
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    pair = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--where",
+        "identity=f00",
+        "--where",
+        "identity=r00",
+        "--json",
+    )
+    in_domain = cli(
+        "score",
+        "--detector",
+        "fake:",
+        "--protocol",
+        PROTOCOL,
+        "--split",
+        "test",
+        "--where",
+        "method=original",
+        "--where",
+        "method=swap",
+        "--json",
+    )
+    files = [json.loads(r.out)["results"][0]["csv"] for r in (pair, in_domain)]
+
+    result = cli(
+        "eval", *files, "--suite", SUITE_ANY_OF, "--metrics", "auc", "--bootstrap", "0", "--json"
+    )
+
+    assert result.code == 0, result.err
+    suite_rows = {row["group"]: row for row in json.loads(result.out)["tables"]["suite"]}
+    assert suite_rows["pair"]["n_entries"] == 1
+    assert suite_rows["in-domain"]["n_entries"] == 1
+
+
+def test_score_suite_then_eval_suite_round_trips_with_list_filters(cli, score_roots):
+    write_toy_store(score_roots, toy_profile("toy-face"))
+    scored = cli("score", "--detector", "fake:", "--suite", SUITE_ANY_OF, "--json")
+    assert scored.code == 0
+    files = [row["csv"] for row in json.loads(scored.out)["results"]]
+
+    result = cli(
+        "eval", *files, "--suite", SUITE_ANY_OF, "--metrics", "auc", "--bootstrap", "0", "--json"
+    )
+
+    assert result.code == 0, result.err
+    suite_rows = {row["group"]: row for row in json.loads(result.out)["tables"]["suite"]}
+    assert {group: row["n_entries"] for group, row in suite_rows.items()} == {
+        "pair": 1,
+        "in-domain": 1,
+    }

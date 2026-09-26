@@ -53,6 +53,7 @@ __all__ = [
     "PACK",
     "PROTOCOL",
     "SUITE",
+    "SUITE_ANY_OF",
     "FakeDetector",
     "install_scoretoy_pack",
     "load_fake",
@@ -64,6 +65,7 @@ DATASET = "scoretoy"
 PACK = "scoretoy-pack"
 PROTOCOL = f"{PACK}:{DATASET}/official"
 SUITE = "scoretoy"
+SUITE_ANY_OF = "scoretoy-any-of"
 N_VIDEOS = 4  # per class
 
 # Two entries, each a single video (by identity) of PROTOCOL's test split, in different groups --
@@ -73,6 +75,23 @@ name: {SUITE}
 entries:
   - {{protocol: {PROTOCOL}, split: test, where: {{identity: r00}}, group: real}}
   - {{protocol: {PROTOCOL}, split: test, where: {{identity: f00}}, group: fake}}
+"""
+
+# Entries whose ``where`` holds a list, written the way a real pack's suite writes one: the list
+# is in the order a person typed it, not the sorted order a score file's meta stores it in, and
+# the protocol is the plain ``<dataset>/<scheme>`` a score file's meta records. The second entry
+# has the shape of an in-domain-per-method entry (``method: [original, <fake method>]``): every
+# real video plus one manipulation's fakes.
+_SUITE_ANY_OF_YAML = f"""\
+name: {SUITE_ANY_OF}
+entries:
+  - {{"protocol": "{DATASET}/official", "split": "test",
+     "where": {{"identity": ["r00", "f00"]}}, "group": "pair"}}
+  - {{"protocol": "{DATASET}/official", "split": "test",
+     "where": {{"method": ["swap", "original"]}}, "group": "in-domain"}}
+aggregates:
+  - {{"group": "pair", "metric": "auc", "how": "mean"}}
+  - {{"group": "in-domain", "metric": "auc", "how": "mean"}}
 """
 
 
@@ -147,6 +166,7 @@ def install_scoretoy_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     suites_dir = root.parent / "suites"
     suites_dir.mkdir()
     (suites_dir / "scoretoy.yaml").write_text(_SUITE_YAML)
+    (suites_dir / "scoretoy-any-of.yaml").write_text(_SUITE_ANY_OF_YAML)
     monkeypatch.syspath_prepend(str(root.parent.parent))
 
     def _register(api: Any) -> None:
@@ -158,6 +178,11 @@ def install_scoretoy_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
         )
         api.eval_suites.add(
             SUITE, target=f"{root.parent.name}:suites/scoretoy.yaml", summary="fixture suite"
+        )
+        api.eval_suites.add(
+            SUITE_ANY_OF,
+            target=f"{root.parent.name}:suites/scoretoy-any-of.yaml",
+            summary="fixture suite with list-valued where filters",
         )
 
     real_entry_points = plugins._entry_points

@@ -35,12 +35,12 @@ from typing import TYPE_CHECKING, Any, Literal
 from dfwb.core.detector import InputSpec
 from dfwb.core.errors import ConfigError, did_you_mean
 from dfwb.core.paths import require_root, resolve_roots
-from dfwb.core.records import ScoreRow, write_scores
+from dfwb.core.records import ScoreRow, canonical_where, write_scores
 from dfwb.data.index import SourceSpec, VideoIndex
 from dfwb.eval.aggregate import aggregate as aggregate_scores
 from dfwb.protocols.protocol import Protocol
 from dfwb.protocols.protocol import load as load_protocol
-from dfwb.score.cache import DetectorIdentity, cache_key, canonical_where, look_up, score_path
+from dfwb.score.cache import DetectorIdentity, cache_key, look_up, score_path
 from dfwb.score.sources import resolve_detector
 from dfwb.score.writer import (
     FrameRecord,

@@ -447,3 +447,14 @@ def test_cache_key_and_score_path_round_trip_is_json_serialisable():
     assert isinstance(key, str)
     assert len(key) == 64
     json.dumps({"key": key})
+
+
+def test_look_up_matches_a_stored_where_that_was_never_canonicalised(tmp_path):
+    """A meta written by something other than the harness (by hand, or an older writer) may hold
+    a membership list in any order; the comparison canonicalises both sides."""
+    csv_path, _ = _write_meta_only(
+        tmp_path, protocol={**_meta_payload()["protocol"], "where": {"identity": ["002", "000"]}}
+    )
+    expected = {**_EXPECTED, "where": {"identity": ["000", "002"]}}
+
+    assert look_up(csv_path, **expected) is not None
