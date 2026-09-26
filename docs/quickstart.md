@@ -40,10 +40,10 @@ uv run dfwb runs show toy-cpu
 - **`protocols verify`** joins that inventory against dfwb's built-in toyfake protocol pack and
   writes a coverage report; with the defaults above it reports full coverage (`have: 200`,
   `missing: 0`).
-- **`preprocess run`** crops and tracks a face through every video with the `toy-64-center-8f`
-  profile -- which has no real detector and no model to download, only the `preprocess` extra --
-  writing a lossless frame store under `$DFWB_WORK_ROOT/toyfake/processed/`; `preprocess status`
-  then counts it by outcome.
+- **`preprocess run`** samples eight frames from every video and keeps each frame's centred
+  64-pixel square, with the `toy-64-center-8f` profile -- which has no face detector and no model
+  to download, only the `preprocess` extra -- writing a lossless frame store under
+  `$DFWB_WORK_ROOT/toyfake/processed/`; `preprocess status` then counts it by outcome.
 - **`train`** needs the `train` extra (PyTorch, Lightning, timm); the `toy-cpu.yaml` file extends
   the shipped `toy-cpu` template, training a tiny CNN on the toyfake tree just built, for two
   epochs, writing its run under `./runs/toy-cpu/`. `runs list` shows it; `runs show` shows its full
@@ -95,13 +95,16 @@ uv run dfwb protocols verify celebdf-v2
 `official`; `celebdf-v2`'s is `official+ident-80-20` -- the official test split plus an
 identity-disjoint train/val carve).
 
-Processing real video needs a real face-detection backend. `dfwb-protocols`'s own templates and
-this walkthrough both use the shipped `face-256-1.3x-32f` profile (the `insightface` backend,
-whose `buffalo_l` weights are for non-commercial research use only) or its permissive twin,
-`face-256-1.3x-32f-mp` (Apache-2.0 `mediapipe`); see [Install](install.md) for both extras.
+Processing real video needs a real face-detection backend. dfwb's own `binary-frame` template
+(used below) and this walkthrough both use the shipped `face-256-1.3x-32f` profile (the
+`insightface` backend, whose `buffalo_l` weights are for non-commercial research use only) or its
+permissive twin, `face-256-1.3x-32f-mp` (Apache-2.0 `mediapipe`); see [Install](install.md) for
+both extras.
 
 ```bash
-uv sync --extra train --extra face-mediapipe
+# --inexact: a plain `uv sync` removes anything not in the lockfile, including the
+# already-installed dfwb-protocols pack this section's `protocols verify` step above needed.
+uv sync --extra train --extra face-mediapipe --inexact
 
 uv run dfwb preprocess run ffpp --profile face-256-1.3x-32f-mp
 uv run dfwb preprocess run celebdf-v2 --profile face-256-1.3x-32f-mp

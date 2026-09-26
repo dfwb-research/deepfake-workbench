@@ -36,27 +36,44 @@ pip install -e ".[train,hf,peft]"
     install the same combination directly, with no clone needed -- the same form the CLI's own
     `InstallationError` hints already use.
 
-## Training: install a PyTorch build first
+## Training: a CUDA build, with `uv`
 
-Install the PyTorch build that matches your hardware before the `train` (or `zoo`) extra, so the
-extra finds it already installed instead of pulling the default build from PyPI. Pick the command
-for your platform from the official selector at
-[pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/), which covers both CPU
-and the CUDA build matching your driver, for example:
+`uv.lock` pins `torch` and `torchvision` to the CPU build, from the CPU-only index
+`https://download.pytorch.org/whl/cpu` (see `[tool.uv.sources]` and `[[tool.uv.index]]` in
+`pyproject.toml`). `uv sync --extra train` always installs that pinned CPU build, even on a machine
+with a GPU and even if a CUDA build of `torch` is already installed: `uv sync` reconciles the
+environment to exactly what the lock says, so it replaces whatever `torch` was there before. There
+is no `uv sync` flag that changes what the lock itself pins.
 
-```bash
-# CPU only
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-# CUDA 12.x (check pytorch.org for the current index for your driver)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-```
-
-then:
+To train on a GPU with `uv`, install the CPU build the lock expects, then reinstall a matching CUDA
+build over it by hand, then run everything after that with `--no-sync` so `uv` never gets a chance
+to put the CPU build back:
 
 ```bash
 uv sync --extra train
-# or: pip install -e ".[train]"
+
+# Pick the index for your driver from the official selector at
+# https://pytorch.org/get-started/locally/ -- cu121 here is an example.
+uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+uv run --no-sync dfwb train -c your-config.yaml --device cuda:0
+```
+
+!!! warning "Every later command needs `--no-sync` too"
+    A later `uv sync` (for any reason, with any extras) or a plain `uv run ...` (without
+    `--no-sync`) reconciles the environment against the lock again and restores the CPU build.
+    Use `uv run --no-sync ...` for every command from here on, for as long as you want the CUDA
+    build in place.
+
+### Without `uv`: a plain venv
+
+`pip` does not reconcile an already-satisfied requirement the way `uv sync` does, so installing the
+CUDA build first, then the package, leaves it alone:
+
+```bash
+python -m venv .venv-train && source .venv-train/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[train]"
 ```
 
 ## `preprocess`: media probing and the face pipeline's own code
