@@ -323,10 +323,11 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
         return
 
     source = inventory if inventory is not None else inventory_path(parsed.dataset, work_root)
+    # The publisher's split and the attributes that describe the local copy are dataset
+    # knowledge: the dataset's own builder has them.
+    builder = get_builder(parsed.dataset)
     official = None
     if needs_official(parsed) and source.is_file():
-        # The publisher's split is dataset knowledge: read it with the dataset's own builder.
-        builder = get_builder(parsed.dataset)
         records = read_jsonl(source, InventoryRecord)
         official = builder.official_splits(locate_metadata_root(builder, roots), records)
     result = run_materialize(
@@ -335,6 +336,7 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
         official=official,
         work_root=work_root,
         datasets_roots=roots["datasets"].paths,
+        local_attrs=builder.local_attrs,
     )
 
     if as_json:

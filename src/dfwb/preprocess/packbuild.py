@@ -468,7 +468,8 @@ def build_dataset(
             must be among them.
         roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
 
-    The videos are the inventory's rows; each scheme's rows come from its rule (see
+    The videos are the inventory's rows, without the attributes the builder declares as facts
+    about the local copy (``local_attrs``); each scheme's rows come from its rule (see
     :func:`assign_scheme`) and its card records the rule, its parameters, the split counts and
     the rows' hash; the pairs come from the builder's pairing rule; the dataset card also records
     the hashes of the video and pair lists (``videos_sha256``, ``pairs_sha256``) and the pairing
@@ -513,7 +514,7 @@ def build_dataset(
         )
         rules[name] = {"rule": spec.rule, "params": params}
 
-    videos = [to_video_record(record) for record in records]
+    videos = [to_video_record(record, local_attrs=builder.local_attrs) for record in records]
     pairs = _pairs(builder, records)
     card = _keep_terms_review(builder.dataset_card(cards), out).model_copy(
         update={
@@ -595,6 +596,7 @@ def materialize_recipe(
         pairs=_pairs(builder, records),
         work_root=work_root,
         datasets_roots=datasets.paths if datasets else (),
+        local_attrs=builder.local_attrs,
     )
 
 

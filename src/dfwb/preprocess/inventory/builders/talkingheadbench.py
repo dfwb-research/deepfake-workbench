@@ -219,6 +219,8 @@ class TalkingHeadBenchBuilder(BaseBuilder):
     default_scheme = "official"
     benchmark = BenchmarkSpec(k_fake=100, strata=("task",))
     pairing_rule = "driving-video"
+    # Set only when the video's .wav is present in the local copy.
+    local_attrs = frozenset({"audio_relpath"})
     card_info = {
         "name": "TalkingHeadBench",
         "aliases": ["THB"],

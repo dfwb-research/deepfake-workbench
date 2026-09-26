@@ -8,6 +8,7 @@ The helpers below are shared with the materialize and CLI tests.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from collections.abc import Sequence
@@ -184,6 +185,20 @@ class PackDemoNoOfficialBuilder(PackDemoBuilder):
         raise AssertionError("a dataset without an official scheme never reads one")
 
 
+class PackDemoLocalBuilder(PackDemoBuilder):
+    """packdemo, whose records also say where each video sits in the local copy."""
+
+    dataset_id = "packdemo-local"
+    local_attrs = frozenset({"stored_at"})
+
+    def record_for_video(
+        self, task: TaskSpec, path: Path, relpath: str, compression: str | None
+    ) -> InventoryRecord | None:
+        record = super().record_for_video(task, path, relpath, compression)
+        assert record is not None
+        return dataclasses.replace(record, attrs={**record.attrs, "stored_at": relpath})
+
+
 def make_packdemo_tree(folder: Path) -> Path:
     """The raw release: 10 reals, 10 fakes per method, and the official split file."""
     for index, identity in enumerate(_IDENTITIES):
@@ -238,6 +253,7 @@ def setup_packdemo(
                 "No Official",
                 "PackDemo",
             ),
+            "packdemo-local": (f"{_MODULE}:PackDemoLocalBuilder", "Local Attrs", "PackDemo"),
         },
         packs={PACK_NAME: pack} if register_pack else None,
     )
@@ -936,3 +952,43 @@ def test_materialize_recipe_needs_no_dataset_folder_when_no_rule_reads_the_offic
     result = materialize_recipe("packdemo-noofficial")
 
     assert set(result.schemes) == {"ident-72-14-14", "benchmark"}
+
+
+# ---------------------------------------------------------------------------------------------
+# Attributes that describe the local copy
+# ---------------------------------------------------------------------------------------------
+
+
+def test_attrs_about_the_local_copy_stay_in_the_inventory_and_are_never_published(demo):
+    build_dataset("packdemo", out=demo["pack"] / "packdemo")
+    inventory = build_inventory("packdemo-local").path
+    out = demo["pack"] / "packdemo-local"
+    build_dataset("packdemo-local", out=out)
+
+    assert all("stored_at" in row.attrs for row in read_jsonl(inventory, InventoryRecord))
+    videos = read_jsonl(out / "videos.jsonl.gz", VideoRecord)
+    assert not any("stored_at" in video.attrs for video in videos)
+    # The published lists, and so every hash, are packdemo's own.
+    listed, local = read_card(demo["pack"] / "packdemo"), read_card(out)
+    assert local.videos_sha256 == listed.videos_sha256
+    assert {n: c.sha256 for n, c in local.schemes.items()} == {
+        n: c.sha256 for n, c in listed.schemes.items()
+    }
+
+
+def test_a_recipe_materializes_from_a_copy_laid_out_differently(demo):
+    inventory = build_inventory("packdemo-local").path
+    out = demo["pack"] / "packdemo-local"
+    build_dataset("packdemo-local", out=out)
+    add_to_pack_yaml(demo["pack"], "packdemo-local")
+    lists = _strip_to_recipe(out)
+    moved = [
+        dataclasses.replace(row, attrs={**row.attrs, "stored_at": f"unpacked/{row.relpath}"})
+        for row in read_jsonl(inventory, InventoryRecord)
+    ]
+    write_jsonl(inventory, moved)
+
+    result = materialize_recipe("packdemo-local")
+
+    rebuilt = _files(result.path)
+    assert {name: data for name, data in rebuilt.items() if name != "hashes.json"} == lists

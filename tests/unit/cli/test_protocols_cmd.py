@@ -928,3 +928,20 @@ def test_a_key_free_recipe_from_a_tampered_inventory_exits_4_and_writes_nothing(
     assert "error: packdemo: 1 of 6 published hashes differ" in result.err
     assert "hint: your local copy differs from the release the pack describes" in result.err
     assert _tree(paths["work"]) == before
+
+
+def test_materialize_cli_leaves_the_local_copy_attrs_out_of_a_recipe_scheme(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    assert run("inventory", "build", "packdemo-local").code == 0
+    out = paths["pack"] / "packdemo-local"
+    built = run("protocols", "build", "packdemo-local", "--out", str(out), "--update-pack-yaml")
+    assert built.code == 0, built.err
+    (out / "splits" / "all-test.tsv.gz").unlink()
+
+    result = run("protocols", "materialize", "packdemo-local/all-test")
+
+    assert result.code == 0, result.err
+    materialized = paths["work"] / "packdemo-local" / "materialized" / "videos.jsonl.gz"
+    assert materialized.read_bytes() == (out / "videos.jsonl.gz").read_bytes()

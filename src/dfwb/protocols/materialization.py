@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -333,8 +333,10 @@ def _is_real_from(labels: Callable[[], LabelVocab], ref: str) -> Callable[[Video
     return is_real
 
 
-def _read_records(inventory: Path, dataset: str) -> list[VideoRecord]:
-    records = [to_video_record(r) for r in read_jsonl(inventory, InventoryRecord)]
+def _read_records(inventory: Path, dataset: str, local_attrs: Collection[str]) -> list[VideoRecord]:
+    records = [
+        to_video_record(r, local_attrs=local_attrs) for r in read_jsonl(inventory, InventoryRecord)
+    ]
     seen: set[tuple[str, str | None]] = set()
     for record in records:
         ident = (record.key, record.compression)
@@ -369,12 +371,15 @@ def materialize(
     official: Mapping[str, Split] | None,
     work_root: Path,
     datasets_roots: Sequence[Path] | None = None,
+    local_attrs: Collection[str] = (),
 ) -> MaterializeResult:
     """Recompute ``ref``'s split from ``inventory`` and keep it only if it matches the pack.
 
     The rule and its parameters come from the pack's scheme card (the scheme defaults to the
     card's default scheme); the records are ``inventory``'s rows as
-    :class:`~dfwb.core.records.VideoRecord`. The rows are hashed exactly as a split file is, and
+    :class:`~dfwb.core.records.VideoRecord`, without the attributes named in ``local_attrs``
+    (those the dataset's builder declares as facts about the local copy, which a pack never
+    publishes). The rows are hashed exactly as a split file is, and
     only a match with the card's ``sha256`` writes
     ``<work_root>/<dataset>/materialized/{videos.jsonl.gz,splits/<scheme>.tsv.gz}``, where
     :func:`~dfwb.protocols.protocol.load` then finds them. A mismatch writes nothing, so the work
@@ -428,7 +433,7 @@ def materialize(
             hint="run dfwb protocols materialize, which reads it with the dataset's inventory "
             "builder",
         )
-    records = _read_records(inventory, scheme.dataset)
+    records = _read_records(inventory, scheme.dataset, local_attrs)
     assignment = assign_rule(
         rule, params, records, official=official, is_real=_is_real_from(scheme.labels, scheme.ref)
     )
@@ -530,11 +535,14 @@ def materialize_dataset(
     pairs: Sequence[PairRecord],
     work_root: Path,
     datasets_roots: Sequence[Path] | None = None,
+    local_attrs: Collection[str] = (),
 ) -> DatasetMaterialization:
     """Rebuild every list of ``ref``'s dataset from ``inventory``; keep them if every hash matches.
 
     For a recipe dataset whose pack ships no key list. The videos are ``inventory``'s rows as
-    :class:`~dfwb.core.records.VideoRecord`; every scheme of the card is recomputed from its rule
+    :class:`~dfwb.core.records.VideoRecord`, without the attributes named in ``local_attrs``
+    (facts about the local copy, which the builder declares and a pack never publishes); every
+    scheme of the card is recomputed from its rule
     and parameters, as :func:`materialize` recomputes one; ``pairs`` are the dataset's pairs,
     drawn from the same inventory by the pairing rule the card declares (``pairing_rule``), which
     only the dataset's inventory builder can run. The video list, every split and the pair list
@@ -582,7 +590,7 @@ def materialize_dataset(
             )
     _check_pairing_rule(pairs, card)
 
-    records = _read_records(inventory, dataset)
+    records = _read_records(inventory, dataset, local_attrs)
     is_real = _is_real_from(scheme.labels, dataset)
     schemes: dict[str, list[SplitRow]] = {}
     for name, scheme_card in sorted(card.schemes.items()):

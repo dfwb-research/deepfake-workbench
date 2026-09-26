@@ -89,3 +89,13 @@ def test_to_video_record_keeps_only_portable_columns():
         pair_key="000_003",
         attrs={"task_name": "Deepfakes"},
     )
+
+
+def test_to_video_record_leaves_out_the_attrs_that_describe_the_local_copy():
+    rec = inv(attrs={"task_name": "Deepfakes", "audio_relpath": "a/b.wav"})
+
+    published = to_video_record(rec, local_attrs=frozenset({"audio_relpath", "absent"}))
+
+    assert published.attrs == {"task_name": "Deepfakes"}
+    assert rec.attrs == {"task_name": "Deepfakes", "audio_relpath": "a/b.wav"}  # kept locally
+    assert to_video_record(rec).attrs == rec.attrs
