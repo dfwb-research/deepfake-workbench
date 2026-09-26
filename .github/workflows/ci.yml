@@ -30,7 +30,9 @@ jobs:
   test-train:
     uses: dfwb-research/.github/.github/workflows/python-test.yml@v1
     with:
-      extras: "train preprocess"
+      # eval brings scipy, which tests/integration/test_toyfake_journey.py needs for the
+      # run-vs-random eval compare's DeLong test on AUC.
+      extras: "train preprocess eval"
       python-versions: '["3.12", "3.14"]'
       # The reusable workflow names each coverage artifact after its OS, Python and torch version.
       # The job above runs with torch-versions "[]" (matrix torch "none"), so leaving this at "[]"
