@@ -25,27 +25,6 @@ _HELPER = "tests/_dfwb_cli.py"
 _TARGET = "dfwb.cli.main.main"
 
 
-def _naive_import_only_check(tree: ast.Module) -> list[int]:
-    """The guard's first version (fix round 0): flags an import that names ``main`` directly, but
-    never looks at how an imported module or alias is later *called*. Kept only so the two tests
-    below can document, and pin, the exact gap a review found in it -- a future simplification of
-    the real check (:func:`_reaches_main_directly`) can't silently reopen that gap without one of
-    those tests failing first."""
-    lines = []
-    for node in ast.walk(tree):
-        imports_the_callable = (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "dfwb.cli.main"
-            and any(alias.name == "main" for alias in node.names)
-        )
-        imports_the_module = isinstance(node, ast.Import) and any(
-            alias.name == "dfwb.cli.main" for alias in node.names
-        )
-        if imports_the_callable or imports_the_module:
-            lines.append(node.lineno)
-    return lines
-
-
 def _literal_dotted(node: ast.expr) -> str | None:
     """The dotted name exactly as written, e.g. ``"a.b.c"`` for the attribute chain ``a.b.c``;
     ``None`` if ``node`` is not a plain chain of names and attributes (a call result, a subscript,
@@ -149,8 +128,10 @@ def test_the_check_catches_a_direct_import_of_the_callable():
 
 
 def test_the_check_catches_every_call_based_bypass_shape():
-    # Each of these was reproduced against `_naive_import_only_check` (fix round 0's logic) and
-    # found unflagged; every one must be caught here.
+    # An import that merely names the callable or its owning module, by itself, calls nothing;
+    # only actually calling `.main(...)` off it does. Each shape below reaches the same target
+    # through a different combination of import style (`from` vs plain, aliased vs not) and call
+    # form (a bare name, or an attribute chain of some length); every one must be caught.
     shapes = [
         "from dfwb.cli import main\nmain.main([])\n",
         "from dfwb.cli import main as main_module\nmain_module.main([])\n",
@@ -187,17 +168,3 @@ def test_the_check_spares_legitimate_neighbours():
     # is not itself a violation -- only actually calling it is.
     unused_import = ast.parse("import dfwb.cli.main\nprint(dfwb.cli.main.COMMANDS)\n")
     assert _reaches_main_directly(unused_import) == []
-
-
-# Fix round 0's gap, pinned so it cannot silently regress: `_naive_import_only_check` really did
-# miss every call-based bypass shape, which is exactly why `_reaches_main_directly` exists.
-_BYPASS_SHAPES_THE_NAIVE_CHECK_MISSED = [
-    "from dfwb.cli import main\nmain.main([])\n",
-    "from dfwb.cli import main as main_module\nmain_module.main([])\n",
-    "import dfwb.cli\ndfwb.cli.main.main([])\n",
-]
-
-
-def test_the_naive_import_only_check_missed_every_call_based_bypass():
-    for source in _BYPASS_SHAPES_THE_NAIVE_CHECK_MISSED:
-        assert _naive_import_only_check(ast.parse(source)) == []
