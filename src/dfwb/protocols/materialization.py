@@ -659,8 +659,8 @@ def _mismatch(
         hint = (
             "your inventory has the release's videos in the published numbers, but some differ "
             "in label, method, identity or attributes: the copy may be another upstream release "
-            f"than {card.release}, or its metadata files differ; check them, then rebuild the "
-            f"inventory: {rebuild}"
+            f"than the card's ({card.release}), or its metadata files differ; check them, then "
+            f"rebuild the inventory: {rebuild}"
         )
     return ContractError(message, hint=hint)
 
