@@ -1,3 +1,4 @@
+import dataclasses
 import gzip
 import json
 from pathlib import Path
@@ -813,3 +814,80 @@ def test_materialize_cli_without_an_inventory_hints_inventory_build(run, monkeyp
 
     assert result.code == 2
     assert "hint: run: dfwb inventory build packdemo" in result.err
+
+
+def _strip_to_recipe(out: Path) -> None:
+    card = yaml.safe_load((out / "dataset.yaml").read_text("utf-8"))
+    card["distribution"] = "recipe"
+    (out / "dataset.yaml").write_text(yaml.safe_dump(card), "utf-8")
+    (out / "videos.jsonl.gz").unlink()
+    (out / "pairs.jsonl.gz").unlink()
+    for split in (out / "splits").iterdir():
+        split.unlink()
+    (out / "splits").rmdir()
+
+
+def _tree(folder: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(folder).as_posix(): p.read_bytes()
+        for p in sorted(folder.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_a_key_free_recipe_lints_materializes_and_loads_from_the_cli(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    card = read_card(out)
+    _strip_to_recipe(out)
+    assert run("protocols", "lint", str(paths["pack"]), "--release").code == 0
+
+    # Nothing materialized yet: the error names the command to run.
+    before = run("protocols", "info", "packdemo/official")
+    assert before.code == 4
+    assert "hint: run: dfwb protocols materialize packdemo\n" in before.err
+
+    result = run("protocols", "materialize", "packdemo/official", "--json")
+    assert result.code == 0, result.err
+    assert json.loads(result.out) == {
+        "dataset": "packdemo",
+        "path": str(paths["work"] / "packdemo" / "materialized"),
+        "videos_sha256": card.videos_sha256,
+        "pairs_sha256": card.pairs_sha256,
+        "schemes": {name: scheme.sha256 for name, scheme in card.schemes.items()},
+        "n_videos": 30,
+        "n_pairs": 20,
+        "matched": True,
+    }
+    human = run("protocols", "materialize", "packdemo")
+    assert human.code == 0, human.err
+    assert human.out.splitlines() == [
+        "packdemo: every published hash matches (30 videos, 20 pairs, 4 schemes)",
+        f"wrote {paths['work'] / 'packdemo' / 'materialized'}",
+    ]
+
+    assert run("protocols", "info", "packdemo/benchmark").code == 0
+    verified = run("protocols", "verify", "packdemo/official", "--json")
+    assert verified.code == 0, verified.err
+    assert json.loads(verified.out)["counts"]["have"] == 30
+
+
+def test_a_key_free_recipe_from_a_tampered_inventory_exits_4_and_writes_nothing(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    _strip_to_recipe(out)
+    rows = read_jsonl(paths["inventory"], InventoryRecord)
+    tampered = tmp_path / "tampered.jsonl"
+    write_jsonl(tampered, [dataclasses.replace(rows[0], label_key="PD-FS_B"), *rows[1:]])
+    before = _tree(paths["work"])
+
+    result = run("protocols", "materialize", "packdemo", "--inventory", str(tampered))
+
+    assert result.code == 4
+    assert "error: packdemo: 1 of 6 published hashes differ" in result.err
+    assert "hint: your local copy differs from the release the pack describes" in result.err
+    assert _tree(paths["work"]) == before

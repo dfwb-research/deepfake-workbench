@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 
 import pytest
 import yaml
@@ -9,12 +10,14 @@ from dfwb.core.records import (
     DatasetCard,
     LabelVocab,
     PackCard,
+    PairRecord,
     SplitRow,
     VideoRecord,
     assert_no_absolute_paths,
     iter_jsonl_dicts,
     read_jsonl,
     read_split_tsv,
+    records_sha256,
     split_sha256,
     write_jsonl,
     write_split_tsv,
@@ -73,6 +76,21 @@ def test_dataset_card_rejects(change, message):
     data = yaml.safe_load(CARD) | change
     with pytest.raises(ValidationError, match=message):
         DatasetCard.model_validate(data)
+
+
+def test_the_key_list_hashes_are_optional_and_checked():
+    card = DatasetCard.model_validate(yaml.safe_load(CARD))
+    assert (card.videos_sha256, card.pairs_sha256, card.pairing_rule) == (None, None, None)
+
+    data = yaml.safe_load(CARD) | {
+        "videos_sha256": SHA_A,
+        "pairs_sha256": SHA_B,
+        "pairing_rule": "target-id",
+    }
+    card = DatasetCard.model_validate(data)
+    assert (card.videos_sha256, card.pairs_sha256, card.pairing_rule) == (SHA_A, SHA_B, "target-id")
+    with pytest.raises(ValidationError, match="String should match pattern"):
+        DatasetCard.model_validate(data | {"videos_sha256": "abc"})
 
 
 def test_label_vocab_and_pack_card():
@@ -182,6 +200,26 @@ def test_split_files_are_canonical_and_hashed(tmp_path, name):
     raw = path.read_bytes()
     text = gzip.decompress(raw).decode() if name.endswith(".gz") else raw.decode()
     assert text == "a\t\ttrain\na\tc23\tval\nb\tc23\ttest\n"
+
+
+@pytest.mark.parametrize("name", ["videos.jsonl", "videos.jsonl.gz"])
+def test_records_sha256_is_the_hash_of_the_sorted_lines_a_jsonl_file_holds(tmp_path, name):
+    path = tmp_path / name
+    write_jsonl(path, VIDEOS)
+    raw = path.read_bytes()
+    text = gzip.decompress(raw).decode() if name.endswith(".gz") else raw.decode()
+    lines = sorted(text.splitlines(keepends=True))
+
+    assert records_sha256(VIDEOS) == hashlib.sha256("".join(lines).encode()).hexdigest()
+    assert records_sha256(reversed(VIDEOS)) == records_sha256(VIDEOS)
+    assert records_sha256(read_jsonl(path, VideoRecord)) == records_sha256(VIDEOS)
+
+
+def test_records_sha256_of_nothing_is_the_hash_of_empty_content():
+    assert records_sha256([]) == hashlib.sha256(b"").hexdigest()
+    pairs = [PairRecord("F/1", "R/1", "target-id")]
+    assert records_sha256(pairs) != records_sha256([])
+    assert records_sha256(pairs) != records_sha256([PairRecord("F/1", "R/1", "other")])
 
 
 def test_split_validation(tmp_path):

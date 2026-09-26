@@ -278,24 +278,50 @@ def build(
 )
 @json_option
 def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
-    """Recompute a recipe scheme from the local inventory and check its published hash.
+    """Rebuild a recipe's lists from the local inventory and check their published hashes.
 
-    A pack may publish a scheme as a rule, its parameters and a hash, with no key list. This
-    rebuilds the split from your own inventory and, only if it hashes to the published value,
-    writes it to the dataset's materialized folder under the work root, where every command that
-    loads the protocol finds it. A mismatch exits 4 and writes nothing.
+    A pack may publish a scheme as a rule, its parameters and a hash, with no key list; a recipe
+    dataset may ship no key list at all (no videos, pairs or split rows), only the hashes of its
+    lists. This rebuilds the lists from your own inventory and, only if every one hashes to its
+    published value, writes them to the dataset's materialized/ folder under the work root, where
+    every command that loads the protocol finds them. For a dataset shipped without its key lists,
+    every list of the dataset is rebuilt, whichever scheme REF names. A mismatch exits 4 and writes
+    nothing.
     """
     from dfwb.core.paths import require_root, resolve_roots
     from dfwb.core.records import InventoryRecord, read_jsonl
     from dfwb.preprocess.inventory.runner import get_builder, inventory_path
-    from dfwb.preprocess.packbuild import locate_metadata_root
+    from dfwb.preprocess.packbuild import locate_metadata_root, materialize_recipe
     from dfwb.protocols.materialization import materialize as run_materialize
-    from dfwb.protocols.materialization import needs_official
+    from dfwb.protocols.materialization import needs_official, ships_key_lists
     from dfwb.protocols.refs import parse_ref
 
     roots = resolve_roots()
     work_root = require_root("work", roots)
     parsed = parse_ref(ref)
+    if not ships_key_lists(parsed):
+        dataset = materialize_recipe(parsed, inventory=inventory, roots=roots)
+        if as_json:
+            emit_json(
+                {
+                    "dataset": dataset.dataset,
+                    "path": str(dataset.path),
+                    "videos_sha256": dataset.videos_sha256,
+                    "pairs_sha256": dataset.pairs_sha256,
+                    "schemes": dataset.schemes,
+                    "n_videos": dataset.n_videos,
+                    "n_pairs": dataset.n_pairs,
+                    "matched": True,
+                }
+            )
+            return
+        click.echo(
+            f"{dataset.dataset}: every published hash matches ({dataset.n_videos} videos, "
+            f"{dataset.n_pairs} pairs, {len(dataset.schemes)} schemes)"
+        )
+        click.echo(f"wrote {dataset.path}")
+        return
+
     source = inventory if inventory is not None else inventory_path(parsed.dataset, work_root)
     official = None
     if needs_official(parsed) and source.is_file():
@@ -338,9 +364,11 @@ def _lint_issue_row(issue: Any) -> dict[str, Any]:
 def lint(pack: Path, release: bool, as_json: bool) -> int:
     """Check a protocol pack directory for problems a pack author needs to fix.
 
-    Re-derives every fact a pack's cards claim about themselves (scheme hashes and counts, cross
-    references between videos, splits, pairs and labels) instead of trusting them. Exits 4 if any
-    check reports an error; warnings are printed but never fail the run.
+    Re-derives every fact a pack's cards claim about themselves (scheme hashes and counts, the
+    hashes of the video and pair lists, cross references between videos, splits, pairs and labels)
+    instead of trusting them. A recipe dataset may ship no key list at all, when its card holds
+    everything dfwb protocols materialize needs to rebuild and check them. Exits 4 if any check
+    reports an error; warnings are printed but never fail the run.
     """
     from dfwb.protocols.lint import lint_pack
 

@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
+import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 
 from dfwb.core.records import (
@@ -19,6 +21,7 @@ from dfwb.core.records import (
     VideoRecord,
     read_jsonl,
     read_split_tsv,
+    records_sha256,
     write_jsonl,
     write_split_tsv,
 )
@@ -561,3 +564,178 @@ def test_absolute_path_in_provenance_is_the_only_reported_error(tmp_path):
 def test_lint_issue_is_a_plain_frozen_record():
     issue = LintIssue("error", "toylint/dataset.yaml", "boom")
     assert (issue.severity, issue.where, issue.message) == ("error", "toylint/dataset.yaml", "boom")
+
+
+# -------------------------------------------------------------------------------------------
+# Key-free recipe datasets: the card's hashes stand in for the key lists.
+# -------------------------------------------------------------------------------------------
+
+
+def _hash_the_lists(dataset_dir: Path, **changes: object) -> DatasetCard:
+    """Record the shipped lists' hashes (and the pairing rule) in the card, then ``changes``."""
+    card = read_card(dataset_dir)
+    pairs_path = dataset_dir / "pairs.jsonl.gz"
+    pairs = read_jsonl(pairs_path, PairRecord) if pairs_path.is_file() else []
+    card = card.model_copy(
+        update={
+            "videos_sha256": records_sha256(
+                read_jsonl(dataset_dir / "videos.jsonl.gz", VideoRecord)
+            ),
+            "pairs_sha256": records_sha256(pairs),
+            "pairing_rule": "toy",
+            **changes,
+        }
+    )
+    _dump_card(dataset_dir, card)
+    return card
+
+
+def _strip(dataset_dir: Path) -> None:
+    """Take out every key list, as a release build does for a recipe dataset."""
+    (dataset_dir / "videos.jsonl.gz").unlink()
+    (dataset_dir / "pairs.jsonl.gz").unlink(missing_ok=True)
+    shutil.rmtree(dataset_dir / "splits")
+
+
+def test_a_key_free_recipe_dataset_passes_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    _strip(root / "toylint")
+
+    assert sorted(p.name for p in (root / "toylint").iterdir()) == [
+        "NOTICE.md",
+        "PROVENANCE.json",
+        "dataset.yaml",
+        "labels.yaml",
+    ]
+    assert lint_pack(root, release=True) == []
+
+
+def test_a_recipe_card_with_its_hashes_passes_while_it_still_ships_its_lists(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+
+    assert lint_pack(root, release=True) == []
+
+
+def test_a_key_free_recipe_needs_the_hashes_of_its_lists(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _dump_card(
+        root / "toylint", read_card(root / "toylint").model_copy(update={"distribution": "recipe"})
+    )
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/dataset.yaml"
+    assert "videos_sha256" in issues[0].message
+    assert "pairs_sha256" in issues[0].message
+    assert "dfwb protocols build" in issues[0].message
+
+
+def test_a_key_free_dataset_that_is_not_a_recipe_still_misses_its_lists(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint")  # distribution: list
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert LintIssue("error", "toylint/videos.jsonl.gz", "file is missing") in issues
+    assert (
+        LintIssue("error", "toylint/splits/official.tsv.gz", "scheme has no split file") in issues
+    )
+
+
+def test_a_recipe_without_its_videos_ships_no_other_key_list(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    (root / "toylint" / "videos.jsonl.gz").unlink()
+
+    issues = lint_pack(root)
+
+    assert sorted(issue.where for issue in issues) == [
+        "toylint/pairs.jsonl.gz",
+        "toylint/splits/official.tsv.gz",
+    ]
+    assert all(issue.severity == "error" for issue in issues)
+    assert all("no videos.jsonl.gz" in issue.message for issue in issues)
+
+
+@pytest.mark.parametrize("rule", [None, "md5-carve-key"])
+def test_every_scheme_of_a_key_free_recipe_can_be_recomputed(tmp_path, rule):
+    root = _write_pack(tmp_path, ["toylint"])
+    card = _hash_the_lists(root / "toylint", distribution="recipe")
+    scheme = card.schemes["official"].model_copy(update={"rule": rule})
+    _dump_card(root / "toylint", card.model_copy(update={"schemes": {"official": scheme}}))
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/dataset.yaml"
+    assert f"scheme 'official' has rule {rule!r}" in issues[0].message
+    assert "cannot recompute" in issues[0].message
+
+
+def test_a_key_free_recipe_with_pairs_names_its_pairing_rule(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe", pairing_rule=None)
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/dataset.yaml"
+    assert "pairing_rule" in issues[0].message
+
+
+def test_shipped_videos_that_differ_from_the_card_hash_are_the_only_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    card = _hash_the_lists(root / "toylint")
+    path = root / "toylint" / "videos.jsonl.gz"
+    videos = read_jsonl(path, VideoRecord)
+    write_jsonl(path, [dataclasses.replace(videos[0], method="Other"), *videos[1:]])
+
+    issues = lint_pack(root)
+
+    assert issues == [
+        LintIssue(
+            "error",
+            "toylint/videos.jsonl.gz",
+            f"the videos hash to {records_sha256(read_jsonl(path, VideoRecord))}, the card's "
+            f"videos_sha256 is {card.videos_sha256}",
+        )
+    ]
+
+
+def test_shipped_pairs_that_differ_from_the_card_are_reported(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    card = _hash_the_lists(root / "toylint", pairing_rule="other")
+    path = root / "toylint" / "pairs.jsonl.gz"
+    write_jsonl(path, read_jsonl(path, PairRecord)[1:])
+
+    issues = lint_pack(root)
+
+    assert issues == [
+        LintIssue(
+            "error",
+            "toylint/pairs.jsonl.gz",
+            f"the pairs hash to {records_sha256(read_jsonl(path, PairRecord))}, the card's "
+            f"pairs_sha256 is {card.pairs_sha256}",
+        ),
+        LintIssue(
+            "error",
+            "toylint/pairs.jsonl.gz",
+            "the pairs record the rule 'toy', the card's pairing_rule is 'other'",
+        ),
+    ]
+
+
+def test_no_pairs_file_hashes_as_no_pairs(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "pairs.jsonl.gz").unlink()
+    _hash_the_lists(root / "toylint", pairing_rule=None)
+
+    assert read_card(root / "toylint").pairs_sha256 == records_sha256([])
+    assert lint_pack(root) == []

@@ -31,9 +31,11 @@ from dfwb.core.records import (
     assert_no_absolute_paths,
     read_jsonl,
     read_split_tsv,
+    records_sha256,
     split_sha256,
 )
 from dfwb.protocols._yaml import read_model
+from dfwb.protocols.materialization import RULES
 
 __all__ = ["LintIssue", "lint_pack"]
 
@@ -247,18 +249,69 @@ def _lint_schemes(
                 )
 
 
+def _check_videos_hash(
+    videos: list[VideoRecord], dataset_id: str, card: DatasetCard | None, issues: list[LintIssue]
+) -> None:
+    """Shipped videos must hash to the card's ``videos_sha256``, when the card records one."""
+    if card is None or card.videos_sha256 is None:
+        return
+    sha256 = records_sha256(videos)
+    if sha256 != card.videos_sha256:
+        issues.append(
+            LintIssue(
+                "error",
+                f"{dataset_id}/videos.jsonl.gz",
+                f"the videos hash to {sha256}, the card's videos_sha256 is {card.videos_sha256}",
+            )
+        )
+
+
+def _check_pairs_card(
+    pairs: list[PairRecord], where: str, card: DatasetCard | None, issues: list[LintIssue]
+) -> None:
+    """Shipped pairs must hash to the card's ``pairs_sha256`` and record its ``pairing_rule``."""
+    if card is None:
+        return
+    if card.pairs_sha256 is not None:
+        sha256 = records_sha256(set(pairs))
+        if sha256 != card.pairs_sha256:
+            issues.append(
+                LintIssue(
+                    "error",
+                    where,
+                    f"the pairs hash to {sha256}, the card's pairs_sha256 is {card.pairs_sha256}",
+                )
+            )
+    if card.pairing_rule is not None:
+        for rule in sorted({pair.rule for pair in pairs} - {card.pairing_rule}):
+            issues.append(
+                LintIssue(
+                    "error",
+                    where,
+                    f"the pairs record the rule {rule!r}, the card's pairing_rule is "
+                    f"{card.pairing_rule!r}",
+                )
+            )
+
+
 def _lint_pairs(
-    dataset_dir: Path, dataset_id: str, video_keys: set[str], issues: list[LintIssue]
+    dataset_dir: Path,
+    dataset_id: str,
+    video_keys: set[str],
+    card: DatasetCard | None,
+    issues: list[LintIssue],
 ) -> None:
     where = f"{dataset_id}/pairs.jsonl.gz"
     path = dataset_dir / "pairs.jsonl.gz"
     if not path.is_file():
+        _check_pairs_card([], where, card, issues)
         return
     try:
         pairs = read_jsonl(path, PairRecord, strict=True)
     except ContractError as exc:
         issues.append(LintIssue("error", where, exc.message))
         return
+    _check_pairs_card(pairs, where, card, issues)
     leak = _row_leaks(pairs, "pair", where)
     if leak is not None:
         issues.append(leak)
@@ -272,6 +325,61 @@ def _lint_pairs(
                         f"pair references {role} key {key!r}, not in videos.jsonl.gz",
                     )
                 )
+
+
+def _key_list_files(dataset_dir: Path) -> list[str]:
+    """The key lists a dataset folder ships besides ``videos.jsonl.gz``, as relative paths."""
+    found = ["pairs.jsonl.gz"] if (dataset_dir / "pairs.jsonl.gz").is_file() else []
+    splits = dataset_dir / "splits"
+    if splits.is_dir():
+        found += sorted(f"splits/{path.name}" for path in splits.iterdir() if path.is_file())
+    return found
+
+
+def _lint_key_free_recipe(
+    dataset_dir: Path, dataset_id: str, card: DatasetCard, issues: list[LintIssue]
+) -> None:
+    """A recipe that ships no ``videos.jsonl.gz``: its card must hold all materialising needs."""
+    card_where = f"{dataset_id}/dataset.yaml"
+    for name in _key_list_files(dataset_dir):
+        issues.append(
+            LintIssue(
+                "error",
+                f"{dataset_id}/{name}",
+                "a recipe dataset that ships no videos.jsonl.gz ships no other key list either: "
+                "remove this file, or ship videos.jsonl.gz too",
+            )
+        )
+    missing = [field for field in ("videos_sha256", "pairs_sha256") if getattr(card, field) is None]
+    if missing:
+        issues.append(
+            LintIssue(
+                "error",
+                card_where,
+                f"a recipe dataset without its key lists needs {' and '.join(missing)} in its "
+                "card, so dfwb protocols materialize can check the lists it rebuilds; rebuild "
+                "the dataset with dfwb protocols build, which records them",
+            )
+        )
+    for name, scheme in sorted(card.schemes.items()):
+        if scheme.rule not in RULES:
+            issues.append(
+                LintIssue(
+                    "error",
+                    card_where,
+                    f"scheme {name!r} has rule {scheme.rule!r}, which dfwb protocols materialize "
+                    f"cannot recompute (rules: {', '.join(RULES)})",
+                )
+            )
+    if card.pairs_sha256 not in (None, records_sha256(())) and card.pairing_rule is None:
+        issues.append(
+            LintIssue(
+                "error",
+                card_where,
+                "pairs_sha256 is the hash of a non-empty pair list, but the card names no "
+                "pairing_rule to rebuild it with",
+            )
+        )
 
 
 def _lint_dataset(
@@ -305,14 +413,19 @@ def _lint_dataset(
         if leak is not None:
             issues.append(leak)
 
-    videos = _lint_videos(dataset_dir, dataset_id, labels, issues)
-    video_keys = {(v.key, v.compression) for v in videos}
-    video_key_only = {v.key for v in videos}
+    key_free = not (dataset_dir / "videos.jsonl.gz").is_file()
+    if card is not None and card.distribution == "recipe" and key_free:
+        _lint_key_free_recipe(dataset_dir, dataset_id, card, issues)
+    else:
+        videos = _lint_videos(dataset_dir, dataset_id, labels, issues)
+        _check_videos_hash(videos, dataset_id, card, issues)
+        video_keys = {(v.key, v.compression) for v in videos}
+        video_key_only = {v.key for v in videos}
 
-    if card is not None:
-        _lint_schemes(dataset_dir, dataset_id, card, video_keys, issues)
+        if card is not None:
+            _lint_schemes(dataset_dir, dataset_id, card, video_keys, issues)
 
-    _lint_pairs(dataset_dir, dataset_id, video_key_only, issues)
+        _lint_pairs(dataset_dir, dataset_id, video_key_only, card, issues)
 
     notice_path = dataset_dir / "NOTICE.md"
     if not notice_path.is_file():
@@ -337,13 +450,18 @@ def lint_pack(root: Path, *, release: bool = False) -> list[LintIssue]:
 
     Reads ``root/pack.yaml`` and every ``<dataset_id>/`` directory it (or a directory actually
     present) names, re-deriving each fact a card claims -- a scheme's ``sha256`` and ``counts``,
+    the card's ``videos_sha256``, ``pairs_sha256`` and ``pairing_rule`` when it records them,
     that every split row and pair endpoint names a real video, that no video or split row is
     listed twice, that every video's ``label_key`` is in its ``labels.yaml``, and that no card,
     notice, video or pair holds a local path -- and reports a mismatch as an error rather than
-    raising. A published dataset whose card is left ``distribution: undecided`` is a warning
-    normally, and an error when ``release`` is set (the check a release build runs, since an
-    undecided dataset must not ship); a dataset listed under ``withheld`` is not published, so
-    being undecided is no issue there. Nothing is written.
+    raising. A ``recipe`` dataset that ships no ``videos.jsonl.gz`` ships no key list at all: it
+    must ship no pairs or split files either, and its card must hold everything ``dfwb protocols
+    materialize`` rebuilds the lists with (``videos_sha256``, ``pairs_sha256``, a recomputable
+    rule for every scheme, and a ``pairing_rule`` when there are pairs). A published dataset
+    whose card is left ``distribution: undecided`` is a warning normally, and an error when
+    ``release`` is set (the check a release build runs, since an undecided dataset must not
+    ship); a dataset listed under ``withheld`` is not published, so being undecided is no issue
+    there. Nothing is written.
     """
     issues: list[LintIssue] = []
     pack_card = _lint_pack_card(root, issues)

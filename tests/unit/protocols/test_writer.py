@@ -20,6 +20,7 @@ from dfwb.core.records import (
     VideoRecord,
     read_jsonl,
     read_split_tsv,
+    records_sha256,
     split_sha256,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
@@ -286,6 +287,24 @@ def test_a_scheme_must_match_its_card(tmp_path):
     with pytest.raises(ContractError, match="all-test"):
         write_dataset_files(tmp_path / "out", **inputs)
     assert not (tmp_path / "out").exists()  # checked before anything is written
+
+
+@pytest.mark.parametrize("field", ["videos_sha256", "pairs_sha256"])
+def test_the_card_key_list_hashes_must_match_what_is_written(tmp_path, field):
+    inputs = _inputs(_videos())
+    card = inputs["card"]
+    right = {
+        "videos_sha256": records_sha256(inputs["videos"]),
+        "pairs_sha256": records_sha256(inputs["pairs"]),
+    }
+    inputs["card"] = card.model_copy(update={**right, field: "0" * 64})
+    with pytest.raises(ContractError, match=field):
+        write_dataset_files(tmp_path / "out", **inputs)
+    assert not (tmp_path / "out").exists()  # checked before anything is written
+
+    inputs["card"] = card.model_copy(update=right)
+    write_dataset_files(tmp_path / "out", **inputs)
+    assert (tmp_path / "out" / "dataset.yaml").is_file()
 
 
 def test_a_scheme_must_be_in_the_card(tmp_path):

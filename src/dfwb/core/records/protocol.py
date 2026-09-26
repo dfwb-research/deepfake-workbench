@@ -94,6 +94,23 @@ class DatasetCard(RecordModel):
     key_rule: str
     schemes: dict[SchemeName, SchemeCard] = Field(min_length=1)
     default_scheme: SchemeName
+    videos_sha256: Sha256 | None = Field(
+        default=None,
+        description="sha256 of the dataset's VideoRecord list (videos.jsonl.gz): its JSONL lines "
+        "sorted and hashed together, uncompressed. With pairs_sha256 it lets a recipe dataset "
+        "ship no key list at all: dfwb protocols materialize rebuilds the lists from a local "
+        "inventory and checks them against these hashes.",
+    )
+    pairs_sha256: Sha256 | None = Field(
+        default=None,
+        description="sha256 of the dataset's PairRecord list (pairs.jsonl.gz), hashed as "
+        "videos_sha256 is; the sha256 of empty content when nothing pairs.",
+    )
+    pairing_rule: str | None = Field(
+        default=None,
+        description="The pairing rule every pair records (PairRecord.rule); null when the "
+        "dataset's inventory builder pairs nothing.",
+    )
 
     @model_validator(mode="after")
     def _default_scheme_exists(self) -> DatasetCard:

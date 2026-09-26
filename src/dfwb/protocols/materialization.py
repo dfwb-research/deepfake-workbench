@@ -1,4 +1,4 @@
-"""Recompute a recipe scheme from a local inventory and check it against its published hash (C3a).
+"""Rebuild a recipe's lists from a local inventory and check them against their published hashes.
 
 A pack can publish a scheme as a *recipe*: its rule, the rule's parameters and the ``sha256`` of
 the split rows the rule produces, but no key list. That is how a dataset whose terms forbid
@@ -6,17 +6,27 @@ redistributing even file names can still have a comparable split. :func:`materia
 rows from the user's own inventory and keeps them only when they hash to the published value, so a
 local split is either exactly the one the pack describes or it is refused.
 
+A recipe *dataset* goes further and ships no key list at all: no videos, no pairs, no split rows,
+only its card, which records every scheme's rule, parameters and hash plus the hashes of the video
+and pair lists (``videos_sha256``, ``pairs_sha256``) and the pairing rule.
+:func:`materialize_dataset` rebuilds all of those lists from the inventory at once, and writes
+them only when every hash matches.
+
 :func:`assign_rule` runs a scheme's rule from its card's ``rule`` and ``params``. Pack building
 (``dfwb protocols build``) produces every scheme through this same function, so a published scheme
 and its materialized copy can never be computed two different ways.
 
 The publisher's own split (the ``official`` rules, and a benchmark drawn from the official test)
-comes from files only the dataset's inventory builder knows how to read, and this layer never
-imports builders: the caller passes that split in as ``official``.
+comes from files only the dataset's inventory builder knows how to read, and so do the pairs (a
+builder's pairing rule is code), and this layer never imports builders: the caller passes that
+split in as ``official``, and the pairs as ``pairs``.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,16 +34,21 @@ from typing import Any, Final, Literal
 
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError, did_you_mean
 from dfwb.core.records import (
+    DatasetCard,
     InventoryRecord,
     LabelVocab,
+    PairRecord,
     SchemeCard,
+    SplitRow,
     VideoRecord,
     read_jsonl,
+    records_sha256,
     split_sha256,
     to_video_record,
     write_jsonl,
     write_split_tsv,
 )
+from dfwb.protocols._materialized import HASHES_FILE, materialized_dir
 from dfwb.protocols._rawdata import check_outside_datasets_roots
 from dfwb.protocols._yaml import read_card, read_labels
 from dfwb.protocols.packs import find_dataset
@@ -56,12 +71,15 @@ __all__ = [
     "BENCHMARK_POOLS",
     "OFFICIAL_RULES",
     "RULES",
+    "DatasetMaterialization",
     "MaterializeResult",
     "assign_rule",
     "benchmark_params",
     "materialize",
+    "materialize_dataset",
     "needs_official",
     "rule_needs_official",
+    "ships_key_lists",
 ]
 
 # Every rule a scheme card may name and still be recomputed.
@@ -85,6 +103,22 @@ class MaterializeResult:
     path: Path
     sha256: str
     matched: bool
+
+
+@dataclass(frozen=True)
+class DatasetMaterialization:
+    """A materialised recipe dataset: the folder written, and every hash its lists matched.
+
+    ``schemes`` maps each scheme of the card to its split's hash.
+    """
+
+    dataset: str
+    path: Path
+    videos_sha256: str
+    pairs_sha256: str
+    schemes: dict[str, str]
+    n_videos: int
+    n_pairs: int
 
 
 # ---------------------------------------------------------------------------------------------
@@ -227,6 +261,8 @@ class _Scheme:
     name: str
     card: SchemeCard
     labels: Callable[[], LabelVocab]
+    dataset_card: DatasetCard
+    ships_videos: bool
 
 
 def _resolve(ref: str | ProtocolRef) -> _Scheme:
@@ -245,7 +281,27 @@ def _resolve(ref: str | ProtocolRef) -> _Scheme:
     canonical = f"{parsed.dataset}/{name}"
     if parsed.pin is not None:
         _check_pin(canonical, parsed.pin, pack.version, scheme_card.sha256)
-    return _Scheme(canonical, parsed.dataset, name, scheme_card, lambda: read_labels(dataset_dir))
+    return _Scheme(
+        canonical,
+        parsed.dataset,
+        name,
+        scheme_card,
+        lambda: read_labels(dataset_dir),
+        card,
+        (dataset_dir / "videos.jsonl.gz").is_file(),
+    )
+
+
+def ships_key_lists(ref: str | ProtocolRef) -> bool:
+    """Whether the pack ships ``ref``'s dataset with its key lists (its ``videos.jsonl.gz``).
+
+    ``False`` for a recipe dataset published without them, which :func:`materialize_dataset`
+    rebuilds from an inventory as a whole.
+
+    Raises:
+        UnknownKeyError, ContractError: as :func:`materialize` does when resolving ``ref``.
+    """
+    return _resolve(ref).ships_videos
 
 
 def needs_official(ref: str | ProtocolRef) -> bool:
@@ -335,14 +391,23 @@ def materialize(
 
     Raises:
         UnknownKeyError: the dataset, pack or scheme is unknown.
-        ConfigError: there is no inventory at ``inventory``, the rule needs ``official`` and it
-            is ``None``, or the materialized folder would be inside a datasets root.
+        ConfigError: the pack ships no ``videos.jsonl.gz`` for the dataset (use
+            :func:`materialize_dataset`), there is no inventory at ``inventory``, the rule needs
+            ``official`` and it is ``None``, or the materialized folder would be inside a
+            datasets root.
         ContractError: the scheme's rule cannot be recomputed, a pin does not match, the
             inventory repeats a video, the recomputed rows do not hash to the published value,
             or the materialized ``videos.jsonl.gz`` holds different records.
     """
     scheme = _resolve(ref)
-    materialized = work_root / scheme.dataset / "materialized"
+    if not scheme.ships_videos:
+        raise ConfigError(
+            f"{scheme.ref}: the pack ships no key list for {scheme.dataset}, so every list of it "
+            "is materialised at once, never one scheme alone",
+            hint=f"run: dfwb protocols materialize {scheme.dataset} (from Python, "
+            "materialize_dataset)",
+        )
+    materialized = materialized_dir(work_root, scheme.dataset)
     check_outside_datasets_roots(materialized, datasets_roots, what="the materialized split")
     rule, params = scheme.card.rule, scheme.card.params
     if rule not in RULES:
@@ -384,3 +449,184 @@ def materialize(
     path = materialized / "splits" / f"{scheme.name}.tsv.gz"
     write_split_tsv(path, rows)
     return MaterializeResult(scheme.ref, path, sha256, True)
+
+
+# ---------------------------------------------------------------------------------------------
+# Materialising a recipe dataset that ships no key list
+# ---------------------------------------------------------------------------------------------
+
+
+def _check_recipe_card(card: DatasetCard) -> None:
+    """The card holds everything the lists are rebuilt and checked with."""
+    missing = [name for name in ("videos_sha256", "pairs_sha256") if getattr(card, name) is None]
+    if missing:
+        raise ContractError(
+            f"{card.id}: its card records no {' or '.join(missing)}, so lists rebuilt from an "
+            "inventory could not be checked",
+            hint="the pack was built before a recipe dataset could ship without its key lists; "
+            "rebuild it with dfwb protocols build, which records these hashes",
+        )
+    for name, scheme in sorted(card.schemes.items()):
+        if scheme.rule not in RULES:
+            raise ContractError(
+                f"{card.id}/{name}: its rule {scheme.rule!r} cannot be recomputed from an "
+                "inventory",
+                hint="only a scheme built by dfwb protocols build can be materialised "
+                f"(rules: {', '.join(RULES)})",
+            )
+
+
+def _check_pairing_rule(pairs: Sequence[PairRecord], card: DatasetCard) -> None:
+    used = sorted({pair.rule for pair in pairs})
+    if used and used != [card.pairing_rule]:
+        raise ContractError(
+            f"{card.id}: the pairs given were drawn by {', '.join(repr(r) for r in used)}, and "
+            f"the pack declares the pairing rule {card.pairing_rule!r}",
+            hint="draw the pairs with the pairing rule the pack declares, as dfwb protocols "
+            "materialize does with the dataset's inventory builder",
+        )
+
+
+def _write_materialized(
+    target: Path,
+    *,
+    videos: Sequence[VideoRecord],
+    pairs: Sequence[PairRecord],
+    schemes: Mapping[str, list[SplitRow]],
+    hashes: Mapping[str, Any],
+) -> None:
+    """Write every list into a hidden sibling of ``target``, then swap it in for ``target``.
+
+    Whatever was materialised before is replaced as a whole, so the folder never mixes lists
+    from two versions of a pack; a failure part way leaves the previous folder in place.
+    """
+    staging = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    retired = target.with_name(f".{target.name}.old-{os.getpid()}")
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        (staging / "splits").mkdir(parents=True)
+        write_jsonl(staging / "videos.jsonl.gz", videos)
+        if pairs:
+            write_jsonl(staging / "pairs.jsonl.gz", pairs)
+        for name, rows in schemes.items():
+            write_split_tsv(staging / "splits" / f"{name}.tsv.gz", rows)
+        (staging / HASHES_FILE).write_text(
+            json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        if target.exists():
+            shutil.rmtree(retired, ignore_errors=True)
+            target.rename(retired)
+        staging.rename(target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(retired, ignore_errors=True)
+
+
+def materialize_dataset(
+    ref: str | ProtocolRef,
+    *,
+    inventory: Path,
+    official: Mapping[str, Split] | None,
+    pairs: Sequence[PairRecord],
+    work_root: Path,
+    datasets_roots: Sequence[Path] | None = None,
+) -> DatasetMaterialization:
+    """Rebuild every list of ``ref``'s dataset from ``inventory``; keep them if every hash matches.
+
+    For a recipe dataset whose pack ships no key list. The videos are ``inventory``'s rows as
+    :class:`~dfwb.core.records.VideoRecord`; every scheme of the card is recomputed from its rule
+    and parameters, as :func:`materialize` recomputes one; ``pairs`` are the dataset's pairs,
+    drawn from the same inventory by the pairing rule the card declares (``pairing_rule``), which
+    only the dataset's inventory builder can run. The video list, every split and the pair list
+    are hashed exactly as the pack builder hashed them, and compared with the card's
+    ``videos_sha256``, scheme ``sha256`` and ``pairs_sha256``.
+
+    Only when every hash matches is anything written:
+    ``<work_root>/<dataset>/materialized/{videos.jsonl.gz, pairs.jsonl.gz (when there are pairs),
+    splits/<scheme>.tsv.gz, hashes.json}``, byte for byte the files a list pack would ship, plus
+    the card hashes they matched, which :func:`~dfwb.protocols.protocol.load` checks against the
+    installed card. The folder replaces any earlier one as a whole. A scheme or pin in ``ref`` is
+    checked; every scheme is materialised either way.
+
+    ``official`` is the publisher's split (record key -> split), needed when any scheme's rule
+    reads it; ``None`` otherwise. Nothing is ever written inside a datasets root
+    (``datasets_roots``, default the resolved ones).
+
+    Raises:
+        UnknownKeyError: the dataset, pack or scheme is unknown.
+        ConfigError: there is no inventory at ``inventory``, a rule needs ``official`` and it is
+            ``None``, or the materialized folder would be inside a datasets root.
+        ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, a scheme's rule
+            cannot be recomputed, a pin does not match, ``pairs`` were drawn by another rule than
+            the card's, the inventory repeats a video, or any rebuilt list does not hash to its
+            published value (the message names every one that does not).
+    """
+    scheme = _resolve(ref)
+    card = scheme.dataset_card
+    dataset = scheme.dataset
+    target = materialized_dir(work_root, dataset)
+    check_outside_datasets_roots(target, datasets_roots, what="the materialised lists")
+    _check_recipe_card(card)
+    if not inventory.is_file():
+        raise ConfigError(
+            f"{dataset}: no inventory at {inventory}",
+            hint=f"run: dfwb inventory build {dataset}",
+        )
+    for name, scheme_card in sorted(card.schemes.items()):
+        if rule_needs_official(scheme_card.rule, scheme_card.params) and official is None:
+            raise ConfigError(
+                f"{dataset}/{name}: the {scheme_card.rule} rule needs the publisher's official "
+                "split, and none was given",
+                hint="run dfwb protocols materialize, which reads it with the dataset's "
+                "inventory builder",
+            )
+    _check_pairing_rule(pairs, card)
+
+    records = _read_records(inventory, dataset)
+    is_real = _is_real_from(scheme.labels, dataset)
+    schemes: dict[str, list[SplitRow]] = {}
+    for name, scheme_card in sorted(card.schemes.items()):
+        needed = official if rule_needs_official(scheme_card.rule, scheme_card.params) else None
+        assignment = assign_rule(
+            scheme_card.rule, scheme_card.params, records, official=needed, is_real=is_real
+        )
+        schemes[name] = rows_from_assignment(assignment)
+    unique_pairs = sorted(set(pairs), key=lambda p: (p.real_key, p.fake_key, p.rule))
+
+    videos_sha256 = records_sha256(records)
+    pairs_sha256 = records_sha256(unique_pairs)
+    scheme_sha256 = {name: split_sha256(rows) for name, rows in schemes.items()}
+    checks = [
+        ("videos", videos_sha256, card.videos_sha256),
+        *((name, sha256, card.schemes[name].sha256) for name, sha256 in scheme_sha256.items()),
+        ("pairs", pairs_sha256, card.pairs_sha256),
+    ]
+    mismatches = [
+        f"{what}: {sha256} != published {published}"
+        for what, sha256, published in checks
+        if sha256 != published
+    ]
+    if mismatches:
+        raise ContractError(
+            f"{dataset}: {len(mismatches)} of {len(checks)} published hashes differ from what "
+            f"your inventory gives ({'; '.join(mismatches)})",
+            hint=f"your local copy differs from the release the pack describes "
+            f"({card.release}): check that it is complete and unmodified, then rebuild the "
+            f"inventory with dfwb inventory build {dataset}",
+        )
+
+    hashes = {
+        "videos_sha256": videos_sha256,
+        "pairs_sha256": pairs_sha256,
+        "schemes": scheme_sha256,
+    }
+    _write_materialized(target, videos=records, pairs=unique_pairs, schemes=schemes, hashes=hashes)
+    return DatasetMaterialization(
+        dataset=dataset,
+        path=target,
+        videos_sha256=videos_sha256,
+        pairs_sha256=pairs_sha256,
+        schemes=scheme_sha256,
+        n_videos=len(records),
+        n_pairs=len(unique_pairs),
+    )

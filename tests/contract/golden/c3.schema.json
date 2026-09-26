@@ -148,6 +148,33 @@
           "title": "Name",
           "type": "string"
         },
+        "pairing_rule": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The pairing rule every pair records (PairRecord.rule); null when the dataset's inventory builder pairs nothing.",
+          "title": "Pairing Rule"
+        },
+        "pairs_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "sha256 of the dataset's PairRecord list (pairs.jsonl.gz), hashed as videos_sha256 is; the sha256 of empty content when nothing pairs.",
+          "title": "Pairs Sha256"
+        },
         "paper": {
           "anyOf": [
             {
@@ -175,6 +202,20 @@
         },
         "terms": {
           "$ref": "#/$defs/TermsInfo"
+        },
+        "videos_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "sha256 of the dataset's VideoRecord list (videos.jsonl.gz): its JSONL lines sorted and hashed together, uncompressed. With pairs_sha256 it lets a recipe dataset ship no key list at all: dfwb protocols materialize rebuilds the lists from a local inventory and checks them against these hashes.",
+          "title": "Videos Sha256"
         }
       },
       "required": [
