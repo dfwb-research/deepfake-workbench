@@ -175,7 +175,13 @@ def _read_file(path: Path, host: str) -> _FileSettings:
     if not path.is_file():
         return _FileSettings({}, {}, {}, {}, path)
     try:
-        data = tomllib.loads(path.read_text("utf-8"))
+        text = path.read_text("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"{path}: not valid UTF-8: {exc}", hint="save the file as UTF-8"
+        ) from None
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(
             f"{path}: invalid TOML: {exc}", hint="fix the file or remove it"

@@ -103,6 +103,34 @@ def test_show_reports_validation_errors(run, tmp_path):
     assert "hint: see `dfwb schema export c2`" in result.err
 
 
+def test_show_reports_a_directory_in_extends(run, tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "child.yaml").write_text("extends: [sub]\n")
+    result = run("config", "show", "-c", "child.yaml")
+    assert result.code == 2
+    assert "child.yaml" in result.err
+    assert "sub" in result.err
+    assert "is a directory" in result.err
+
+
+def test_show_reports_a_non_utf8_config_file(run, tmp_path):
+    bad = tmp_path / "bad.yaml"
+    # Latin-1 bytes that are not valid UTF-8 (e.g. "café" saved with the wrong encoding).
+    bad.write_bytes("schema: dfwb.train/1  # caf\xe9\n".encode("latin-1"))
+    result = run("config", "show", "-c", "bad.yaml")
+    assert result.code == 2
+    assert "not valid UTF-8" in result.err
+
+
+def test_show_reports_extends_parent_errors_with_both_files_named(run, tmp_path):
+    (tmp_path / "base.yaml").write_text("not: [\n")  # invalid YAML
+    (tmp_path / "child.yaml").write_text("extends: [base.yaml]\n")
+    result = run("config", "show", "-c", "child.yaml")
+    assert result.code == 2
+    assert "child.yaml" in result.err
+    assert "base.yaml" in result.err
+
+
 def test_validate_checks_components(run, tmp_path):
     exp = _experiment(tmp_path)
     # "tiny-cnn" is a real, registered backbone, so a bogus name keeps this test's own concern

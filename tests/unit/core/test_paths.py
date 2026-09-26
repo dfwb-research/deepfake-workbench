@@ -69,6 +69,16 @@ def test_bad_config_files(places):
         resolve_roots(env={}, cwd=cwd, user_config=user)
 
 
+def test_a_non_utf8_project_config_is_a_config_error(places):
+    cwd, user = places
+    # Latin-1 bytes that are not valid UTF-8 (e.g. "café" saved with the wrong encoding).
+    (cwd / "dfwb.toml").write_bytes('[roots]\ndatasets = "/x"  # caf\xe9\n'.encode("latin-1"))
+    with pytest.raises(ConfigError, match="not valid UTF-8") as info:
+        resolve_roots(env={}, cwd=cwd, user_config=user)
+    assert str(cwd / "dfwb.toml") in info.value.message
+    assert info.value.hint
+
+
 def test_require_root_explains_how_to_set_it(places):
     cwd, user = places
     roots = resolve_roots(env={}, cwd=cwd, user_config=user)

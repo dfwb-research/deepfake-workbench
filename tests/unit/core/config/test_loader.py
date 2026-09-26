@@ -100,6 +100,33 @@ def test_bad_files_and_references(write, text, message):
         compose(write("x.yaml", text))
 
 
+def test_a_directory_in_extends_is_a_config_error(write, tmp_path):
+    (tmp_path / "sub").mkdir()
+    child = write("child.yaml", "extends: [sub]\n")
+    with pytest.raises(ConfigError, match=r"sub.*is a directory"):
+        compose(child)
+
+
+def test_a_non_utf8_yaml_file_is_a_config_error(tmp_path):
+    path = tmp_path / "bad.yaml"
+    # Latin-1 bytes that are not valid UTF-8 (e.g. "café" saved with the wrong encoding).
+    path.write_bytes("schema: dfwb.train/1  # caf\xe9\n".encode("latin-1"))
+    with pytest.raises(ConfigError, match="not valid UTF-8") as info:
+        compose(path)
+    assert str(path) in info.value.message
+    assert info.value.hint
+
+
+def test_an_error_in_an_extends_parent_names_the_file_that_referenced_it(write):
+    write("base.yaml", "not: [\n")  # invalid YAML
+    child = write("child.yaml", "extends: [base.yaml]\n")
+    with pytest.raises(ConfigError) as info:
+        compose(child)
+    assert "child.yaml" in info.value.message
+    assert "base.yaml" in info.value.message
+    assert "invalid YAML" in info.value.message
+
+
 def test_overrides_then_interpolation_then_validation(experiment):
     loaded = load_config(
         experiment,
