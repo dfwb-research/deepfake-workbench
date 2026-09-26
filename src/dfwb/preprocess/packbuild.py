@@ -62,6 +62,7 @@ from dfwb.preprocess.inventory.runner import (
     metadata_copy,
     read_inventory,
 )
+from dfwb.protocols._notice import holds_paragraph, terms_sentence
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.materialization import (
     OFFICIAL_RULES,
@@ -90,29 +91,6 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 PACK_YAML: Final = "pack.yaml"
-
-# What a decided distribution lets the pack publish, as the NOTICE words it.
-_DISTRIBUTION_MEANING: Final = {
-    "list": "these lists may be redistributed",
-    "recipe": "the published pack carries no key list, only each split's rule and parameters "
-    "and the hashes of the video, pair and split lists; dfwb protocols materialize rebuilds the "
-    "lists from a local copy of the dataset and checks every hash",
-}
-
-# What a dataset folder holds, as the NOTICE words it: the lists themselves, or (a recipe, once
-# the release build has taken its key lists out) only what rebuilds and checks them.
-_HOLDS_LISTS: Final = (
-    "Never media: this folder lists video keys, labels, split assignments and fake/real pairs, "
-    "derived from the release's file names and metadata. It holds no videos, frames, crops, face "
-    "boxes, landmarks or anything else derived from pixels."
-)
-_HOLDS_RECIPE: Final = (
-    "Never media, and in the published pack no key list either: this folder holds the dataset "
-    "card (each split's rule and parameters, and the hashes of the video, pair and split lists), "
-    "the label vocabulary and this notice. dfwb protocols materialize rebuilds the lists from a "
-    "local copy of the dataset. Nothing here is derived from pixels: no videos, frames, crops, "
-    "face boxes or landmarks."
-)
 
 
 def _locate_hint(dataset_id: str) -> str:
@@ -398,7 +376,7 @@ def _notice(card: DatasetCard) -> str:
         "",
         "## What these files hold",
         "",
-        _HOLDS_RECIPE if card.distribution == "recipe" else _HOLDS_LISTS,
+        holds_paragraph(card.distribution),
         "",
         "## Terms",
         "",
@@ -414,17 +392,7 @@ def _terms(card: DatasetCard) -> str:
     is appended whether or not the distribution itself has been decided yet, so it is never
     silently dropped from the published notice.
     """
-    if card.distribution == "undecided":
-        text = (
-            "Terms review pending: whether these lists may be redistributed has not been decided "
-            "yet, so dataset.yaml records distribution: undecided. This notice is completed once "
-            "the dataset's terms have been reviewed."
-        )
-    else:
-        text = (
-            f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
-            f"{_DISTRIBUTION_MEANING[card.distribution]}."
-        )
+    text = terms_sentence(card.distribution)
     return f"{text} {card.terms.notes}" if card.terms.notes else text
 
 

@@ -54,7 +54,8 @@ All notable changes to this project are documented here. The format follows
 - The `NOTICE.md` that `dfwb protocols build` writes for a recipe dataset says that the published
   pack holds no key list, only the rules and hashes `dfwb protocols materialize` rebuilds and
   checks the lists with. `dfwb protocols lint --release` reports a recipe shipped without its
-  lists whose notice still says they ship or may be redistributed.
+  lists whose notice is still the one generated for a list or undecided dataset (only the
+  generated text counts, never the card's `terms.notes`).
 - `dfwb protocols lint` reports a video of a compression the card does not list.
 - `dfwb protocols build` no longer publishes the `attrs.audio_relpath` of AV-Deepfake1M++ and
   TalkingHeadBench videos, which depended on the local copy; their builders declare it in

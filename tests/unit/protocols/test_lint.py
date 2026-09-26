@@ -26,6 +26,7 @@ from dfwb.core.records import (
     write_split_tsv,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+from dfwb.preprocess.packbuild import _notice
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.lint import LintIssue, lint_pack
 from dfwb.protocols.writer import scheme_card_for, write_dataset_files
@@ -779,24 +780,59 @@ def test_videos_of_a_compression_the_card_does_not_list_are_the_only_reported_er
     ]
 
 
-_STALE_NOTICE = (
-    "Never media: this folder lists video keys, labels, split assignments and fake/real pairs.",
-    "Terms reviewed: dataset.yaml records distribution: list, so these lists may be redistributed.",
-)
+def _notice_for(distribution: str, notes: str | None = None) -> str:
+    """The notice ``dfwb protocols build`` writes for toylint with ``distribution``."""
+    card = DatasetCard(
+        id="toylint",
+        name="toylint",
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only; never media",
+        distribution=distribution,  # type: ignore[arg-type]
+        terms={"notes": notes},  # type: ignore[arg-type]
+        modalities=["video"],
+        key_rule="<task>/<stem>",
+        schemes={"official": scheme_card_for([], kind="official", rule="official")},
+        default_scheme="official",
+    )
+    return _notice(card)
 
 
-@pytest.mark.parametrize("text", _STALE_NOTICE, ids=["holds-lists", "redistributed"])
-def test_a_key_free_recipe_whose_notice_still_offers_its_lists_fails_a_release_lint(tmp_path, text):
+def _key_free_recipe_with_notice(tmp_path: Path, notice: str) -> Path:
     root = _write_pack(tmp_path, ["toylint"])
     _hash_the_lists(root / "toylint", distribution="recipe")
     _strip(root / "toylint")
-    (root / "toylint" / "NOTICE.md").write_text(f"# toylint\n\n{text}\n")
+    (root / "toylint" / "NOTICE.md").write_text(notice)
+    return root
+
+
+@pytest.mark.parametrize("distribution", ["list", "undecided"])
+def test_a_key_free_recipe_whose_notice_was_written_for_its_lists_fails_a_release_lint(
+    tmp_path, distribution
+):
+    # The notice the build wrote before the dataset was decided a recipe, never rewritten.
+    root = _key_free_recipe_with_notice(tmp_path, _notice_for(distribution))
 
     stale = LintIssue(
         "error",
         "toylint/NOTICE.md",
-        "the notice says the key lists ship or may be redistributed, but this recipe ships "
-        "none; rebuild the dataset with dfwb protocols build, which rewrites its notice",
+        "the notice is the one written for a dataset that ships its key lists (distribution: "
+        "list or undecided), but this recipe ships none; rebuild the dataset with dfwb "
+        "protocols build, which rewrites its notice",
     )
     assert lint_pack(root, release=True) == [stale]
     assert lint_pack(root) == [dataclasses.replace(stale, severity="warning")]
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "These lists are released under the MIT licence and may be redistributed.",
+        "Upstream says this folder lists video keys for research use only.",
+    ],
+)
+def test_terms_notes_about_redistribution_never_trigger_the_stale_notice_check(tmp_path, notes):
+    root = _key_free_recipe_with_notice(tmp_path, _notice_for("recipe", notes))
+
+    assert notes in (root / "toylint" / "NOTICE.md").read_text()
+    assert lint_pack(root, release=True) == []

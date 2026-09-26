@@ -99,10 +99,11 @@ def recipe(capsys, monkeypatch, tmp_path):
         "videos.jsonl.gz",
     ]
 
-    # Decided a recipe: a rebuild keeps the decision and rewrites the notice to match it.
+    # Decided a recipe: a rebuild keeps the decision, and toyfake's own terms notes, and
+    # rewrites the notice to match it.
     card = yaml.safe_load((out / "dataset.yaml").read_text("utf-8"))
+    assert "may be redistributed" in card["terms"]["notes"]
     card["distribution"] = "recipe"
-    card["terms"]["notes"] = "Only the rules and hashes are published."
     (out / "dataset.yaml").write_text(yaml.safe_dump(card, sort_keys=True), "utf-8")
     assert run("protocols", "build", DATASET, "--out", str(out)).code == 0
     for name in lists:

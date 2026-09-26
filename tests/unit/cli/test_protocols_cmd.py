@@ -890,7 +890,9 @@ def test_a_key_free_recipe_lints_materializes_and_loads_from_the_cli(run, monkey
     # The notice still says what the build wrote for an undecided dataset; a rebuild rewrites it.
     stale = run("protocols", "lint", str(paths["pack"]), "--release")
     assert stale.code == 4
-    assert "error: packdemo/NOTICE.md: the notice says the key lists ship" in stale.out
+    assert "error: packdemo/NOTICE.md: the notice is the one written for a dataset that" in (
+        stale.out
+    )
     shutil.rmtree(out)
     assert run("protocols", "build", "packdemo", "--out", str(out)).code == 0
     _decide_recipe(out)

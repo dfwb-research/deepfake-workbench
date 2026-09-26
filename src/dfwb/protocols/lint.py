@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -34,6 +34,7 @@ from dfwb.core.records import (
     records_sha256,
     split_sha256,
 )
+from dfwb.protocols._notice import offers_lists
 from dfwb.protocols._yaml import read_model
 from dfwb.protocols.materialization import RULES
 
@@ -400,26 +401,26 @@ def _lint_key_free_recipe(
         )
 
 
-# What a notice written for a dataset that ships its lists says, and a recipe's must not.
-_OFFERS_LISTS: Final = ("this folder lists video keys", "may be redistributed")
-
-
 def _lint_recipe_notice(
     dataset_dir: Path, dataset_id: str, *, release: bool, issues: list[LintIssue]
 ) -> None:
-    """A recipe without key lists must not keep a notice that says its lists ship."""
+    """A recipe without key lists must not keep the notice built for a dataset that ships them.
+
+    Only the text ``dfwb protocols build`` generates is compared (see
+    :func:`~dfwb.protocols._notice.offers_lists`): a maintainer's ``terms.notes`` never counts,
+    and a notice reworded by hand is not caught.
+    """
     path = dataset_dir / "NOTICE.md"
     if not path.is_file():
         return  # reported once, with every dataset's files
-    text = " ".join(path.read_text("utf-8").split())
-    if any(phrase in text for phrase in _OFFERS_LISTS):
+    if offers_lists(path.read_text("utf-8")):
         issues.append(
             LintIssue(
                 "error" if release else "warning",
                 f"{dataset_id}/NOTICE.md",
-                "the notice says the key lists ship or may be redistributed, but this recipe "
-                "ships none; rebuild the dataset with dfwb protocols build, which rewrites its "
-                "notice",
+                "the notice is the one written for a dataset that ships its key lists "
+                "(distribution: list or undecided), but this recipe ships none; rebuild the "
+                "dataset with dfwb protocols build, which rewrites its notice",
             )
         )
 
