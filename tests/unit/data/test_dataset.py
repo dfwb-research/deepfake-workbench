@@ -252,19 +252,21 @@ def test_no_expected_frame_size_means_no_size_check(tmp_path):
     dataset[0]  # no expected_frame_size given: any size is accepted, exactly as before
 
 
-def test_a_mismatched_size_is_never_silently_skipped_even_when_training(tmp_path):
+def test_a_mismatched_size_is_never_silently_skipped_even_with_repair_on(tmp_path):
     item = _video_item(tmp_path / "v", n_frames=4)
     index = _video_index([item])
     spec = ClipSpec(
         frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
     )
-    dataset = ClipDataset(index, spec, train=True, seed=0, expected_frame_size=8)
+    dataset = ClipDataset(
+        index, spec, train=True, seed=0, expected_frame_size=8, repair_corrupt_frames=True
+    )
 
     with pytest.raises(ContractError, match="not 8x8"):
         dataset[0]
 
 
-def test_eval_mode_propagates_a_corrupt_frame(tmp_path):
+def test_by_default_repair_is_off_and_a_corrupt_frame_propagates(tmp_path):
     video_dir = tmp_path / "v"
     item = _video_item(video_dir, n_frames=4)
     _corrupt(video_dir / "frame_000001.png")
@@ -272,14 +274,13 @@ def test_eval_mode_propagates_a_corrupt_frame(tmp_path):
     spec = ClipSpec(
         frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
     )
-    dataset = ClipDataset(index, spec, train=False, seed=0)
+    dataset = ClipDataset(index, spec, train=True, seed=0)  # repair_corrupt_frames defaults False
 
     with pytest.raises(CorruptFrameError, match="cannot decode this stored frame"):
         dataset[0]
-    assert dataset.corrupt_frames_skipped == 0  # eval never patches over it
 
 
-def test_train_mode_skips_a_corrupt_frame_with_a_warning_and_counts_it(tmp_path, caplog):
+def test_eval_mode_propagates_a_corrupt_frame_when_repair_is_off(tmp_path):
     video_dir = tmp_path / "v"
     item = _video_item(video_dir, n_frames=4)
     _corrupt(video_dir / "frame_000001.png")
@@ -287,19 +288,54 @@ def test_train_mode_skips_a_corrupt_frame_with_a_warning_and_counts_it(tmp_path,
     spec = ClipSpec(
         frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
     )
-    dataset = ClipDataset(index, spec, train=True, seed=0)
+    dataset = ClipDataset(index, spec, train=False, seed=0)  # scoring's own default
+
+    with pytest.raises(CorruptFrameError, match="cannot decode this stored frame"):
+        dataset[0]
+
+
+def test_repair_on_skips_a_corrupt_frame_with_a_warning_and_reports_it(tmp_path, caplog):
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=4)
+    _corrupt(video_dir / "frame_000001.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=True, seed=0, repair_corrupt_frames=True)
 
     with caplog.at_level(logging.WARNING):
         sample = dataset[0]  # window is exactly [0, 1, 2, 3]: deterministic even for train=True
 
+    assert sample is not None
     assert sample.clip.shape == (4, 3, 4, 4)
-    assert dataset.corrupt_frames_skipped == 1
+    assert sample.extras["dfwb/repaired_frames"] == 1
     assert any("corrupt stored frame" in message for message in caplog.messages)
     # Position 1 (corrupt) is repeated from its nearest still-good neighbour, position 0.
     assert torch.equal(sample.clip[1], sample.clip[0])
 
 
-def test_train_mode_counts_keep_accumulating_across_samples(tmp_path):
+def test_repair_is_the_same_whether_or_not_training(tmp_path):
+    """Repair is now an explicit, independent flag, not tied to ``train`` (see the ruling): a
+    validation-shaped dataset (``train=False``) repairs a partial corruption exactly like a
+    training one, as long as ``repair_corrupt_frames`` is on for both."""
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=4)
+    _corrupt(video_dir / "frame_000001.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=False, seed=0, repair_corrupt_frames=True)
+
+    sample = dataset[0]
+
+    assert sample is not None
+    assert sample.extras["dfwb/repaired_frames"] == 1
+    assert torch.equal(sample.clip[1], sample.clip[0])
+
+
+def test_repaired_count_is_per_sample_not_a_shared_counter(tmp_path):
     video_dir = tmp_path / "v"
     item = _video_item(video_dir, n_frames=4)
     _corrupt(video_dir / "frame_000001.png")
@@ -308,14 +344,16 @@ def test_train_mode_counts_keep_accumulating_across_samples(tmp_path):
     spec = ClipSpec(
         frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
     )
-    dataset = ClipDataset(index, spec, train=True, seed=0)
+    dataset = ClipDataset(index, spec, train=True, seed=0, repair_corrupt_frames=True)
 
-    dataset[0]
+    sample = dataset[0]
 
-    assert dataset.corrupt_frames_skipped == 2
+    assert sample is not None
+    assert sample.extras["dfwb/repaired_frames"] == 2
+    assert not hasattr(dataset, "corrupt_frames_skipped")  # the racy shared counter is gone
 
 
-def test_train_mode_still_raises_when_every_frame_of_the_clip_is_corrupt(tmp_path):
+def test_training_still_raises_when_every_frame_of_the_clip_is_corrupt(tmp_path):
     video_dir = tmp_path / "v"
     item = _video_item(video_dir, n_frames=2)
     _corrupt(video_dir / "frame_000000.png")
@@ -324,11 +362,24 @@ def test_train_mode_still_raises_when_every_frame_of_the_clip_is_corrupt(tmp_pat
     spec = ClipSpec(
         frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
     )
-    dataset = ClipDataset(index, spec, train=True, seed=0)
+    dataset = ClipDataset(index, spec, train=True, seed=0, repair_corrupt_frames=True)
 
     with pytest.raises(CorruptFrameError):
         dataset[0]
-    assert dataset.corrupt_frames_skipped == 0  # nothing was actually patched over
+
+
+def test_validation_skips_a_video_whose_every_frame_is_corrupt_instead_of_raising(tmp_path):
+    video_dir = tmp_path / "v"
+    item = _video_item(video_dir, n_frames=2)
+    _corrupt(video_dir / "frame_000000.png")
+    _corrupt(video_dir / "frame_000001.png")
+    index = _video_index([item])
+    spec = ClipSpec(
+        frames=2, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
+    )
+    dataset = ClipDataset(index, spec, train=False, seed=0, repair_corrupt_frames=True)
+
+    assert dataset[0] is None  # collate_clips drops this sample; the loader never sees it raise
 
 
 # ---------------------------------------------------------------------------- eval determinism

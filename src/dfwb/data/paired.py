@@ -46,9 +46,11 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
     A pair whose real or fake key is not in ``index`` is dropped; :attr:`dropped` counts how many.
     Every surviving pair contributes ``spec.clips_per_mode(train=train)`` clips a side, exactly as
     one :class:`~dfwb.data.dataset.ClipDataset` would for either video alone -- ``transform``,
-    ``adapt_chain`` and ``seed`` are passed straight through to the two internal datasets, so a
-    pair's clips are seeded, sampled and adapted identically to a non-paired clip of the same
-    video would be.
+    ``adapt_chain``, ``seed``, ``expected_frame_size`` and ``repair_corrupt_frames`` are all passed
+    straight through to the two internal datasets, so a pair's clips are seeded, sampled, adapted
+    and checked identically to a non-paired clip of the same video would be. Pairs are training
+    data only (``train=True``), so a clip with every frame corrupt always raises here, exactly as
+    it would for an unpaired ``ClipDataset(train=True)``; ``__getitem__`` never returns ``None``.
     """
 
     def __init__(
@@ -62,6 +64,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
         adapt_chain: Callable[[Tensor], Tensor] | None = None,
         seed: int,
         expected_frame_size: int | None = None,
+        repair_corrupt_frames: bool = False,
     ) -> None:
         by_key = _by_key(index)
         real_items: list[VideoItem] = []
@@ -90,6 +93,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             adapt_chain=adapt_chain,
             seed=seed,
             expected_frame_size=expected_frame_size,
+            repair_corrupt_frames=repair_corrupt_frames,
         )
         self._fake = ClipDataset(
             _sub_index(fake_items),
@@ -99,6 +103,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             adapt_chain=adapt_chain,
             seed=seed,
             expected_frame_size=expected_frame_size,
+            repair_corrupt_frames=repair_corrupt_frames,
         )
 
     def set_epoch(self, epoch: int) -> None:
@@ -106,11 +111,6 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
         :meth:`~dfwb.data.dataset.ClipDataset.set_epoch`)."""
         self._real.set_epoch(epoch)
         self._fake.set_epoch(epoch)
-
-    @property
-    def corrupt_frames_skipped(self) -> int:
-        """Both sides' :attr:`~dfwb.data.dataset.ClipDataset.corrupt_frames_skipped`, combined."""
-        return self._real.corrupt_frames_skipped + self._fake.corrupt_frames_skipped
 
     def __len__(self) -> int:
         return len(self._real) + len(self._fake)
@@ -140,4 +140,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             local = i - len(self._real)
             sample = self._fake[local]
             pair_id = local // self._clips_per_pair
+        # Pairs are training data only (train=True), whose ClipDataset.__getitem__ never returns
+        # None (a validation-only signal -- see ClipDataset's own docstring).
+        assert sample is not None
         return replace(sample, extras={**sample.extras, "dfwb/pair_id": pair_id})

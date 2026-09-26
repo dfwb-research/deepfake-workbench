@@ -19,7 +19,7 @@ import logging
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import torch
 from torch import Tensor
@@ -90,18 +90,25 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
     process -- would never reach the copy of this dataset each worker already holds. Writing into
     a shared tensor in place, and reading it back with ``.item()``, is visible from every process
     that shares the same underlying storage, workers included, whether they were started by
-    ``fork`` or ``spawn``. :attr:`corrupt_frames_skipped` is a second shared-memory counter, for
-    exactly the same reason.
+    ``fork`` or ``spawn``.
 
-    A corrupt stored frame (one Pillow cannot decode) is handled differently by ``train``: eval
-    (``train=False``, what scoring uses) lets the error propagate -- a caller grouping clips by
-    video, such as :mod:`dfwb.score.harness`, catches it itself and marks that video ``error``,
-    which is more useful there than silently patching a video's evaluation clips. Training
-    (``train=True``) instead repeats the clip's nearest still-good frame in the corrupt frame's
-    place, logs a warning naming the file, and counts it in :attr:`corrupt_frames_skipped`, so one
-    bad file never aborts a training run. A stored frame whose *size* does not match
-    ``expected_frame_size`` is never treated this way, in either mode: it always raises, since a
-    wrongly sized store is the wrong store, not a one-off corrupt file.
+    A corrupt stored frame (one Pillow cannot decode) is handled by ``repair_corrupt_frames``, an
+    explicit flag independent of ``train``: off (:mod:`dfwb.score.harness`'s own datasets, and
+    nothing else) lets the error propagate, so a caller grouping clips by video can catch it and
+    blame the right video itself; on (every training and validation source :mod:`dfwb.train`
+    builds) instead repeats the clip's nearest still-good frame in the corrupt frame's place, logs
+    a warning naming the file, and reports how many frames this happened to in
+    ``ClipSample.extras["dfwb/repaired_frames"]`` (summed across a batch by whoever trains or
+    validates with it -- never a counter kept here, which a multi-worker ``DataLoader`` could only
+    update racily). When every frame of a clip is corrupt (nothing left to repeat from):
+    ``train=True`` still raises -- a video this broken should stop a training run, not be quietly
+    dropped from it -- but ``train=False`` (a validation source, with repair on) instead makes
+    :meth:`__getitem__` return ``None`` for that sample, so :func:`~dfwb.data.collate.collate_clips`
+    can drop it from the batch instead of the whole batch raising; a caller counts the drop from
+    ``extras["dfwb/videos_skipped"]``, which :func:`~dfwb.data.collate.collate_clips` sets when it
+    drops one. A stored frame whose *size* does not match ``expected_frame_size`` is never treated
+    this way, whatever ``repair_corrupt_frames``/``train`` say: it always raises, since a wrongly
+    sized store is the wrong store, not a one-off corrupt file.
     """
 
     def __init__(
@@ -114,6 +121,7 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         adapt_chain: Callable[[Tensor], Tensor] | None = None,
         seed: int,
         expected_frame_size: int | None = None,
+        repair_corrupt_frames: bool = False,
     ) -> None:
         self.index = index
         self.spec = spec
@@ -122,22 +130,14 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         self.adapt_chain = adapt_chain
         self.seed = seed
         self.expected_frame_size = expected_frame_size
+        self.repair_corrupt_frames = repair_corrupt_frames
         self._epoch = torch.zeros((), dtype=torch.int64)
         self._epoch.share_memory_()  # type: ignore[no-untyped-call, unused-ignore]
-        self._corrupt_frames_skipped = torch.zeros((), dtype=torch.int64)
-        self._corrupt_frames_skipped.share_memory_()  # type: ignore[no-untyped-call, unused-ignore]
         self._clips_per_video = spec.clips_per_mode(train=train)
 
     @property
     def epoch(self) -> int:
         return int(self._epoch.item())
-
-    @property
-    def corrupt_frames_skipped(self) -> int:
-        """How many stored frames :meth:`__getitem__` has repeated a neighbour for instead of
-        decoding, because the file was corrupt (only ever nonzero when ``train`` is true -- see
-        the class docstring)."""
-        return int(self._corrupt_frames_skipped.item())
 
     def set_epoch(self, epoch: int) -> None:
         """Every sample drawn after this call is seeded with ``epoch`` instead -- including by a
@@ -159,35 +159,41 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         item = self.index.items[item_index]
         return (item.dataset, item.key, item.compression)
 
-    def _read_clip_frames(self, item: VideoItem, frame_numbers: Sequence[int]) -> list[Tensor]:
-        """``frame_numbers`` of ``item``, decoded; see the class docstring for what happens to a
-        corrupt one."""
+    def _read_clip_frames(
+        self, item: VideoItem, frame_numbers: Sequence[int]
+    ) -> tuple[list[Tensor], int] | None:
+        """``frame_numbers`` of ``item``, decoded, and how many were repaired; ``None`` to signal
+        that this whole sample must be dropped (only possible when ``repair_corrupt_frames`` and
+        not ``train`` -- see the class docstring for every other case)."""
         paths = [item.video_dir / FRAME_FILE.format(index=number) for number in frame_numbers]
-        if not self.train:
-            return [read_frame(path, expected_size=self.expected_frame_size) for path in paths]
+        if not self.repair_corrupt_frames:
+            frames = [read_frame(path, expected_size=self.expected_frame_size) for path in paths]
+            return frames, 0
 
-        frames: list[Tensor | None] = [None] * len(paths)
+        decoded: list[Tensor | None] = [None] * len(paths)
         corrupt: list[int] = []
         for position, path in enumerate(paths):
             try:
-                frames[position] = read_frame(path, expected_size=self.expected_frame_size)
+                decoded[position] = read_frame(path, expected_size=self.expected_frame_size)
             except CorruptFrameError as exc:
                 corrupt.append(position)
                 _log.warning("%s: corrupt stored frame skipped and repeated: %s", path, exc)
         if not corrupt:
-            return frames  # type: ignore[return-value]  # every position was filled above
+            return cast(list[Tensor], decoded), 0
         good = [position for position in range(len(paths)) if position not in corrupt]
         if not good:
-            # Nothing in this clip decoded at all -- there is no neighbour left to repeat, so the
-            # original decode failure is the most useful thing to raise.
-            read_frame(paths[corrupt[0]], expected_size=self.expected_frame_size)
-        self._corrupt_frames_skipped.add_(len(corrupt))
+            if self.train:
+                # Nothing in this clip decoded at all, and this is a real training source: there
+                # is no neighbour left to repeat, so the original decode failure is the most
+                # useful thing to raise rather than train on a synthetic clip.
+                read_frame(paths[corrupt[0]], expected_size=self.expected_frame_size)
+            return None
         for position in corrupt:
             nearest = min(good, key=lambda g: abs(g - position))
-            frames[position] = frames[nearest]
-        return frames  # type: ignore[return-value]  # every position is now filled
+            decoded[position] = decoded[nearest]
+        return cast(list[Tensor], decoded), len(corrupt)
 
-    def __getitem__(self, i: int) -> ClipSample:
+    def __getitem__(self, i: int) -> ClipSample | None:  # type: ignore[override]
         if not 0 <= i < len(self):
             raise IndexError(i)
         item_index, clip_index = divmod(i, self._clips_per_video)
@@ -199,7 +205,10 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         positions, padded = windows[clip_index]
 
         frame_numbers = [item.frame_indices[position] for position in positions]
-        frames = self._read_clip_frames(item, frame_numbers)
+        result = self._read_clip_frames(item, frame_numbers)
+        if result is None:
+            return None
+        frames, repaired = result
         clip = torch.stack(frames).to(torch.float32) / 255.0
 
         if self.transform is not None:
@@ -216,7 +225,7 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
             compression=item.compression,
             clip_index=clip_index,
             frame_indices=frame_numbers,
-            extras={"dfwb/padded": padded},
+            extras={"dfwb/padded": padded, "dfwb/repaired_frames": repaired},
         )
 
 
@@ -265,6 +274,10 @@ class MultiSource(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
     def __getitem__(self, i: int) -> ClipSample:
         source = self.source_of(i)
         sample = self.datasets[source][i - self._offsets[source]]
+        # MultiSource only ever wraps training sources, whose ClipDataset.__getitem__ never
+        # returns None (that is a validation-only signal -- see the class's own docstring); this
+        # narrows the type mypy sees ClipDataset's shared __getitem__ signature as returning.
+        assert sample is not None
         extras = {**sample.extras, "dfwb/source_id": source}
         if _PAIR_ID in extras:
             extras[_PAIR_ID] += self._pair_offsets[source]

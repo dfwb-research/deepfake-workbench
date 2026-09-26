@@ -218,7 +218,7 @@ def test_expected_frame_size_reaches_both_sides(tmp_path):
         dataset[len(dataset) - 1]  # the fake side
 
 
-def test_corrupt_frames_skipped_sums_both_sides(tmp_path):
+def test_repaired_frames_are_reported_per_sample_on_both_sides(tmp_path):
     real = _item(tmp_path, key="REAL/0", label=0, n_frames=4)
     fake = _item(tmp_path, key="FAKE/0", label=1, n_frames=4)
     data = (real.video_dir / "frame_000000.png").read_bytes()
@@ -228,21 +228,25 @@ def test_corrupt_frames_skipped_sums_both_sides(tmp_path):
     spec = ClipSpec(
         frames=4, sampling="consecutive", clips_per_video=ClipsPerVideo(train=1, eval=1)
     )
-    dataset = PairedClipDataset(index, [("REAL/0", "FAKE/0")], spec, train=True, seed=0)
+    dataset = PairedClipDataset(
+        index, [("REAL/0", "FAKE/0")], spec, train=True, seed=0, repair_corrupt_frames=True
+    )
 
-    for i in range(len(dataset)):
-        dataset[i]
+    total = sum(dataset[i].extras["dfwb/repaired_frames"] for i in range(len(dataset)))
 
-    assert dataset.corrupt_frames_skipped == 2  # one per side
+    assert total == 2  # one per side
+    assert not hasattr(dataset, "corrupt_frames_skipped")  # the racy shared counter is gone
 
 
-def test_eval_mode_still_propagates_a_corrupt_frame_through_pairs(tmp_path):
+def test_by_default_repair_is_off_and_a_corrupt_frame_propagates_through_pairs(tmp_path):
     real = _item(tmp_path, key="REAL/0", label=0, n_frames=4)
     fake = _item(tmp_path, key="FAKE/0", label=1, n_frames=4)
+    # Every frame, so whichever position a random (train=True) draw lands on is corrupt too.
     data = (real.video_dir / "frame_000000.png").read_bytes()
-    (real.video_dir / "frame_000000.png").write_bytes(data[: len(data) // 2])
+    for number in range(4):
+        (real.video_dir / f"frame_{number:06d}.png").write_bytes(data[: len(data) // 2])
     index = VideoIndex(items=[real, fake], excluded=[], _summaries=[])
-    dataset = PairedClipDataset(index, [("REAL/0", "FAKE/0")], _spec(), train=False, seed=0)
+    dataset = PairedClipDataset(index, [("REAL/0", "FAKE/0")], _spec(), train=True, seed=0)
 
     with pytest.raises(CorruptFrameError):
         dataset[0]

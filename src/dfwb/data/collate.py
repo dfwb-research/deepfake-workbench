@@ -44,34 +44,44 @@ def _collate_extras(extras: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def collate_clips(samples: Sequence[ClipSample]) -> ClipBatch:
-    """Stacks ``samples`` (one video's clip each) into one :class:`ClipBatch`.
+def collate_clips(samples: Sequence[ClipSample | None]) -> ClipBatch:
+    """Stacks ``samples`` (one video's clip each) into one :class:`ClipBatch`, dropping any
+    ``None`` first -- :class:`~dfwb.data.dataset.ClipDataset` returns one for a sample whose every
+    stored frame is corrupt and cannot be repeated from a neighbour (only when it tolerates a
+    corrupt frame at all: a validation source, never training or scoring).
 
     ``clips`` stacks to ``[B, T, C, H, W]`` and ``frame_indices`` to ``[B, T]``; every other
     per-sample field becomes a plain ``[B]``-length list or tensor, in ``samples`` order.
     ``labels`` is a ``[B]`` tensor only when every sample's ``label`` is not ``None`` -- a batch
     with even one unlabelled sample (e.g. scoring, where the true label may be unknown) gets
     ``labels=None`` rather than a tensor with a hole in it. ``extras`` is collated per key by
-    :func:`_collate_value`.
+    :func:`_collate_value`; a batch that dropped one or more ``None`` samples also gets
+    ``extras["dfwb/videos_skipped"]``, the count dropped (never present, rather than ``0``, when
+    nothing was).
 
     Raises:
-        ValueError: ``samples`` is empty -- there is no batch shape to infer ``clips`` from.
+        ValueError: ``samples`` holds no usable sample -- either it was empty, or every one of
+            them was ``None`` -- so there is no batch shape to infer ``clips`` from.
     """
-    if not samples:
+    kept = [sample for sample in samples if sample is not None]
+    if not kept:
         raise ValueError("collate_clips: samples must not be empty")
+    skipped = len(samples) - len(kept)
 
-    clips = torch.stack([sample.clip for sample in samples])
-    keys = [sample.key for sample in samples]
-    dataset_ids = [sample.dataset for sample in samples]
-    compressions = [sample.compression for sample in samples]
-    clip_index = torch.tensor([sample.clip_index for sample in samples], dtype=torch.long)
-    frame_indices = torch.tensor([sample.frame_indices for sample in samples], dtype=torch.long)
+    clips = torch.stack([sample.clip for sample in kept])
+    keys = [sample.key for sample in kept]
+    dataset_ids = [sample.dataset for sample in kept]
+    compressions = [sample.compression for sample in kept]
+    clip_index = torch.tensor([sample.clip_index for sample in kept], dtype=torch.long)
+    frame_indices = torch.tensor([sample.frame_indices for sample in kept], dtype=torch.long)
 
     labels: Tensor | None = None
-    if all(sample.label is not None for sample in samples):
-        labels = torch.tensor([sample.label for sample in samples], dtype=torch.long)
+    if all(sample.label is not None for sample in kept):
+        labels = torch.tensor([sample.label for sample in kept], dtype=torch.long)
 
-    extras = _collate_extras([sample.extras for sample in samples])
+    extras = _collate_extras([sample.extras for sample in kept])
+    if skipped:
+        extras["dfwb/videos_skipped"] = skipped
 
     return ClipBatch(
         clips=clips,
