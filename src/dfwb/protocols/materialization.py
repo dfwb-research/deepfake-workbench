@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ from dfwb.core.records import (
     DatasetCard,
     InventoryRecord,
     LabelVocab,
+    PackProvenance,
     PairRecord,
     SchemeCard,
     SplitRow,
@@ -50,7 +52,7 @@ from dfwb.core.records import (
 )
 from dfwb.protocols._materialized import HASHES_FILE, materialized_dir
 from dfwb.protocols._rawdata import check_outside_datasets_roots
-from dfwb.protocols._yaml import read_card, read_labels
+from dfwb.protocols._yaml import read_card, read_labels, read_model
 from dfwb.protocols.packs import find_dataset
 from dfwb.protocols.protocol import _check_pin
 from dfwb.protocols.refs import ProtocolRef, parse_ref
@@ -75,9 +77,11 @@ __all__ = [
     "MaterializeResult",
     "assign_rule",
     "benchmark_params",
+    "check_recipe_card",
     "materialize",
     "materialize_dataset",
     "needs_official",
+    "release_rows",
     "rule_needs_official",
     "ships_key_lists",
 ]
@@ -93,6 +97,8 @@ _BENCHMARK_PARAMS: Final = ("k_fake", "task_order", "pool")
 _VERIFY_HINT: Final = (
     "your local copy differs from the release the pack describes; run dfwb protocols verify"
 )
+# The order split counts are given in.
+_SPLIT_ORDER: Final = ("train", "val", "test", "exclude")
 
 
 @dataclass(frozen=True)
@@ -263,6 +269,7 @@ class _Scheme:
     labels: Callable[[], LabelVocab]
     dataset_card: DatasetCard
     ships_videos: bool
+    dataset_dir: Path
 
 
 def _resolve(ref: str | ProtocolRef) -> _Scheme:
@@ -275,7 +282,7 @@ def _resolve(ref: str | ProtocolRef) -> _Scheme:
         raise UnknownKeyError(
             f"unknown scheme {name!r} for dataset {parsed.dataset!r}"
             f"{did_you_mean(name, card.schemes)}",
-            hint=f"run `dfwb protocols info {parsed.dataset}` to see its schemes",
+            hint=f"run `dfwb protocols list` to see {parsed.dataset}'s schemes",
         )
     scheme_card = card.schemes[name]
     canonical = f"{parsed.dataset}/{name}"
@@ -289,6 +296,7 @@ def _resolve(ref: str | ProtocolRef) -> _Scheme:
         lambda: read_labels(dataset_dir),
         card,
         (dataset_dir / "videos.jsonl.gz").is_file(),
+        dataset_dir,
     )
 
 
@@ -314,7 +322,9 @@ def needs_official(ref: str | ProtocolRef) -> bool:
     return rule_needs_official(scheme.card.rule, scheme.card.params)
 
 
-def _is_real_from(labels: Callable[[], LabelVocab], ref: str) -> Callable[[VideoRecord], bool]:
+def _is_real_from(
+    labels: Callable[[], LabelVocab], ref: str, hint: str = _VERIFY_HINT
+) -> Callable[[VideoRecord], bool]:
     """Real under the visual ``binary`` label of the pack's vocabulary (read on first use)."""
     vocab: dict[str, Mapping[str, Any]] = {}
 
@@ -326,17 +336,27 @@ def _is_real_from(labels: Callable[[], LabelVocab], ref: str) -> Callable[[Video
             raise ContractError(
                 f"{ref}: label key {record.label_key!r} of {record.key!r} is not in the pack's "
                 "labels.yaml",
-                hint=_VERIFY_HINT,
+                hint=hint,
             )
         return entry.get("binary") == 0
 
     return is_real
 
 
-def _read_records(inventory: Path, dataset: str, local_attrs: Collection[str]) -> list[VideoRecord]:
-    records = [
-        to_video_record(r, local_attrs=local_attrs) for r in read_jsonl(inventory, InventoryRecord)
-    ]
+def release_rows(rows: Iterable[InventoryRecord], card: DatasetCard) -> list[InventoryRecord]:
+    """The inventory rows of the release the card describes: those of no compression variant, or
+    of a compression the card's ``compressions`` lists.
+
+    A local copy may hold compressions a pack does not publish; they are no part of its lists.
+    """
+    listed = frozenset(card.compressions or ())
+    return [row for row in rows if row.compression is None or row.compression in listed]
+
+
+def _video_records(
+    rows: Sequence[InventoryRecord], inventory: Path, dataset: str, local_attrs: Collection[str]
+) -> list[VideoRecord]:
+    records = [to_video_record(row, local_attrs=local_attrs) for row in rows]
     seen: set[tuple[str, str | None]] = set()
     for record in records:
         ident = (record.key, record.compression)
@@ -348,6 +368,13 @@ def _read_records(inventory: Path, dataset: str, local_attrs: Collection[str]) -
             )
         seen.add(ident)
     return sorted(records, key=lambda r: (r.key, r.compression or ""))
+
+
+def _read_records(
+    inventory: Path, card: DatasetCard, local_attrs: Collection[str]
+) -> list[VideoRecord]:
+    rows = release_rows(read_jsonl(inventory, InventoryRecord), card)
+    return _video_records(rows, inventory, card.id, local_attrs)
 
 
 def _check_same_videos(path: Path, records: Sequence[VideoRecord], dataset: str) -> None:
@@ -433,7 +460,7 @@ def materialize(
             hint="run dfwb protocols materialize, which reads it with the dataset's inventory "
             "builder",
         )
-    records = _read_records(inventory, scheme.dataset, local_attrs)
+    records = _read_records(inventory, scheme.dataset_card, local_attrs)
     assignment = assign_rule(
         rule, params, records, official=official, is_real=_is_real_from(scheme.labels, scheme.ref)
     )
@@ -461,8 +488,13 @@ def materialize(
 # ---------------------------------------------------------------------------------------------
 
 
-def _check_recipe_card(card: DatasetCard) -> None:
-    """The card holds everything the lists are rebuilt and checked with."""
+def check_recipe_card(card: DatasetCard) -> None:
+    """Check that a recipe card holds everything its lists are rebuilt and checked with.
+
+    Raises:
+        ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, or a scheme's rule
+            cannot be recomputed from an inventory.
+    """
     missing = [name for name in ("videos_sha256", "pairs_sha256") if getattr(card, name) is None]
     if missing:
         raise ContractError(
@@ -503,11 +535,16 @@ def _write_materialized(
     """Write every list into a hidden sibling of ``target``, then swap it in for ``target``.
 
     Whatever was materialised before is replaced as a whole, so the folder never mixes lists
-    from two versions of a pack; a failure part way leaves the previous folder in place.
+    from two versions of a pack; a failure part way, the swap included, leaves the previous
+    folder in place. The hidden siblings a killed run left behind are removed first.
     """
+    for leftover in (
+        *target.parent.glob(f".{target.name}.tmp-*"),
+        *target.parent.glob(f".{target.name}.old-*"),
+    ):
+        shutil.rmtree(leftover, ignore_errors=True)
     staging = target.with_name(f".{target.name}.tmp-{os.getpid()}")
     retired = target.with_name(f".{target.name}.old-{os.getpid()}")
-    shutil.rmtree(staging, ignore_errors=True)
     try:
         (staging / "splits").mkdir(parents=True)
         write_jsonl(staging / "videos.jsonl.gz", videos)
@@ -519,12 +556,113 @@ def _write_materialized(
             json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         if target.exists():
-            shutil.rmtree(retired, ignore_errors=True)
             target.rename(retired)
-        staging.rename(target)
+        try:
+            staging.rename(target)
+        except BaseException:
+            if retired.exists() and not target.exists():
+                retired.rename(target)
+            raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(retired, ignore_errors=True)
+
+
+def _counts_text(rebuilt: Mapping[str, int], published: Mapping[str, int]) -> str:
+    """``train 121/val 37/test 41, published 122/37/41``."""
+    names = [name for name in _SPLIT_ORDER if name in rebuilt or name in published]
+    mine = "/".join(f"{name} {rebuilt.get(name, 0)}" for name in names)
+    theirs = "/".join(str(published.get(name, 0)) for name in names)
+    return f"{mine}, published {theirs}"
+
+
+def _names_text(names: Iterable[str]) -> str:
+    return ", ".join(sorted(names)) or "none"
+
+
+def _read_provenance(dataset_dir: Path) -> PackProvenance | None:
+    try:
+        return read_model(dataset_dir / "PROVENANCE.json", PackProvenance)
+    except ContractError:
+        return None
+
+
+def _mismatch(
+    scheme: _Scheme,
+    rows: Sequence[InventoryRecord],
+    schemes: Mapping[str, list[SplitRow]],
+    failed: Sequence[str],
+    checked: int,
+) -> ContractError:
+    """What differs, and the likeliest cause, told from counts, compressions and versions alone.
+
+    ``failed`` names the lists whose hashes differ: ``videos``, ``pairs`` or a scheme.
+    """
+    card, dataset = scheme.dataset_card, scheme.dataset
+    parts: list[str] = []
+    fewer = more = False
+    for name in failed:
+        counts = card.schemes[name].counts if name in card.schemes else None
+        if counts is None:
+            parts.append(name)
+            continue
+        published = {str(split): count for split, count in counts.items()}
+        rebuilt = Counter(str(row.split) for row in schemes[name])
+        parts.append(f"{name} ({_counts_text(rebuilt, published)})")
+        fewer = fewer or sum(rebuilt.values()) < sum(published.values())
+        more = more or sum(rebuilt.values()) > sum(published.values())
+    held = {row.compression for row in rows if row.compression is not None}
+    listed = list(card.compressions or ())
+    message = (
+        f"{dataset}: {len(failed)} of {checked} published hashes differ from what your inventory "
+        f"gives: {', '.join(parts)}. Your inventory gives {len(rows)} videos; compressions: "
+        f"{_names_text(held)} (the card lists {_names_text(listed)})"
+    )
+    rebuild = f"dfwb inventory build {dataset}"
+    provenance = _read_provenance(scheme.dataset_dir)
+    built_with = provenance.builder.get("version") if provenance is not None else None
+    versions = sorted({row.builder.version for row in rows})
+    if provenance is not None and built_with is not None and versions not in ([], [built_with]):
+        message += (
+            f"; the inventory was built by version {', '.join(versions)} of the {dataset} "
+            f"inventory builder, the pack by version {built_with} (dfwb {provenance.dfwb})"
+        )
+        hint = (
+            f"rebuild the inventory with dfwb {provenance.dfwb}, whose {dataset} inventory "
+            f"builder is the version the pack was built with: {rebuild}"
+        )
+    elif missing := [name for name in listed if name not in held]:
+        hint = (
+            f"your inventory has no {', '.join(missing)} video: a recipe needs every video of "
+            f"the release in every compression the card lists ({', '.join(listed)}); add them, "
+            f"then rebuild the inventory: {rebuild}"
+        )
+    elif fewer and not more:
+        hint = (
+            f"your copy lacks videos of the release ({card.release}): the rebuilt splits hold "
+            f"fewer videos than the published ones; get every video of it, then rebuild the "
+            f"inventory: {rebuild}"
+        )
+    elif more and not fewer:
+        hint = (
+            f"your copy holds videos the release ({card.release}) does not: the rebuilt splits "
+            "hold more videos than the published ones; take out the videos that are not part of "
+            f"it (stray files, or a later release's), then rebuild the inventory: {rebuild}"
+        )
+    elif more and fewer:
+        hint = (
+            f"your copy is not the release the pack describes ({card.release}): the rebuilt "
+            "splits hold other videos than the published ones; get that release, then rebuild "
+            f"the inventory: {rebuild}"
+        )
+    else:
+        hint = (
+            "your inventory has the release's videos in the published numbers, but some differ "
+            "in label, method, identity or attributes: the copy may be another upstream release "
+            f"than {card.release}, or its metadata files differ; check them, then rebuild the "
+            f"inventory: {rebuild}"
+        )
+    return ContractError(message, hint=hint)
 
 
 def materialize_dataset(
@@ -539,7 +677,9 @@ def materialize_dataset(
 ) -> DatasetMaterialization:
     """Rebuild every list of ``ref``'s dataset from ``inventory``; keep them if every hash matches.
 
-    For a recipe dataset whose pack ships no key list. The videos are ``inventory``'s rows as
+    For a recipe dataset whose pack ships no key list. The inventory's rows of a compression the
+    card's ``compressions`` does not list are left out: they are no part of the release. The
+    videos are the other rows as
     :class:`~dfwb.core.records.VideoRecord`, without the attributes named in ``local_attrs``
     (facts about the local copy, which the builder declares and a pack never publishes); every
     scheme of the card is recomputed from its rule
@@ -567,14 +707,17 @@ def materialize_dataset(
         ContractError: the card lacks ``videos_sha256`` or ``pairs_sha256``, a scheme's rule
             cannot be recomputed, a pin does not match, ``pairs`` were drawn by another rule than
             the card's, the inventory repeats a video, or any rebuilt list does not hash to its
-            published value (the message names every one that does not).
+            published value. The message then names every list that differs, with the rebuilt
+            and published split counts of each scheme, the videos and compressions the inventory
+            gives, and the inventory builder versions when they are not the pack's, and the hint
+            names the likeliest cause.
     """
     scheme = _resolve(ref)
     card = scheme.dataset_card
     dataset = scheme.dataset
     target = materialized_dir(work_root, dataset)
     check_outside_datasets_roots(target, datasets_roots, what="the materialised lists")
-    _check_recipe_card(card)
+    check_recipe_card(card)
     if not inventory.is_file():
         raise ConfigError(
             f"{dataset}: no inventory at {inventory}",
@@ -590,8 +733,15 @@ def materialize_dataset(
             )
     _check_pairing_rule(pairs, card)
 
-    records = _read_records(inventory, dataset, local_attrs)
-    is_real = _is_real_from(scheme.labels, dataset)
+    rows = release_rows(read_jsonl(inventory, InventoryRecord), card)
+    records = _video_records(rows, inventory, dataset, local_attrs)
+    is_real = _is_real_from(
+        scheme.labels,
+        dataset,
+        hint="the inventory was made from another release, or by another version of the "
+        f"{dataset} inventory builder than the pack's: rebuild it with the dfwb version the "
+        f"pack's PROVENANCE.json records: dfwb inventory build {dataset}",
+    )
     schemes: dict[str, list[SplitRow]] = {}
     for name, scheme_card in sorted(card.schemes.items()):
         needed = official if rule_needs_official(scheme_card.rule, scheme_card.params) else None
@@ -609,19 +759,9 @@ def materialize_dataset(
         *((name, sha256, card.schemes[name].sha256) for name, sha256 in scheme_sha256.items()),
         ("pairs", pairs_sha256, card.pairs_sha256),
     ]
-    mismatches = [
-        f"{what}: {sha256} != published {published}"
-        for what, sha256, published in checks
-        if sha256 != published
-    ]
-    if mismatches:
-        raise ContractError(
-            f"{dataset}: {len(mismatches)} of {len(checks)} published hashes differ from what "
-            f"your inventory gives ({'; '.join(mismatches)})",
-            hint=f"your local copy differs from the release the pack describes "
-            f"({card.release}): check that it is complete and unmodified, then rebuild the "
-            f"inventory with dfwb inventory build {dataset}",
-        )
+    failed = [what for what, sha256, published in checks if sha256 != published]
+    if failed:
+        raise _mismatch(scheme, rows, schemes, failed, len(checks))
 
     hashes = {
         "videos_sha256": videos_sha256,

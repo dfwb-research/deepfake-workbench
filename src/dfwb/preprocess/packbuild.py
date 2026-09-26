@@ -68,7 +68,9 @@ from dfwb.protocols.materialization import (
     DatasetMaterialization,
     assign_rule,
     benchmark_params,
+    check_recipe_card,
     materialize_dataset,
+    release_rows,
     rule_needs_official,
 )
 from dfwb.protocols.packs import find_dataset
@@ -552,9 +554,12 @@ def materialize_recipe(
 
     What only the dataset's builder knows is supplied here: the publisher's split, read from the
     dataset folder (located as ``dfwb inventory build`` locates it) only when a scheme's rule reads
-    it, and the pairs, drawn by the builder's pairing rule, which must be the rule the pack's card
-    declares. :func:`~dfwb.protocols.materialization.materialize_dataset` then rebuilds and checks
-    every list and writes them under the work root.
+    it; the pairs, drawn by the builder's pairing rule, which must be the rule the pack's card
+    declares; and the attributes that describe the local copy, which are left out. The split
+    and the pairs are drawn from the inventory rows of the release the card describes (see
+    :func:`~dfwb.protocols.materialization.release_rows`).
+    :func:`~dfwb.protocols.materialization.materialize_dataset` then rebuilds and checks every
+    list and writes them under the work root.
 
     Args:
         ref: The dataset (a scheme or pin in it is checked; every scheme is materialised).
@@ -564,7 +569,8 @@ def materialize_recipe(
     Raises:
         UnknownKeyError: the dataset, pack, scheme or builder is unknown.
         ConfigError: there is no inventory, or the dataset folder is needed and not found.
-        ContractError: the builder pairs by another rule than the card declares, or as
+        ContractError: the card lacks the hashes of its lists or a scheme's rule cannot be
+            recomputed, the builder pairs by another rule than the card declares, or as
             :func:`~dfwb.protocols.materialization.materialize_dataset` raises, notably when a
             rebuilt list does not hash to its published value.
     """
@@ -573,6 +579,7 @@ def materialize_recipe(
     work_root = require_root("work", resolved)
     dataset_id = parsed.dataset
     card = read_card(find_dataset(dataset_id, pack=parsed.pack).dataset_dir(dataset_id))
+    check_recipe_card(card)
     builder = get_builder(dataset_id)
     if builder.pairing_rule != card.pairing_rule:
         raise ContractError(
@@ -582,7 +589,7 @@ def materialize_recipe(
             "records it)",
         )
     source = inventory if inventory is not None else inventory_path(dataset_id, work_root)
-    records = read_jsonl(source, InventoryRecord) if source.is_file() else []
+    records = release_rows(read_jsonl(source, InventoryRecord), card) if source.is_file() else []
     official: dict[str, Split] | None = None
     if source.is_file() and any(
         rule_needs_official(scheme.rule, scheme.params) for scheme in card.schemes.values()

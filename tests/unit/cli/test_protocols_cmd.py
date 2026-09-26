@@ -926,7 +926,7 @@ def test_a_key_free_recipe_from_a_tampered_inventory_exits_4_and_writes_nothing(
 
     assert result.code == 4
     assert "error: packdemo: 1 of 6 published hashes differ" in result.err
-    assert "hint: your local copy differs from the release the pack describes" in result.err
+    assert "hint: your inventory has the release's videos in the published numbers" in result.err
     assert _tree(paths["work"]) == before
 
 
@@ -945,3 +945,14 @@ def test_materialize_cli_leaves_the_local_copy_attrs_out_of_a_recipe_scheme(
     assert result.code == 0, result.err
     materialized = paths["work"] / "packdemo-local" / "materialized" / "videos.jsonl.gz"
     assert materialized.read_bytes() == (out / "videos.jsonl.gz").read_bytes()
+
+
+def test_materialize_help_gives_both_json_shapes(run):
+    result = run("protocols", "materialize", "--help")
+
+    assert result.code == 0
+    text = " ".join(result.out.split())
+    assert "{ref, path, sha256, matched}" in text
+    assert "{dataset, path, videos_sha256, pairs_sha256, schemes, n_videos, n_pairs, matched}" in (
+        text
+    )

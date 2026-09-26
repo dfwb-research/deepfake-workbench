@@ -142,8 +142,16 @@ def test_a_recipe_lints_fails_on_a_tampered_inventory_then_materializes_and_veri
     assert failed.code == 4
     assert "error: toyfake: " in failed.err
     assert "published hashes differ" in failed.err
-    assert "hint: your local copy differs from the release the pack describes" in failed.err
+    assert "hint: your inventory has the release's videos in the published numbers" in failed.err
     assert _stamped(work) == before
+
+    # A copy that also holds a compression the release does not list still materializes: those
+    # rows are no part of the published lists.
+    with_c40 = recipe["tmp"] / "with-c40.jsonl"
+    write_jsonl(with_c40, [*rows, *(dataclasses.replace(r, compression="c40") for r in rows[:3])])
+    extra = run("protocols", "materialize", DATASET, "--inventory", str(with_c40), "--json")
+    assert extra.code == 0, extra.err
+    assert json.loads(extra.out)["n_videos"] == VIDEOS
 
     materialized = run("protocols", "materialize", DATASET, "--json")
     assert materialized.code == 0, materialized.err

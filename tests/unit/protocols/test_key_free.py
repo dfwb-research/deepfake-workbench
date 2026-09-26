@@ -18,8 +18,9 @@ import pytest
 import yaml
 from tests.unit.preprocess.test_packbuild import PACK_NAME, setup_packdemo
 
+from dfwb import __version__
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError
-from dfwb.core.records import InventoryRecord, PairRecord, read_jsonl, write_jsonl
+from dfwb.core.records import BuilderRef, InventoryRecord, PairRecord, read_jsonl, write_jsonl
 from dfwb.preprocess.inventory.runner import get_builder
 from dfwb.preprocess.packbuild import _pairs, add_to_pack_yaml, build_dataset
 from dfwb.protocols.materialization import (
@@ -220,35 +221,107 @@ def _tree(work: Path) -> dict[str, tuple[bytes, int]]:
     }
 
 
-def test_a_relabelled_video_fails_the_videos_hash_and_writes_nothing(recipe, tmp_path):
-    rows = read_jsonl(recipe["inventory"], InventoryRecord)
-    tampered = tmp_path / "tampered.jsonl"
-    write_jsonl(tampered, [dataclasses.replace(rows[0], method="Other"), *rows[1:]])
-    before = _tree(recipe["work"])
+def _rows(recipe) -> list[InventoryRecord]:
+    return read_jsonl(recipe["inventory"], InventoryRecord)
 
+
+def _mismatch(recipe, tmp_path, rows) -> ContractError:
+    """Materialize from ``rows``: it must fail and leave the work root exactly as it was."""
+    tampered = tmp_path / "tampered.jsonl"
+    write_jsonl(tampered, rows)
+    before = _tree(recipe["work"])
     with pytest.raises(ContractError) as info:
         _materialize(recipe, inventory=tampered)
-
-    assert info.value.message.startswith("packdemo: 1 of 6 published hashes differ")
-    assert "videos: " in info.value.message
-    assert "official" not in info.value.message
-    assert "dfwb inventory build packdemo" in info.value.hint
     assert _tree(recipe["work"]) == before
+    return info.value
 
 
-def test_a_missing_video_names_every_hash_it_breaks(recipe, tmp_path):
-    rows = read_jsonl(recipe["inventory"], InventoryRecord)
-    short = tmp_path / "short.jsonl"
-    write_jsonl(short, [row for row in rows if row.key != "REAL/p00"])
-    before = _tree(recipe["work"])
+def test_a_relabelled_video_fails_the_videos_hash_and_writes_nothing(recipe, tmp_path):
+    rows = _rows(recipe)
+    error = _mismatch(recipe, tmp_path, [dataclasses.replace(rows[0], method="Other"), *rows[1:]])
 
-    with pytest.raises(ContractError) as info:
-        _materialize(recipe, inventory=short)
+    assert error.message == (
+        "packdemo: 1 of 6 published hashes differ from what your inventory gives: videos. "
+        "Your inventory gives 30 videos; compressions: none (the card lists none)"
+    )
+    assert error.hint.startswith(
+        "your inventory has the release's videos in the published numbers, but some differ in "
+        "label, method, identity or attributes"
+    )
+    assert "dfwb inventory build packdemo" in error.hint
 
-    message = info.value.message
-    for part in ("videos: ", "all-test: ", "ident-72-14-14: ", "official: ", "pairs: "):
-        assert part in message
-    assert _tree(recipe["work"]) == before
+
+def test_a_missing_video_names_every_list_it_breaks_with_the_split_counts(recipe, tmp_path):
+    error = _mismatch(recipe, tmp_path, [r for r in _rows(recipe) if r.key != "REAL/p00"])
+
+    assert error.message.startswith(
+        "packdemo: 5 of 6 published hashes differ from what your inventory gives: videos, "
+        "all-test (test 29, published 30), ident-72-14-14 ("
+    )
+    assert "official (train 17/val 6/test 6, published 18/6/6)" in error.message
+    assert error.message.endswith(
+        ", pairs. Your inventory gives 29 videos; compressions: none (the card lists none)"
+    )
+    assert error.hint.startswith("your copy lacks videos of the release (1): ")
+    assert "dfwb inventory build packdemo" in error.hint
+
+
+def test_an_extra_video_is_told_apart_from_a_missing_one(recipe, tmp_path):
+    rows = _rows(recipe)
+    stray = next(row for row in rows if row.key.startswith("FS_A/"))
+    extra = dataclasses.replace(stray, key="FS_A/p00_p05", relpath="swap_a/p00_p05.mp4")
+    error = _mismatch(recipe, tmp_path, [*rows, extra])
+
+    assert "all-test (test 31, published 30)" in error.message
+    assert "Your inventory gives 31 videos" in error.message
+    assert error.hint.startswith("your copy holds videos the release (1) does not: ")
+
+
+def test_another_builder_version_is_named_with_the_dfwb_version_to_use(recipe, tmp_path):
+    older = [
+        dataclasses.replace(r, builder=BuilderRef("packdemo", "0"), method="Older")
+        if r.key == "REAL/p00"
+        else dataclasses.replace(r, builder=BuilderRef("packdemo", "0"))
+        for r in _rows(recipe)
+    ]
+    error = _mismatch(recipe, tmp_path, older)
+
+    assert error.message.endswith(
+        "; the inventory was built by version 0 of the packdemo inventory builder, the pack "
+        f"by version 1 (dfwb {__version__})"
+    )
+    assert error.hint == (
+        f"rebuild the inventory with dfwb {__version__}, whose packdemo inventory builder is "
+        "the version the pack was built with: dfwb inventory build packdemo"
+    )
+
+
+def test_a_label_the_pack_does_not_know_points_to_rebuilding_the_inventory(recipe, tmp_path):
+    rows = _rows(recipe)
+    # A video of the official test, so the benchmark draw asks whether it is real.
+    relabelled = [
+        dataclasses.replace(r, label_key="PD-NOPE") if r.key == "FS_A/p08_p09" else r for r in rows
+    ]
+    error = _mismatch(recipe, tmp_path, relabelled)
+
+    assert "'PD-NOPE'" in error.message
+    assert "dfwb inventory build packdemo" in error.hint
+    assert "verify" not in error.hint
+
+
+def test_rows_of_a_compression_the_card_does_not_list_are_left_out(recipe, tmp_path):
+    rows = _rows(recipe)
+    extra = [dataclasses.replace(r, compression="c40") for r in rows[:3]]
+    inventory = tmp_path / "with-c40.jsonl"
+    write_jsonl(inventory, [*rows, *extra])
+
+    result = _materialize(recipe, inventory=inventory)
+
+    assert result.n_videos == 30
+    rebuilt = _files(result.path)
+    assert {name: data for name, data in rebuilt.items() if name != "hashes.json"} == (
+        recipe["lists"]
+    )
 
 
 def test_a_mismatch_leaves_an_earlier_materialization_exactly_as_it_was(recipe, tmp_path):
@@ -328,8 +401,10 @@ def test_it_never_writes_under_a_datasets_root(recipe):
 
 
 def test_a_scheme_and_pin_in_the_reference_are_checked(recipe):
-    with pytest.raises(UnknownKeyError):
+    with pytest.raises(UnknownKeyError) as unknown:
         _materialize(recipe, ref="packdemo/nope")
+    # protocols info would need the lists materialized first; protocols list never does.
+    assert unknown.value.hint == "run `dfwb protocols list` to see packdemo's schemes"
     with pytest.raises(ContractError) as info:
         _materialize(recipe, ref="packdemo/official@9.9.9")
     assert "pinned @9.9.9" in info.value.message
@@ -349,3 +424,88 @@ def test_one_scheme_alone_is_never_materialized_for_a_dataset_without_key_lists(
     assert "materialize_dataset" in info.value.hint
     assert "dfwb protocols materialize packdemo" in info.value.hint
     assert not (recipe["work"] / "packdemo" / "materialized").exists()
+
+
+def test_the_loader_names_a_command_that_lists_the_schemes_of_an_unknown_one(recipe):
+    with pytest.raises(UnknownKeyError) as info:
+        load("packdemo/nope", work_root=recipe["work"])
+    assert info.value.hint == "run `dfwb protocols list` to see packdemo's schemes"
+
+
+def test_a_missing_compression_is_named_in_the_message_and_the_hint(monkeypatch, tmp_path):
+    # packdemo built from an inventory holding every video at c23 and at c40.
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    rows = read_jsonl(paths["inventory"], InventoryRecord)
+    both = [dataclasses.replace(r, compression=c) for r in rows for c in ("c23", "c40")]
+    inventory = tmp_path / "both.jsonl"
+    write_jsonl(inventory, both)
+    dataset = paths["pack"] / "packdemo"
+    build_dataset("packdemo", out=dataset, inventory=inventory)
+    add_to_pack_yaml(paths["pack"], "packdemo")
+    _set_card(dataset, distribution="recipe", compressions=["c23", "c40"])
+    for name in ("videos.jsonl.gz", "pairs.jsonl.gz"):
+        (dataset / name).unlink()
+    shutil.rmtree(dataset / "splits")
+    only_c23 = tmp_path / "c23.jsonl"
+    write_jsonl(only_c23, [r for r in both if r.compression == "c23"])
+    official = get_builder("packdemo").official_splits(paths["raw"] / "PackDemo", rows)
+
+    with pytest.raises(ContractError) as info:
+        materialize_dataset(
+            "packdemo",
+            inventory=only_c23,
+            official=official,
+            pairs=_builder_pairs(only_c23),
+            work_root=paths["work"],
+        )
+
+    assert info.value.message.endswith(
+        "Your inventory gives 30 videos; compressions: c23 (the card lists c23, c40)"
+    )
+    assert info.value.hint.startswith("your inventory has no c40 video: a recipe needs every ")
+
+    result = materialize_dataset(
+        "packdemo",
+        inventory=inventory,
+        official=official,
+        pairs=_builder_pairs(inventory),
+        work_root=paths["work"],
+    )
+    assert result.n_videos == 60
+
+
+def test_a_failed_swap_puts_the_earlier_materialization_back(recipe, monkeypatch):
+    _materialize(recipe)
+    before = _tree(recipe["work"])
+    real_rename = Path.rename
+
+    def failing_rename(self: Path, target):
+        if self.name.startswith(".materialized.tmp-"):
+            raise OSError("disk full")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", failing_rename)
+    with pytest.raises(OSError, match="disk full"):
+        _materialize(recipe)
+
+    assert _tree(recipe["work"]) == before
+    assert sorted(p.name for p in (recipe["work"] / "packdemo").iterdir()) == [
+        "inventory.jsonl",
+        "inventory.meta.json",
+        "materialized",
+    ]
+
+
+def test_leftovers_of_a_killed_run_are_cleaned_up_by_the_next_one(recipe):
+    parent = recipe["work"] / "packdemo"
+    for leftover in (".materialized.tmp-424242", ".materialized.old-424242"):
+        (parent / leftover / "splits").mkdir(parents=True)
+        (parent / leftover / "videos.jsonl.gz").write_bytes(b"half written")
+
+    _materialize(recipe)
+
+    assert sorted(p.name for p in parent.iterdir()) == [
+        "inventory.jsonl",
+        "inventory.meta.json",
+        "materialized",
+    ]

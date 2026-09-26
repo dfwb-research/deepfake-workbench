@@ -287,6 +287,10 @@ def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
     every command that loads the protocol finds them. For a dataset shipped without its key lists,
     every list of the dataset is rebuilt, whichever scheme REF names. A mismatch exits 4 and writes
     nothing.
+
+    With --json, one recipe scheme prints {ref, path, sha256, matched}, and a dataset shipped
+    without its key lists prints {dataset, path, videos_sha256, pairs_sha256, schemes, n_videos,
+    n_pairs, matched}, where schemes maps each scheme to its hash.
     """
     from dfwb.core.paths import require_root, resolve_roots
     from dfwb.core.records import InventoryRecord, read_jsonl

@@ -794,6 +794,11 @@ def test_a_benchmark_defined_at_one_compression_ignores_the_others(demo, monkeyp
     monkeypatch.setattr(
         PackDemoBuilder, "benchmark", BenchmarkSpec(k_fake=2, compressions=("c23",))
     )
+    monkeypatch.setattr(
+        PackDemoBuilder,
+        "card_info",
+        {**PackDemoBuilder.card_info, "compressions": ["raw", "c23", "c40"]},
+    )
     rows = read_inventory("packdemo", demo["work"])
     only_c23, full = tmp_path / "c23.jsonl", tmp_path / "full.jsonl"
     write_jsonl(only_c23, _at_compressions(rows, "c23"))
@@ -992,3 +997,17 @@ def test_a_recipe_materializes_from_a_copy_laid_out_differently(demo):
 
     rebuilt = _files(result.path)
     assert {name: data for name, data in rebuilt.items() if name != "hashes.json"} == lists
+
+
+def test_a_card_without_the_list_hashes_says_so_before_comparing_pairing_rules(demo):
+    out = demo["pack"] / "packdemo"
+    build_dataset("packdemo", out=out)
+    add_to_pack_yaml(demo["pack"], "packdemo")
+    _strip_to_recipe(out, videos_sha256=None, pairs_sha256=None, pairing_rule=None)
+
+    with pytest.raises(ContractError) as info:
+        materialize_recipe("packdemo")
+
+    assert "videos_sha256 or pairs_sha256" in info.value.message
+    assert "dfwb protocols build" in info.value.hint
+    assert "pairing" not in info.value.message

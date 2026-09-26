@@ -413,7 +413,7 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
         raise UnknownKeyError(
             f"unknown scheme {scheme!r} for dataset {parsed.dataset!r}"
             f"{did_you_mean(scheme, card.schemes)}",
-            hint=f"run `dfwb protocols info {parsed.dataset}` to see its schemes",
+            hint=f"run `dfwb protocols list` to see {parsed.dataset}'s schemes",
         )
     scheme_card = card.schemes[scheme]
     canonical_ref = f"{parsed.dataset}/{scheme}"
