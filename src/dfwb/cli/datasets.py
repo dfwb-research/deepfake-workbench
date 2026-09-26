@@ -198,15 +198,88 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _pack_card(dataset_id: str) -> dict[str, Any] | None:
+    """The card fields of the first installed, healthy pack that publishes ``dataset_id``."""
+    from dfwb.core.errors import DFWBError
+    from dfwb.protocols._yaml import read_card
+    from dfwb.protocols.packs import installed_packs
+
+    for pack in installed_packs():
+        if pack.card is not None and dataset_id in pack.card.datasets:
+            try:
+                card = read_card(pack.dataset_dir(dataset_id))
+            except DFWBError:
+                continue
+            return card.model_dump(mode="json", by_alias=True)
+    return None
+
+
+def _info_pack_only(dataset_id: str, pack_names: list[str], as_json: bool) -> None:
+    """``info`` for a dataset with no local inventory builder: only what an installed pack knows.
+
+    ``pack_names`` are the healthy installed packs that publish ``dataset_id`` (as ``datasets
+    list`` already shows for such an id); the caller has already checked this is non-empty.
+    """
+    schemes, problems = _pack_schemes(dataset_id)
+    card = _pack_card(dataset_id) or {}
+    note = "no local inventory builder is registered for it: the folder and layout can't be shown"
+
+    if as_json:
+        emit_json(
+            {
+                "id": dataset_id,
+                "builder": None,
+                "card": card,
+                "layout": None,
+                "location": None,
+                "schemes": schemes,
+                "problems": problems,
+                "packs": pack_names,
+                "note": note,
+            }
+        )
+        return
+
+    release = card.get("release")
+    title = f"{card.get('name', dataset_id)} ({dataset_id})"
+    click.echo(title + (f"  release {release}" if release else ""))
+    for line in _card_lines(card):
+        click.echo(line)
+    click.echo("")
+    click.echo(f"known from: {', '.join(pack_names)}")
+    click.echo(f"note: {note}")
+    click.echo("")
+    if schemes:
+        click.echo("schemes in installed protocol packs:")
+        rows = [
+            [row["pack"], row["scheme"] + ("*" if row["default"] else ""), row["kind"]]
+            for row in schemes
+        ]
+        click.echo(table(["PACK", "SCHEME", "KIND"], rows))
+    for problem in problems:
+        click.echo(f"warning: {problem}", err=True)
+
+
 @datasets.command("info")
 @click.argument("dataset")
 @json_option
 def info(dataset: str, as_json: bool) -> None:
     """Show DATASET's details, its expected layout, its local folder and its schemes."""
+    from dfwb.core.errors import UnknownKeyError
     from dfwb.core.registry import catalogue_requirement
     from dfwb.preprocess.inventory.runner import dataset_copies, folder_status, get_builder
 
-    builder = get_builder(dataset)
+    try:
+        builder = get_builder(dataset)
+    except UnknownKeyError:
+        # Not registered locally: maybe it is only known from an installed protocol pack, the way
+        # `datasets list` already shows it. A dataset in neither is genuinely unknown -- re-raise
+        # the original error, with its did-you-mean over the registered builders.
+        pack_names = _pack_names().get(dataset)
+        if not pack_names:
+            raise
+        _info_pack_only(dataset, pack_names, as_json)
+        return
     dataset_id = builder.dataset_id
     roots, overrides = _locate_context()
     status = folder_status(dataset_id, builder.expected_folder, roots, overrides)

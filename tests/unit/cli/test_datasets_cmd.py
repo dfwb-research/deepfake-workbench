@@ -145,6 +145,31 @@ def test_info_of_an_unknown_dataset_suggests_close_matches(run, monkeypatch):
     assert "did you mean 'demo'" in result.err
 
 
+def test_info_works_for_a_dataset_known_only_from_a_pack(run, monkeypatch, tmp_path):
+    # "packonly" has no inventory builder, only a protocol pack: `datasets list` already shows
+    # such an id (see test_list_shows_the_folder_and_the_packs); `info` must work for it too.
+    pack = make_pack(tmp_path, "demo-pack", {"demo": {}, "packonly": {}})
+    install(monkeypatch, {"demo": (DEMO_TARGET, "Demo", "Demo")}, packs={"demo-pack": pack})
+
+    result = run("datasets", "info", "packonly")
+    assert result.code == 0, result.err
+    assert "packonly" in result.out
+    assert "demo-pack" in result.out
+    assert "official" in result.out
+    assert "no local inventory builder is registered" in result.out
+
+    data = json.loads(run("datasets", "info", "packonly", "--json").out)
+    assert data["id"] == "packonly"
+    assert data["builder"] is None
+    assert data["layout"] is None
+    assert data["location"] is None
+    assert data["packs"] == ["demo-pack"]
+    assert data["card"]["name"] == "packonly"
+    assert data["schemes"] == [
+        {"pack": "demo-pack", "scheme": "official", "kind": "official", "default": True}
+    ]
+
+
 # ------------------------------------------------------------------------------ synth
 
 
