@@ -46,6 +46,17 @@ All notable changes to this project are documented here. The format follows
   one with no local inventory builder, the way `dfwb datasets list` already shows it -- reporting
   what the pack knows (its card and schemes) and that no local builder is registered, instead of
   failing with an unknown-key error.
+- A stored frame whose size does not match its processing profile's `crop.size` is now refused
+  with a clear error naming both sizes, instead of being scored or trained on silently, or
+  crashing later with a confusing shape-mismatch error from deep inside batch collation.
+- A corrupt stored frame (one Pillow cannot decode) no longer aborts the whole run: `dfwb score`
+  now marks that video's row `error`, exactly as a detector failure already does, and keeps
+  scoring the rest of the split; training instead repeats the clip's nearest still-good frame in
+  its place, logs a warning naming the file, and counts how many frames this happened to.
+- `dfwb protocols lint`'s leak check now also catches a media, Users, scratch or data mount path,
+  and a bare `~` home-directory shorthand, alongside the two local-machine roots and the Windows
+  drive path it already caught -- a pack whose NOTICE, card, or video/pair rows mention one of
+  these newly-caught shapes now fails lint where it previously passed.
 
 ## [0.1.0b2] - 2026-09-26
 
