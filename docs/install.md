@@ -1,7 +1,7 @@
 # Installing extras
 
-`dfwb` itself needs only the dependencies in `uv sync` / `pip install deepfake-workbench`, and
-never pulls in PyTorch on its own. Media probing, the face pipeline and its detection backends,
+`dfwb` itself needs only the dependencies `uv sync` installs from a clone, and never pulls in
+PyTorch on its own. Media probing, the face pipeline and its detection backends,
 evaluation plots, training, the model zoo, Hugging Face backbones, PEFT adapters and Weights &
 Biases logging are all optional extras, installed only when you need them.
 
@@ -24,8 +24,17 @@ non-commercial research use only, and `wandb` needs a Weights & Biases account. 
 explicitly if you use it. Extras compose, so install only what you need, for example:
 
 ```bash
-pip install "deepfake-workbench[train,hf,peft]"
+uv sync --extra train --extra hf --extra peft
+# or, into an editable install from a clone:
+pip install -e ".[train,hf,peft]"
 ```
+
+!!! note "Not on PyPI yet"
+    dfwb is not published on PyPI: install from a clone, as above
+    (`git clone https://github.com/dfwb-research/deepfake-workbench && cd deepfake-workbench`
+    first). Once a release is published, `pip install "deepfake-workbench[train,hf,peft]"` will
+    install the same combination directly, with no clone needed -- the same form the CLI's own
+    `InstallationError` hints already use.
 
 ## Training: install a PyTorch build first
 
@@ -46,15 +55,16 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 then:
 
 ```bash
-pip install "deepfake-workbench[train]"
+uv sync --extra train
+# or: pip install -e ".[train]"
 ```
 
 ## `preprocess`: media probing and the face pipeline's own code
 
 ```bash
 uv sync --extra preprocess
-# or, into an existing install:
-pip install "deepfake-workbench[preprocess]"
+# or, into an editable install from a clone:
+pip install -e ".[preprocess]"
 ```
 
 Installs PyAV and `opencv-python-headless`. Needed for `dfwb inventory build --probe`, for
@@ -71,8 +81,9 @@ uv sync --extra face-insightface   # insightface's buffalo_l models, run with on
 uv sync --extra face-mediapipe     # Google MediaPipe's BlazeFace detector
 ```
 
-(or `pip install "deepfake-workbench[face-insightface]"` / `[face-mediapipe]`.) No extra is
-needed for the `center` backend (no detector, just a centred crop) beyond `preprocess` itself.
+(or, into an editable install from a clone, `pip install -e ".[face-insightface]"` /
+`".[face-mediapipe]"`.) No extra is needed for the `center` backend (no detector, just a centred
+crop) beyond `preprocess` itself.
 
 ### `face-insightface`: CPU by default, GPU by hand
 
