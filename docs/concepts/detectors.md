@@ -105,8 +105,12 @@ class DetectorOutput:
     features: Tensor | None = None  # [B, D]
 ```
 
-`extras` is plugin-owned, per-sample data the framework never interprets — keys are namespaced
-`"<provider>/<name>"` so two plugins never collide.
+`extras` is per-sample data, keyed `"<provider>/<name>"` so two plugins never collide; a detector
+never has to look at it. The framework sets a few `dfwb/`-prefixed keys of its own (`pair_id` for
+pairwise training, `source_id` for a multi-source run, and, read by the training loop rather than
+any detector, how many corrupt stored frames a sample repaired and, for a batch, how many videos
+it dropped for being all corrupt) — a plugin's own keys never collide with these, since they use
+their own provider name instead of `dfwb`.
 
 **Score polarity is fixed:** `score` is always P(fake), higher meaning more fake. There is no
 detector-specific flag to check; a detector whose underlying model reports P(real) has to flip it

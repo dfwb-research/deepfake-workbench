@@ -49,10 +49,15 @@ All notable changes to this project are documented here. The format follows
 - A stored frame whose size does not match its processing profile's `crop.size` is now refused
   with a clear error naming both sizes, instead of being scored or trained on silently, or
   crashing later with a confusing shape-mismatch error from deep inside batch collation.
-- A corrupt stored frame (one Pillow cannot decode) no longer aborts the whole run: `dfwb score`
-  now marks that video's row `error`, exactly as a detector failure already does, and keeps
-  scoring the rest of the split; training instead repeats the clip's nearest still-good frame in
-  its place, logs a warning naming the file, and counts how many frames this happened to.
+- A corrupt stored frame (one Pillow cannot decode) no longer aborts the whole run. `dfwb score`
+  marks only that one video's row `error`, exactly as a detector failure already does, and keeps
+  scoring every other video normally, even one that happens to share a batch with it. Training
+  and validation instead repeat the clip's nearest still-good frame in its place, log a warning
+  naming the file, and report how many frames this happened to as a logged metric
+  (`train/repaired_frames`/`val/repaired_frames`) and in `metrics.json`; a validation video whose
+  every stored frame is corrupt is skipped (and counted, `val/videos_skipped`) rather than
+  repeated from nothing or aborting the run. A one-line summary at the end of a run reports both
+  totals when either is non-zero.
 - `dfwb protocols lint`'s leak check now also catches a media, Users, scratch or data mount path,
   and a bare `~` home-directory shorthand, alongside the two local-machine roots and the Windows
   drive path it already caught -- a pack whose NOTICE, card, or video/pair rows mention one of

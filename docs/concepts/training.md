@@ -120,6 +120,14 @@ the biases and normalisation weights inside the blocks cannot be exempted on the
   warning. `report.md` says when that happened, and lists every configured metric that was
   undefined on a source in the last validation; `metrics.json` records `"fallback": true`.
 - A run without validation sources keeps `checkpoints/best` as a copy of `checkpoints/last`.
+- **A corrupt stored frame never aborts training or validation.** Training and validation both
+  repeat the clip's nearest still-good frame in a corrupt one's place, logging a warning and
+  counting it (`train/repaired_frames`/`val/repaired_frames`, logged each epoch); a validation
+  video whose every stored frame is corrupt is skipped instead (`val/videos_skipped`). `metrics.json`
+  records the run's totals (`repaired_frames`, `videos_skipped`), and a one-line summary at the end
+  of the run reports both when either is non-zero. A stored frame the wrong size for its
+  processing profile is never tolerated this way: it is always a hard error, since it means the
+  wrong store was chosen.
 
 ## Plugins in training
 
