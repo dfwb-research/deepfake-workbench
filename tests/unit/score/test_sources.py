@@ -222,6 +222,8 @@ def test_py_source_reports_a_module_that_cannot_be_imported():
     with pytest.raises(ConfigError) as info:
         resolve_detector("py:no_such_module_at_all_xyz:make_detector")
     assert "no_such_module_at_all_xyz" in info.value.message
+    assert "PYTHONPATH" in info.value.hint
+    assert "install" in info.value.hint
 
 
 def test_a_module_with_no_readable_file_at_all_is_treated_as_unreadable(

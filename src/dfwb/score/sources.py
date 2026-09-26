@@ -164,7 +164,8 @@ def load_py(ref: str) -> Detector:
     except ImportError as exc:
         raise ConfigError(
             f"py: cannot import {module_name!r}: {exc}",
-            hint="the module must be importable on this interpreter's path",
+            hint="the module must be importable on this interpreter's path: run with "
+            "PYTHONPATH=. from the directory holding it, or install it",
         ) from None
     factory = getattr(module, factory_name, None)
     if not callable(factory):
