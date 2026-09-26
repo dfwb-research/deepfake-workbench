@@ -1,9 +1,10 @@
 """The ``dfwb`` command.
 
-Subcommands are imported only when they run, and this module imports nothing but click, so
-``dfwb --help`` is fast and never needs torch. Errors never show a traceback unless ``--debug``
-(or ``DFWB_DEBUG=1``) is set: they print ``error:`` and ``hint:`` lines and exit with the code of
-the error class (see ``dfwb.core.errors``).
+Subcommands are imported only when they run, and this module imports nothing heavy -- just click
+and its own lightweight ``_output`` helper -- so ``dfwb --help`` is fast and never needs torch.
+Errors never show a traceback unless ``--debug`` (or ``DFWB_DEBUG=1``) is set: they print
+``error:`` and ``hint:`` lines and exit with the code of the error class (see
+``dfwb.core.errors``).
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import click
+
+from dfwb.cli._output import hint_line
 
 __all__ = ["COMMANDS", "LazyGroup", "cli", "main"]
 
@@ -182,7 +185,7 @@ def _report(message: str, hint: str) -> None:
     click.echo(f"error: {first}", err=True)
     for line in rest:
         click.echo(line, err=True)
-    click.echo(f"hint: {hint}", err=True)
+    hint_line(hint)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -205,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.exit_code
     except click.Abort:
         click.echo("aborted", err=True)
-        click.echo("hint: re-run the command to try again", err=True)
+        hint_line("re-run the command to try again")
         return 1
     except Exception as exc:
         from dfwb.core.errors import DFWBError
