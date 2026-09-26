@@ -159,8 +159,15 @@ def read_parity_overlay(name: str) -> list[ParityMetric]:
             f"{type(data).__name__})",
             hint="fix or delete the file; it is rebuilt by the next parity run",
         )
+    parity_field = data.get("parity", [])
+    if not isinstance(parity_field, list):
+        raise ContractError(
+            f"{path}: parity overlay is corrupt ('parity' must be a list, got "
+            f"{type(parity_field).__name__})",
+            hint="fix or delete the file; it is rebuilt by the next parity run",
+        )
     try:
-        return [ParityMetric.model_validate(entry) for entry in data.get("parity", [])]
+        return [ParityMetric.model_validate(entry) for entry in parity_field]
     except ValidationError as exc:
         raise ContractError(
             f"{path}: " + "; ".join(validation_messages(exc)),

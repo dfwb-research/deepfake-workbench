@@ -196,3 +196,13 @@ def test_read_parity_overlay_wraps_a_schema_violation_in_contract_error(isolated
 
     with pytest.raises(ContractError, match="bad-schema"):
         read_parity_overlay("bad-schema")
+
+
+@pytest.mark.parametrize("bad_parity", [3, None, "oops", {"not": "a list"}])
+def test_read_parity_overlay_wraps_a_malformed_parity_field_in_contract_error(isolated, bad_parity):
+    path = parity_path("bad-parity-field")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"parity": bad_parity}))
+
+    with pytest.raises(ContractError, match="bad-parity-field"):
+        read_parity_overlay("bad-parity-field")
