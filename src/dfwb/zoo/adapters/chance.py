@@ -40,5 +40,12 @@ class ChanceAdapter:
 
     card = read_builtin_card(_NAME)
 
-    def load(self, weights: Path | None, device: str, *, seed: int | None = None) -> ChanceDetector:
+    def load(
+        self,
+        weights: Path | None,
+        device: str,
+        *,
+        seed: int | None = None,
+        code_root: Path | None = None,
+    ) -> ChanceDetector:
         return ChanceDetector(meta_from_card(self.card, source=f"zoo:{self.card.name}"))

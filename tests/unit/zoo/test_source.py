@@ -5,14 +5,16 @@ local HTTP server, never the real network) and gating on any required licence fi
 from __future__ import annotations
 
 import hashlib
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.unit.zoo._fixtures import WeightedTestAdapter
+from tests.unit.zoo._fixtures import BadDetectorAdapter, NoLoadAdapter, WeightedTestAdapter
 
 from dfwb.core import licenses
 from dfwb.core.detector import DetectorMeta
-from dfwb.core.errors import ConfigError, InstallationError, UnknownKeyError
+from dfwb.core.errors import ConfigError, ContractError, InstallationError, UnknownKeyError
 from dfwb.core.plugins import get_registry
 from dfwb.score.sources import resolve_detector
 from dfwb.zoo.card import parse_card
@@ -75,6 +77,57 @@ def test_an_empty_adapter_name_is_a_config_error(isolated):
 def test_a_no_weights_adapter_with_an_explicit_id_is_a_config_error(isolated):
     with pytest.raises(ConfigError, match="no weights"):
         resolve_detector("zoo:chance@default")
+
+
+def test_an_adapter_missing_load_is_a_contract_error(isolated, monkeypatch):
+    get_registry("detectors").add(
+        "no-load-adapter", target="tests.unit.zoo._fixtures:NoLoadAdapter", summary="test fixture"
+    )
+    card = parse_card(_card_yaml("no-load-adapter", ""))
+    monkeypatch.setattr(NoLoadAdapter, "card", card, raising=False)
+
+    with pytest.raises(ContractError, match="load"):
+        resolve_detector("zoo:no-load-adapter")
+
+
+def test_an_adapter_missing_card_is_a_contract_error(isolated):
+    get_registry("detectors").add(
+        "no-card-adapter", target="tests.unit.zoo._fixtures:NoCardAdapter", summary="test fixture"
+    )
+
+    with pytest.raises(ContractError, match="card"):
+        resolve_detector("zoo:no-card-adapter")
+
+
+def test_an_adapter_whose_card_name_does_not_match_the_registry_key_is_a_contract_error(
+    isolated, monkeypatch
+):
+    # A well-formed adapter (has both `card` and `load`) so this actually exercises the name
+    # check itself, not the earlier "missing load" check.
+    get_registry("detectors").add(
+        "registered-as-this", target="tests.unit.zoo._fixtures:WeightedTestAdapter", summary="x"
+    )
+    card = parse_card(_card_yaml("declared-as-something-else", ""))
+    monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
+
+    with pytest.raises(ContractError, match="registered-as-this") as info:
+        resolve_detector("zoo:registered-as-this")
+    assert "declared-as-something-else" in info.value.message
+
+
+def test_a_detector_missing_predict_and_to_is_a_contract_error(isolated, monkeypatch):
+    get_registry("detectors").add(
+        "bad-detector-adapter",
+        target="tests.unit.zoo._fixtures:BadDetectorAdapter",
+        summary="test fixture",
+    )
+    card = parse_card(_card_yaml("bad-detector-adapter", ""))
+    monkeypatch.setattr(BadDetectorAdapter, "card", card, raising=False)
+
+    with pytest.raises(ContractError) as info:
+        resolve_detector("zoo:bad-detector-adapter")
+    assert "predict" in info.value.message
+    assert "to" in info.value.message
 
 
 # --------------------------------------------------------------------------------- with weights
@@ -215,6 +268,51 @@ def test_a_gated_adapter_is_blocked_until_its_licence_is_accepted(server, isolat
     detector = resolve_detector("zoo:weighted-test")
     assert detector.checkpoint_sha256 == SHA256
     assert server.requests == ["/w.safetensors"]
+
+
+# ---------------------------------------------------------------------------- pinned-clone strategy
+
+
+def _init_repo(repo: Path) -> str:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.org"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True, capture_output=True)
+    (repo / "entry.py").write_text("VALUE = 7\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True, capture_output=True
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_load_zoo_clones_a_pinned_clone_adapter_before_loading_it(isolated, tmp_path, monkeypatch):
+    repo = tmp_path / "upstream"
+    repo.mkdir()
+    commit = _init_repo(repo)
+    _register_weighted("pinned-clone-test")
+    card = parse_card(
+        f"""
+name: pinned-clone-test
+display_name: Pinned Clone Test
+contract_version: [1, 0]
+upstream: {{repo: "{repo}", commit: "{commit}"}}
+license: {{code: MIT}}
+code_strategy: pinned-clone
+input: {{}}
+"""
+    )
+    monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
+
+    detector = resolve_detector("zoo:pinned-clone-test")
+
+    from dfwb.zoo.strategies import clone_cache_dir
+
+    assert detector.code_root == clone_cache_dir(card.name, commit)
+    assert (detector.code_root / "entry.py").is_file()
 
 
 # ------------------------------------------------------------------------------- seed threading

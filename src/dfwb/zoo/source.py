@@ -15,12 +15,13 @@ does not reliably know how to spell, since only this module knows which weights 
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
-from dfwb.core.errors import ConfigError, UnknownKeyError, did_you_mean
+from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError, did_you_mean
 from dfwb.core.hashing import sha256_file
 from dfwb.core.plugins import get_registry
 from dfwb.zoo.adapter import require_license_accepted
+from dfwb.zoo.strategies import ensure_clone
 from dfwb.zoo.weights import ensure_weights
 
 if TYPE_CHECKING:
@@ -30,6 +31,30 @@ if TYPE_CHECKING:
     from dfwb.zoo.card import AdapterCard, WeightSpec
 
 __all__ = ["load_zoo"]
+
+# What contract C4 requires of anything an adapter's load() hands back, and what the `detectors`
+# registry requires of an adapter class itself (mirrors dfwb.score.sources's own py: check).
+_DETECTOR_ATTRS: Final = ("meta", "predict", "to")
+_ADAPTER_ATTRS: Final = ("card", "load")
+
+
+def _require_adapter_contract(adapter: Any, key: str) -> None:
+    missing = [name for name in _ADAPTER_ATTRS if not hasattr(adapter, name)]
+    if missing:
+        raise ContractError(
+            f"detectors/{key}: adapter class is missing {missing}",
+            hint="an adapter needs a `card` attribute and a `load()` method",
+        )
+
+
+def _require_detector_contract(detector: Any, ref: str) -> None:
+    missing = [name for name in _DETECTOR_ATTRS if not hasattr(detector, name)]
+    if missing:
+        raise ContractError(
+            f"zoo:{ref}: adapter.load() returned a {type(detector).__name__!r} object, missing "
+            f"{missing} required by the detector contract",
+            hint="load() must return an object with meta, predict() and to()",
+        )
 
 
 def _select_weight(card: AdapterCard, weights_id: str | None) -> WeightSpec:
@@ -64,14 +89,26 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
             (:func:`~dfwb.zoo.adapter.require_license_accepted`, exit code 5), or its weights are
             not cached and cannot be downloaded (offline, or the download itself failed).
         ContractError: a cached weights file does not match the card and cannot be re-downloaded
-            offline.
+            offline, the registry target is not a well-formed adapter (missing `card` or `load`),
+            the card's own `name` does not match the registry key it is added under, or `load()`
+            returned something that fails the detector contract (missing `meta`, `predict` or
+            `to`).
     """
     name, has_id, weights_id = ref.partition("@")
     if not name:
         raise ConfigError(f"zoo: {ref!r} must be <name>[@<weights id>]", hint="example: zoo:chance")
-    adapter_cls = get_registry("detectors").load(name)
+    registry = get_registry("detectors")
+    entry = registry.entry(name)
+    adapter_cls = registry.load(name)
     adapter: Any = adapter_cls()
+    _require_adapter_contract(adapter, entry.key)
     card: AdapterCard = adapter.card
+    if card.name != entry.key:
+        raise ContractError(
+            f"detectors/{entry.key}: its card declares name {card.name!r}, which does not match "
+            "the registry key it is added under",
+            hint="the card's `name` field and the registry key it is registered under must agree",
+        )
     require_license_accepted(card)
 
     weights_path: Path | None = None
@@ -91,7 +128,12 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
             hint=f"use zoo:{card.name} (no @<weights id>)",
         )
 
-    detector: Detector = adapter.load(weights_path, "cpu", seed=seed)
+    code_root: Path | None = None
+    if card.code_strategy == "pinned-clone":
+        code_root = ensure_clone(card)
+
+    detector: Detector = adapter.load(weights_path, "cpu", seed=seed, code_root=code_root)
+    _require_detector_contract(detector, ref)
     source = f"zoo:{card.name}" + (f"@{resolved_id}" if resolved_id else "")
     detector.meta = dataclasses.replace(detector.meta, source=source)
     detector.checkpoint_sha256 = checkpoint_sha256  # type: ignore[attr-defined]
