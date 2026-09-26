@@ -153,12 +153,12 @@ def test_resolving_a_single_weight_variant_needs_no_explicit_id(server, isolated
     assert detector.weights_path.read_bytes() == CONTENT
 
 
-def test_checkpoint_sha256_is_the_measured_hash_not_the_cards_own_string(
-    server, isolated, monkeypatch, tmp_path
+def test_checkpoint_sha256_is_reused_from_ensure_weights_without_rehashing(
+    server, isolated, monkeypatch
 ):
-    # A defensive check: even if the weight manager ever returned a path whose content did not
-    # actually match the card (a bug in `ensure_weights`, say), `load_zoo` must record what the
-    # file on disk really hashes to, never just echo the card's own declared string back out.
+    # `ensure_weights` has already hashed and verified this exact file; `load_zoo` must reuse
+    # that already-verified value (spec.sha256, by then guaranteed correct) rather than reading
+    # the whole file back off disk a second time just to hash it again.
     _register_weighted()
     card = parse_card(
         _card_yaml(
@@ -169,18 +169,17 @@ def test_checkpoint_sha256_is_the_measured_hash_not_the_cards_own_string(
         )
     )
     monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
-
-    wrong_content = b"not what the card declares at all"
-    decoy = tmp_path / "decoy.safetensors"
-    decoy.write_bytes(wrong_content)
-    import dfwb.zoo.source as source_module
-
-    monkeypatch.setattr(source_module, "ensure_weights", lambda name, spec: decoy)
+    server.routes["/w.safetensors"] = CONTENT
+    spec = card.weights[0]
 
     detector = resolve_detector("zoo:weighted-test")
 
-    assert detector.checkpoint_sha256 == hashlib.sha256(wrong_content).hexdigest()
-    assert detector.checkpoint_sha256 != SHA256
+    assert detector.checkpoint_sha256 == SHA256
+    # ensure_weights hashes the file once, to verify it; load_zoo must reuse that already-
+    # verified spec.sha256 (the very same string object) rather than reading the whole file back
+    # off disk to hash it again -- a fresh sha256_file() call would give an equal but different
+    # string object, not this one.
+    assert detector.checkpoint_sha256 is spec.sha256
 
 
 def test_resolving_with_an_explicit_weights_id(server, isolated, monkeypatch):

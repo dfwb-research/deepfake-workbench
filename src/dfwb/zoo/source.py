@@ -18,7 +18,6 @@ import dataclasses
 from typing import TYPE_CHECKING, Any, Final
 
 from dfwb.core.errors import ConfigError, ContractError, UnknownKeyError, did_you_mean
-from dfwb.core.hashing import sha256_file
 from dfwb.core.plugins import get_registry
 from dfwb.zoo.adapter import require_license_accepted
 from dfwb.zoo.strategies import ensure_clone
@@ -117,10 +116,10 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
     if card.weights:
         spec = _select_weight(card, weights_id if has_id else None)
         weights_path = ensure_weights(card.name, spec)
-        # The measured hash of the file actually on disk, not just an echo of the card's own
-        # declared string -- correct by construction once `ensure_weights` has verified it, and
-        # still correct even if that guarantee were ever violated by a bug.
-        checkpoint_sha256 = sha256_file(weights_path)
+        # `ensure_weights` has already hashed this exact file and confirmed it matches
+        # `spec.sha256` (or raised) -- reuse that already-verified value instead of hashing a
+        # (potentially large) weights file a second time here.
+        checkpoint_sha256 = spec.sha256
         resolved_id = spec.id
     elif has_id:
         raise ConfigError(
@@ -128,11 +127,14 @@ def load_zoo(ref: str, *, seed: int | None = None) -> Detector:
             hint=f"use zoo:{card.name} (no @<weights id>)",
         )
 
-    code_root: Path | None = None
+    # code_root is only ever passed to a pinned-clone adapter's load(); every other strategy's
+    # adapter keeps the plain load(weights, device, *, seed=None) shape -- it never has to know
+    # about a keyword that means nothing for it.
+    load_kwargs: dict[str, Any] = {"seed": seed}
     if card.code_strategy == "pinned-clone":
-        code_root = ensure_clone(card)
+        load_kwargs["code_root"] = ensure_clone(card)
 
-    detector: Detector = adapter.load(weights_path, "cpu", seed=seed, code_root=code_root)
+    detector: Detector = adapter.load(weights_path, "cpu", **load_kwargs)
     _require_detector_contract(detector, ref)
     source = f"zoo:{card.name}" + (f"@{resolved_id}" if resolved_id else "")
     detector.meta = dataclasses.replace(detector.meta, source=source)

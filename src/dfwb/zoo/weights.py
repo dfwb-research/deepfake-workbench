@@ -51,28 +51,27 @@ def weights_filename(spec: WeightSpec) -> str:
 
 
 def _verify(path: Path, spec: WeightSpec) -> None:
-    """Raise :class:`ContractError`, naming ``path``, unless it hashes (and, when the card gives
-    one, sizes) to what ``spec`` declares."""
+    """Raise :class:`ContractError`, naming ``path``, unless it hashes and sizes to what ``spec``
+    declares."""
     actual_sha256 = sha256_file(path)
     if actual_sha256 != spec.sha256:
         raise ContractError(
             f"{path}: sha256 is {actual_sha256}, expected {spec.sha256}",
             hint="the cached file does not match the adapter card",
         )
-    if spec.bytes is not None:
-        actual_size = path.stat().st_size
-        if actual_size != spec.bytes:
-            raise ContractError(
-                f"{path}: is {actual_size} bytes, the adapter card declares {spec.bytes}",
-                hint="check the adapter card's weights entry",
-            )
+    actual_size = path.stat().st_size
+    if actual_size != spec.bytes:
+        raise ContractError(
+            f"{path}: is {actual_size} bytes, the adapter card declares {spec.bytes}",
+            hint="check the adapter card's weights entry",
+        )
 
 
 def ensure_weights(name: str, spec: WeightSpec) -> Path:
     """The local, verified path to ``spec``'s weights, downloading it once if needed.
 
-    A file already at the cache path is re-verified against ``spec`` (sha256, and size when the
-    card gives one) every time, rather than trusted on the path alone: a mismatch means the cached
+    A file already at the cache path is re-verified against ``spec`` (sha256 and size) every time,
+    rather than trusted on the path alone: a mismatch means the cached
     copy has been tampered with or corrupted since it was written, and is deleted and re-fetched
     -- unless ``DFWB_OFFLINE`` is set, in which case there is no safe way to replace it, and this
     raises instead of either serving a bad file or silently deleting the only copy there is.
@@ -119,9 +118,12 @@ def load_weights(path: Path, spec: WeightSpec) -> Any:
     if spec.format == "safetensors":
         try:
             from safetensors.torch import load_file
-        except ImportError:
+        except ImportError as exc:
+            # safetensors' own torch integration needs torch too: name whichever of the two is
+            # actually missing (exc.name), not always "safetensors" when torch is the real gap.
+            missing = exc.name or "safetensors"
             raise InstallationError(
-                f"{path}: needs safetensors, which is not installed",
+                f"{path}: needs {missing}, which is not installed",
                 hint='pip install "deepfake-workbench[zoo]"',
             ) from None
         return load_file(str(path))

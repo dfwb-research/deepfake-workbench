@@ -86,7 +86,7 @@ class WeightSpec(_Strict):
     id: str
     url: str
     sha256: Sha256Hex
-    bytes: int | None = None
+    bytes: int
     format: Literal["safetensors", "pytorch"]
     trained_on: tuple[str, ...] = ()
     redistribution: Literal["undecided", "allowed", "forbidden"] = "undecided"

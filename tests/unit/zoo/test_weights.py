@@ -155,7 +155,7 @@ def test_load_weights_reads_a_torch_checkpoint_under_weights_only(tmp_path):
 
     path = tmp_path / "weights.pt"
     torch.save({"w": torch.zeros(3)}, path)
-    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="pytorch")
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, bytes=1, format="pytorch")
 
     state = load_weights(path, spec)
 
@@ -171,7 +171,7 @@ def test_load_weights_refuses_a_pickle_holding_a_non_tensor_object(tmp_path):
 
     path = tmp_path / "weights.pt"
     torch.save({"w": _NotATensor()}, path)
-    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="pytorch")
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, bytes=1, format="pytorch")
 
     with pytest.raises(ContractError):
         load_weights(path, spec)
@@ -179,15 +179,32 @@ def test_load_weights_refuses_a_pickle_holding_a_non_tensor_object(tmp_path):
 
 def test_load_weights_reports_missing_safetensors(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "safetensors.torch", None)
-    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="safetensors")
+    monkeypatch.setitem(sys.modules, "safetensors", None)
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, bytes=1, format="safetensors")
 
     with pytest.raises(InstallationError, match="safetensors"):
         load_weights(tmp_path / "w.safetensors", spec)
 
 
+def test_load_weights_names_torch_when_safetensors_is_installed_but_torch_is_not(
+    tmp_path, monkeypatch
+):
+    pytest.importorskip("safetensors")
+    # Force a fresh import attempt of safetensors.torch (an earlier test in this session may
+    # already have it cached in sys.modules, which would make blanking "torch" below a no-op).
+    monkeypatch.delitem(sys.modules, "safetensors.torch", raising=False)
+    monkeypatch.setitem(sys.modules, "torch", None)
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, bytes=1, format="safetensors")
+
+    with pytest.raises(InstallationError) as info:
+        load_weights(tmp_path / "w.safetensors", spec)
+    assert "needs torch, which is not installed" in info.value.message
+    assert "needs safetensors" not in info.value.message
+
+
 def test_load_weights_reports_missing_torch(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", None)
-    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="pytorch")
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, bytes=1, format="pytorch")
 
     with pytest.raises(InstallationError, match="torch"):
         load_weights(tmp_path / "w.pt", spec)
@@ -196,7 +213,7 @@ def test_load_weights_reports_missing_torch(tmp_path, monkeypatch):
 def test_load_weights_refuses_an_unknown_format(tmp_path):
     path = tmp_path / "weights.bin"
     path.write_bytes(b"whatever")
-    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, format="safetensors")
+    spec = WeightSpec(id="default", url="x://x", sha256="a" * 64, bytes=1, format="safetensors")
     spec.format = "onnx"  # bypasses the card's own Literal, as a defensive check would need to
 
     with pytest.raises(ContractError, match="format"):

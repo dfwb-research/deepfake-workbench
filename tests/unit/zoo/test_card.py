@@ -152,7 +152,9 @@ weights:
         parse_card(text)
 
 
-def test_weight_bytes_is_optional():
+def test_weight_bytes_is_required():
+    # Matches C4's own adapter-card schema, which always gives it: dropping it is a card mistake,
+    # not something to default away silently.
     text = """
 name: x
 display_name: X
@@ -165,8 +167,8 @@ weights:
      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
      format: safetensors}
 """
-    card = parse_card(text)
-    assert card.weights[0].bytes is None
+    with pytest.raises(ContractError, match="bytes"):
+        parse_card(text)
 
 
 @pytest.mark.parametrize(
