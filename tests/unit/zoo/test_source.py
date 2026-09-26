@@ -190,6 +190,7 @@ def _fake_batch() -> SimpleNamespace:
 
 
 def test_the_same_seed_reproduces_random_scores_exactly(isolated):
+    pytest.importorskip("torch")
     batch = _fake_batch()
     first = resolve_detector("zoo:random", seed=5).predict(batch).score
     second = resolve_detector("zoo:random", seed=5).predict(batch).score
@@ -197,6 +198,7 @@ def test_the_same_seed_reproduces_random_scores_exactly(isolated):
 
 
 def test_two_different_seeds_give_different_random_scores(isolated):
+    pytest.importorskip("torch")
     batch = _fake_batch()
     a = resolve_detector("zoo:random", seed=0).predict(batch).score
     b = resolve_detector("zoo:random", seed=1).predict(batch).score
@@ -204,6 +206,7 @@ def test_two_different_seeds_give_different_random_scores(isolated):
 
 
 def test_resolve_detector_with_no_seed_uses_the_documented_default(isolated):
+    pytest.importorskip("torch")
     batch = _fake_batch()
     default = resolve_detector("zoo:random").predict(batch).score
     explicit_zero = resolve_detector("zoo:random", seed=0).predict(batch).score
@@ -211,6 +214,7 @@ def test_resolve_detector_with_no_seed_uses_the_documented_default(isolated):
 
 
 def test_random_scores_do_not_depend_on_batch_order(isolated):
+    pytest.importorskip("torch")
     forward = (
         resolve_detector("zoo:random", seed=3)
         .predict(
