@@ -6,6 +6,29 @@ srm = "dfwb-torch-srm"
 
 [keys.protocol_packs]
 dfwb-protocols = "dfwb-protocols"
+# Dataset ids published by the public protocol pack, so asking for one that is not installed
+# names the pack to install.
+ffpp = "dfwb-protocols"
+dfd = "dfwb-protocols"
+celebdf-v1 = "dfwb-protocols"
+celebdf-v2 = "dfwb-protocols"
+celebdf-v3 = "dfwb-protocols"
+dfdc = "dfwb-protocols"
+dfdc-p = "dfwb-protocols"
+deeperforensics = "dfwb-protocols"
+wilddeepfake = "dfwb-protocols"
+ffiw10k = "dfwb-protocols"
+kodf = "dfwb-protocols"
+dfdm = "dfwb-protocols"
+fakeavceleb = "dfwb-protocols"
+polyglotfake = "dfwb-protocols"
+deepspeak-v1 = "dfwb-protocols"
+deepspeak-v2 = "dfwb-protocols"
+idforge-v1 = "dfwb-protocols"
+lav-df = "dfwb-protocols"
+av-deepfake1m-pp = "dfwb-protocols"
+talkingheadbench = "dfwb-protocols"
+uadfv = "dfwb-protocols"
 
 # [imports] maps an import name to the deepfake-workbench extra that installs it.
 [imports]

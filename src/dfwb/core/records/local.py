@@ -7,8 +7,11 @@ from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, with_config
 
+from dfwb.core.errors import ContractError
 from dfwb.core.hashing import fingerprint
+from dfwb.core.paths import is_relative_posix_path
 from dfwb.core.records._base import RecordModel
+from dfwb.core.records.protocol import VideoRecord
 
 __all__ = [
     "BuilderRef",
@@ -17,6 +20,7 @@ __all__ = [
     "ProcessedRecord",
     "ProcessingProfile",
     "TrackStats",
+    "to_video_record",
 ]
 
 
@@ -58,6 +62,29 @@ class InventoryRecord:
     pair_key: str | None = None
     attrs: dict[str, Any] = field(default_factory=dict)
     probe: Probe | None = None
+    folder: str | None = None  # set when this record lives in a different dataset folder
+
+    def __post_init__(self) -> None:
+        if not is_relative_posix_path(self.relpath):
+            raise ContractError(
+                f"{self.key}: relpath {self.relpath!r} must be relative, POSIX, without '..'",
+                hint="builders record paths relative to the dataset folder",
+            )
+
+
+def to_video_record(record: InventoryRecord) -> VideoRecord:
+    """The portable columns of ``record``: drops ``relpath``, ``builder``, ``probe``, ``folder``."""
+    return VideoRecord(
+        key=record.key,
+        compression=record.compression,
+        label_key=record.label_key,
+        method=record.method,
+        identity=record.identity,
+        source_id=record.source_id,
+        target_id=record.target_id,
+        pair_key=record.pair_key,
+        attrs=record.attrs,
+    )
 
 
 @with_config(ConfigDict(extra="forbid"))

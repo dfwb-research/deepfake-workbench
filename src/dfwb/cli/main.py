@@ -13,6 +13,7 @@ import os
 import sys
 import traceback
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import click
@@ -23,8 +24,11 @@ __all__ = ["COMMANDS", "LazyGroup", "cli", "main"]
 COMMANDS: dict[str, tuple[str, str]] = {
     "completion": ("dfwb.cli.completion:completion", "Print the shell completion snippet."),
     "config": ("dfwb.cli.config:config", "Compose, show and validate configs."),
+    "datasets": ("dfwb.cli.datasets:datasets", "List supported datasets and where they are."),
     "doctor": ("dfwb.cli.doctor:doctor", "Check Python, roots, extras and plugins."),
+    "inventory": ("dfwb.cli.inventory:inventory", "Build and summarise dataset inventories."),
     "plugins": ("dfwb.cli.plugins:plugins", "List and inspect plugins and their components."),
+    "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),
 }
 
@@ -90,10 +94,60 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     callback=_print_version,
     help="Show the dfwb version and the versions of installed plugins.",
 )
-def cli(debug: bool) -> None:
+@click.option(
+    "--env-file",
+    "env_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Load environment variables from this file instead of discovering one.",
+)
+@click.option(
+    "--no-env-file",
+    "no_env_file",
+    is_flag=True,
+    help="Never load a .env file, even one that would otherwise be discovered.",
+)
+def cli(debug: bool, env_file: Path | None, no_env_file: bool) -> None:
     from dfwb.core.log import setup_logging
 
     setup_logging("DEBUG" if debug else "WARNING")
+    _load_env_file(env_file, no_env_file)
+
+
+def _load_env_file(env_file: Path | None, no_env_file: bool) -> None:
+    """Find and apply this machine's ``.env`` before any subcommand runs (never at import)."""
+    from dfwb.core import envfile
+
+    if no_env_file:
+        envfile._remember(None)
+        return
+
+    path: Path | None
+    if env_file is not None:
+        if not env_file.is_file():
+            from dfwb.core.errors import ConfigError
+
+            raise ConfigError(f"{env_file}: no such file", hint="check --env-file")
+        path = env_file
+    else:
+        path = envfile.find_env_file(Path.cwd(), os.environ)
+
+    if path is None:
+        envfile._remember(None)
+        return
+
+    from dfwb.core.errors import ConfigError
+
+    try:
+        applied = envfile.apply_env_file(path, os.environ)
+    except ConfigError as exc:
+        # Another tool's .env (docker-compose, say) may sit where dfwb looks for its own.
+        raise ConfigError(
+            exc.message,
+            hint=f"{exc.hint}; if {path} is not meant for dfwb, run dfwb --no-env-file ..., or "
+            f"point {envfile.ENV_FILE_VAR} at a dfwb .env",
+        ) from None
+    envfile._remember(applied)
 
 
 def _debug_requested(args: Sequence[str]) -> bool:

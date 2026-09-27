@@ -2,6 +2,7 @@
 
 from dfwb.core.records._base import assert_no_absolute_paths
 from dfwb.core.records.io import (
+    iter_jsonl_dicts,
     read_jsonl,
     read_split_tsv,
     split_sha256,
@@ -15,11 +16,14 @@ from dfwb.core.records.local import (
     ProcessedRecord,
     ProcessingProfile,
     TrackStats,
+    to_video_record,
 )
 from dfwb.core.records.protocol import (
     DatasetCard,
     LabelVocab,
     PackCard,
+    PackProvenance,
+    PairRecord,
     SchemeCard,
     SplitRow,
     VideoRecord,
@@ -32,6 +36,8 @@ __all__ = [
     "InventoryRecord",
     "LabelVocab",
     "PackCard",
+    "PackProvenance",
+    "PairRecord",
     "Probe",
     "ProcessedRecord",
     "ProcessingProfile",
@@ -43,10 +49,12 @@ __all__ = [
     "TrackStats",
     "VideoRecord",
     "assert_no_absolute_paths",
+    "iter_jsonl_dicts",
     "read_jsonl",
     "read_scores",
     "read_split_tsv",
     "split_sha256",
+    "to_video_record",
     "write_jsonl",
     "write_scores",
     "write_split_tsv",

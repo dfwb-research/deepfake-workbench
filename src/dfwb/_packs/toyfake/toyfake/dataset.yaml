@@ -1,0 +1,91 @@
+access: generated locally with `dfwb datasets synth toyfake`; there is nothing to
+  download
+aliases: []
+compressions: null
+default_scheme: official
+distribution: list
+homepage: https://github.com/dfwb-research/deepfake-workbench
+id: toyfake
+key_rule: 'real: REAL/<id>; fake: BLEND_A/<target>_<source> or BLEND_B/<target>_<source>
+  (the file stem)'
+license:
+  spdx: MIT
+  summary: 'MIT, with dfwb: synthetic videos generated from a seed, with no real person
+    in them'
+  url: null
+modalities:
+- video
+name: toyfake
+paper: null
+release: 'synthetic: generated locally by dfwb from a seed; this pack lists the tree
+  made with --videos 200 --seed 0 (80 reals, 60 fakes of each method)'
+schemes:
+  all-test:
+    counts:
+      test: 200
+    kind: subset
+    params: {}
+    rationale: every video is test, for evaluating a model trained on another dataset
+    ratios: null
+    rule: all-test
+    sha256: 826139690ef98e5d28c8e0bee0950f68e71c5768f6e8cca9a32edca8b21598a2
+    source: null
+    splits: null
+  benchmark:
+    counts:
+      test: 36
+    kind: subset
+    params:
+      compressions: null
+      exclude_tasks: []
+      k_fake: 20
+      k_real_cap: null
+      pool: official-test
+      seed: 0
+      strata: []
+      task_order:
+      - REAL
+      - BLEND_A
+      - BLEND_B
+    rationale: 'a small, seeded evaluation set: 20 fakes drawn at random from the
+      official test split, with as many reals as fakes, or every real when there are
+      fewer'
+    ratios: null
+    rule: benchmark
+    sha256: f12ee688a2eab239377ed747eee42f4e19f9d2a5703aa5b7e116edcbd3e03653
+    source: null
+    splits: null
+  ident-72-14-14:
+    counts:
+      test: 12
+      train: 146
+      val: 42
+    kind: derived
+    params: {}
+    rationale: an identity-disjoint md5 carve (72/14/14) on the target identity, to
+      exercise a split that does not come from the publisher
+    ratios: null
+    rule: ident-72-14-14
+    sha256: 5fb0a1a42bdd03d8cb468949a7e8cf15b1911d89bb01638c937f3282a827fe90
+    source: null
+    splits: null
+  official:
+    counts:
+      test: 41
+      train: 122
+      val: 37
+    kind: official
+    params: {}
+    rationale: the generator's identity-disjoint split (60/20/20 of the identities,
+      drawn from the seed); every fake follows its target identity
+    ratios: null
+    rule: official
+    sha256: 340a0e8650fe661bf9e318d3bbf9b88cb8564f0c74d3228f69d03342dffd110d
+    source: official_splits.json, written by dfwb datasets synth toyfake
+    splits: null
+terms:
+  notes: 'toyfake is synthetic: dfwb generates every video from a seed, and no real
+    person appears in any of them. These lists are released under the MIT licence
+    with dfwb and may be redistributed.'
+  reviewed: null
+  source: dfwb

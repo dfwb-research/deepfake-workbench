@@ -259,6 +259,18 @@
           ],
           "title": "Compression"
         },
+        "folder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Folder"
+        },
         "identity": {
           "anyOf": [
             {
@@ -500,6 +512,69 @@
         "datasets"
       ],
       "title": "PackCard",
+      "type": "object"
+    },
+    "PackProvenance": {
+      "additionalProperties": false,
+      "description": "``PROVENANCE.json``: how a pack was built, for byte-identical rebuilds.",
+      "properties": {
+        "builder": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Builder",
+          "type": "object"
+        },
+        "dfwb": {
+          "title": "Dfwb",
+          "type": "string"
+        },
+        "rules": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Rules",
+          "type": "object"
+        },
+        "source_listing_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Listing Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "builder",
+        "dfwb",
+        "source_listing_sha256",
+        "rules"
+      ],
+      "title": "PackProvenance",
+      "type": "object"
+    },
+    "PairRecord": {
+      "additionalProperties": false,
+      "description": "One line of ``pairs.jsonl.gz``: a fake/real pairing produced by a pairing rule.",
+      "properties": {
+        "fake_key": {
+          "title": "Fake Key",
+          "type": "string"
+        },
+        "real_key": {
+          "title": "Real Key",
+          "type": "string"
+        },
+        "rule": {
+          "title": "Rule",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fake_key",
+        "real_key",
+        "rule"
+      ],
+      "title": "PairRecord",
       "type": "object"
     },
     "PaperRef": {
@@ -801,6 +876,29 @@
       "additionalProperties": false,
       "description": "One split scheme of a dataset.",
       "properties": {
+        "counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "propertyNames": {
+                "enum": [
+                  "train",
+                  "val",
+                  "test",
+                  "exclude"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Counts"
+        },
         "kind": {
           "enum": [
             "official",
@@ -809,6 +907,11 @@
           ],
           "title": "Kind",
           "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
         },
         "rationale": {
           "anyOf": [

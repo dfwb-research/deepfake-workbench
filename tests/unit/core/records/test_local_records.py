@@ -66,10 +66,9 @@ def test_inventory_records_round_trip_with_nested_parts(tmp_path):
     assert read_jsonl(path, InventoryRecord, strict=True) == records
 
 
-def test_inventory_relpath_must_be_relative(tmp_path):
-    bad = InventoryRecord("k", None, "X", "m", "/abs/k.mp4", BuilderRef("b", "1"))
-    with pytest.raises(ContractError, match=r"inventory.jsonl\[0\].relpath"):
-        write_jsonl(tmp_path / "inventory.jsonl", [bad])
+def test_inventory_relpath_must_be_relative():
+    with pytest.raises(ContractError, match="relpath"):
+        InventoryRecord("k", None, "X", "m", "/abs/k.mp4", BuilderRef("b", "1"))
 
 
 def test_processed_records_round_trip(tmp_path):

@@ -25,7 +25,14 @@ from dfwb.core.records._base import assert_no_absolute_paths
 from dfwb.core.records.local import BuilderRef, InventoryRecord, Probe, ProcessedRecord, TrackStats
 from dfwb.core.records.protocol import SplitRow
 
-__all__ = ["read_jsonl", "read_split_tsv", "split_sha256", "write_jsonl", "write_split_tsv"]
+__all__ = [
+    "iter_jsonl_dicts",
+    "read_jsonl",
+    "read_split_tsv",
+    "split_sha256",
+    "write_jsonl",
+    "write_split_tsv",
+]
 
 # Nested dataclass fields that the fast path must build from dicts.
 _NESTED: dict[type[Any], dict[str, type[Any]]] = {
@@ -66,57 +73,74 @@ def _build[R](record_type: type[R], data: dict[str, Any]) -> R:
     return record_type(**data)
 
 
-def iter_jsonl[R](path: Path, record_type: type[R], *, strict: bool = False) -> Iterator[R]:
-    """Yield records from a ``.jsonl`` or ``.jsonl.gz`` file."""
+def iter_jsonl_dicts(path: str | os.PathLike[str]) -> Iterator[tuple[int, dict[str, Any]]]:
+    """Yield ``(lineno, dict)`` for each non-blank line of a ``.jsonl``/``.jsonl.gz`` file.
+
+    Owns the open/gzip/decode/JSON-error mapping that every JSONL reader needs, so a missing,
+    truncated, mis-encoded or corrupt-JSON file always raises the same :class:`ContractError`
+    (naming ``file:lineno`` for a bad line), no matter what record type is eventually built from
+    each dict. :func:`iter_jsonl` builds on this; callers that need a raw dict before -- or
+    instead of -- building a record (e.g. to filter cheaply, as ``Protocol.records`` does) use it
+    directly.
+    """
+    p = Path(path)
     try:
-        yield from _iter_jsonl(path, record_type, strict=strict)
+        yield from _iter_jsonl_dicts(p)
     except FileNotFoundError:
-        raise ContractError(f"file not found: {path}", hint="check the path") from None
+        raise ContractError(f"file not found: {p}", hint="check the path") from None
     except (OSError, EOFError, UnicodeDecodeError) as exc:
         raise ContractError(
-            f"{path.name}: cannot read ({type(exc).__name__}: {exc})",
+            f"{p.name}: cannot read ({type(exc).__name__}: {exc})",
             hint="the file is truncated, corrupt or misnamed (.gz means gzip); rebuild it",
         ) from None
 
 
-def _iter_jsonl[R](path: Path, record_type: type[R], *, strict: bool) -> Iterator[R]:
-    adapter = TypeAdapter(record_type) if strict else None
+def _iter_jsonl_dicts(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+    # ``f"{path.name}:{lineno}"`` is built only on the (rare) error paths below, not per line: it
+    # is pure string formatting on the hot path otherwise, and this loop must stay comfortably
+    # linear for 250k-row files (the read-performance budget).
     with _open_text(path, "r") as handle:
         for lineno, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
-            where = f"{path.name}:{lineno}"
             try:
                 data = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ContractError(
-                    f"{where}: invalid JSON ({exc.msg})", hint="the file is corrupt; rebuild it"
+                    f"{path.name}:{lineno}: invalid JSON ({exc.msg})",
+                    hint="the file is corrupt; rebuild it",
                 ) from None
             if not isinstance(data, dict):
                 raise ContractError(
-                    f"{where}: expected a JSON object", hint="the file is corrupt; rebuild it"
+                    f"{path.name}:{lineno}: expected a JSON object",
+                    hint="the file is corrupt; rebuild it",
                 )
-            if adapter is not None:
-                try:
-                    yield adapter.validate_python(data)
-                except ValidationError as exc:
-                    raise ContractError(
-                        f"{where}: " + "; ".join(validation_messages(exc)),
-                        hint=f"not a valid {record_type.__name__}",
-                    ) from None
-                continue
+            yield lineno, data
+
+
+def iter_jsonl[R](path: Path, record_type: type[R], *, strict: bool = False) -> Iterator[R]:
+    """Yield records from a ``.jsonl`` or ``.jsonl.gz`` file."""
+    adapter = TypeAdapter(record_type) if strict else None
+    for lineno, data in iter_jsonl_dicts(path):
+        if adapter is not None:
             try:
-                yield _build(record_type, data)
-            except TypeError as exc:
-                known = {f.name for f in dataclasses.fields(record_type)}  # type: ignore[arg-type]
-                unknown = sorted(set(data) - known)
-                detail = (
-                    f"unexpected field(s) {unknown}" if unknown else str(exc).split(") ", 1)[-1]
-                )
+                yield adapter.validate_python(data)
+            except ValidationError as exc:
                 raise ContractError(
-                    f"{where}: not a valid {record_type.__name__}: {detail}",
-                    hint="a file written by a newer dfwb needs a newer dfwb; otherwise rebuild it",
+                    f"{path.name}:{lineno}: " + "; ".join(validation_messages(exc)),
+                    hint=f"not a valid {record_type.__name__}",
                 ) from None
+            continue
+        try:
+            yield _build(record_type, data)
+        except TypeError as exc:
+            known = {f.name for f in dataclasses.fields(record_type)}  # type: ignore[arg-type]
+            unknown = sorted(set(data) - known)
+            detail = f"unexpected field(s) {unknown}" if unknown else str(exc).split(") ", 1)[-1]
+            raise ContractError(
+                f"{path.name}:{lineno}: not a valid {record_type.__name__}: {detail}",
+                hint="a file written by a newer dfwb needs a newer dfwb; otherwise rebuild it",
+            ) from None
 
 
 def read_jsonl[R](

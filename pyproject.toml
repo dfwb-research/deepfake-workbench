@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rich = ["rich>=13"]
+preprocess = ["av>=12"]
 
 [project.scripts]
 dfwb = "dfwb.cli.main:main"
@@ -62,6 +63,7 @@ dev = [
   "scikit-learn",
   "pre-commit",
   "types-PyYAML",
+  "av>=12",
 ]
 
 [tool.ruff]
@@ -78,7 +80,10 @@ ignore = ["ANN401"]
 ban-relative-imports = "parents"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN"]
+# Builder tables (labels, schemes, card_info) are declared ClassVar once, on BaseBuilder; the
+# subclasses that fill them in inherit that declaration, which RUF012 cannot see.
+"src/dfwb/preprocess/inventory/builders/**" = ["RUF012"]
+"tests/**" = ["ANN", "RUF012"]
 
 [tool.mypy]
 python_version = "3.12"

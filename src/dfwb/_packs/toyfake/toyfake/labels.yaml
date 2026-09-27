@@ -1,0 +1,35 @@
+mappings:
+  audiovisual-binary:
+    from: binary_av
+    override: {}
+  binary:
+    from: binary
+    override: {}
+  family:
+    from: family
+    override: {}
+  multiclass:
+    from: multiclass
+    override: {}
+vocab:
+  TOY-BLEND_A:
+    binary: 1
+    binary_av: 1
+    family: blend
+    method: blend-a
+    multiclass: 1
+    task: BLEND_A
+  TOY-BLEND_B:
+    binary: 1
+    binary_av: 1
+    family: blend
+    method: blend-b
+    multiclass: 2
+    task: BLEND_B
+  TOY-REAL:
+    binary: 0
+    binary_av: 0
+    family: real
+    method: original
+    multiclass: 0
+    task: REAL

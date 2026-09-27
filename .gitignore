@@ -15,3 +15,4 @@ htmlcov/
 .import_linter_cache/
 .hypothesis/
 runs/
+.env
