@@ -1,0 +1,22 @@
+# ViT-B/16 on FaceForensics++ c23. Needs the FaceForensics++ raw dataset under a datasets root,
+# obtained from its owners under their own terms (dfwb never distributes media), and the
+# dfwb-protocols pack installed for the ffpp/official split scheme. Build and process the data
+# first, then train:
+#   dfwb inventory build ffpp
+#   dfwb protocols verify ffpp
+#   dfwb preprocess run ffpp --profile face-256-1.3x-64f
+#   dfwb train -c configs/ffpp-c23-vit-b16.yaml
+# See docs/guides/reproduce-a-benchmark.md for the full walkthrough.
+schema: dfwb.train/1
+extends: [dfwb://templates/binary-frame.yaml]
+
+run:
+  name: ffpp-c23-vit-b16
+
+data:
+  processing: face-256-1.3x-64f
+  train: [{protocol: ffpp/official, split: train, where: {compression: c23}}]
+  val:   [{protocol: ffpp/official, split: val,   where: {compression: c23}}]
+
+model:
+  backbone: {name: timm, model: vit_base_patch16_224.augreg_in21k, pretrained: true}

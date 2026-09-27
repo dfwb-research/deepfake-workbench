@@ -1,0 +1,10 @@
+# The toy CPU benchmark: a tiny CNN trained on dfwb's synthetic toyfake dataset, end to end, on
+# CPU, with nothing to download. Build the data first, then train:
+#   dfwb datasets synth toyfake --out "$DFWB_DATASETS_ROOT"
+#   dfwb inventory build toyfake
+#   dfwb protocols verify toyfake
+#   dfwb preprocess run toyfake --profile toy-64-center-8f
+#   dfwb train -c configs/toyfake-cpu.yaml --device cpu
+# See docs/guides/reproduce-a-benchmark.md for the full walkthrough.
+schema: dfwb.train/1
+extends: [dfwb://templates/toy-cpu.yaml]

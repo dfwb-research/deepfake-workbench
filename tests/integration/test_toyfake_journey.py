@@ -1,8 +1,9 @@
 """The full toyfake journey end to end, through the real ``dfwb`` command, on CPU.
 
 Synthesise (200 videos, the built-in toyfake pack's own reference tree) -> ``inventory build`` ->
-``protocols verify`` (full coverage) -> ``preprocess run`` -> ``train`` (the shipped ``toy-cpu``
-template, 2 epochs) -> ``score`` the trained run against ``toyfake/official``'s test split ->
+``protocols verify`` (full coverage) -> ``preprocess run`` -> ``train`` (the repo's own
+``configs/toyfake-cpu.yaml``, which extends the shipped ``toy-cpu`` template, 2 epochs) ->
+``score`` the trained run against ``toyfake/official``'s test split ->
 ``eval`` it (metrics with confidence intervals) -> ``score`` the ``zoo:random`` dummy detector,
 both against the same official test split (to pair with the run's file) and against
 ``toyfake/all-test`` (200 videos: a lower-variance split for the sanity check that a detector with
@@ -36,17 +37,14 @@ pytest.importorskip("scipy")
 from dfwb.core.hashing import sha256_file
 from dfwb.core.records import read_scores
 
+REPO = Path(__file__).resolve().parents[2]
 DFWB = Path(sys.executable).parent / "dfwb"
 
 VIDEOS = 200  # the built-in toyfake pack's official scheme lists exactly this tree
 OFFICIAL_TEST = 41  # toyfake/official's test split
 SEED = 0
 PROFILE = "toy-64-center-8f"
-
-_CONFIG = """\
-schema: dfwb.train/1
-extends: ["dfwb://templates/toy-cpu.yaml"]
-"""
+CONFIG = REPO / "configs" / "toyfake-cpu.yaml"
 
 
 def _installed(name: str) -> bool:
@@ -150,10 +148,7 @@ def test_the_full_toyfake_journey(tmp_path):
 
     # ----------------------------------------------------------------------------------- train
 
-    config = tmp_path / "train.yaml"
-    config.write_text(_CONFIG, "utf-8")
-
-    trained = _run(tmp_path, env, "train", "-c", str(config), "--device", "cpu", "--json")
+    trained = _run(tmp_path, env, "train", "-c", str(CONFIG), "--device", "cpu", "--json")
     assert trained.returncode == 0, trained.stderr
     (train_result,) = json.loads(trained.stdout)
     run_dir = Path(train_result["run_dir"])

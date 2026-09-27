@@ -3,7 +3,9 @@
 A run directory is self-describing (`docs/concepts/detectors.md#what-a-run-directory-holds`):
 everything needed to load its detector back and score it again lives inside it. This guide walks
 from a run directory someone hands you — or one you trained yourself — to a score file, and says
-what makes two score files from two different runs actually comparable.
+what makes two score files from two different runs actually comparable. To go the other way —
+from a fresh clone all the way to a trained, scored, evaluated run — see
+[Reproduce a benchmark](reproduce-a-benchmark.md) instead.
 
 ## What a run directory holds, and why it is enough
 

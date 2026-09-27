@@ -18,6 +18,19 @@ All notable changes to this project are documented here. The format follows
   inventory builder for.
 - `examples/`: runnable scripts mirroring the toyfake quickstart, importing foreign score files,
   and scoring a detector of your own -- each exercised by its own test, in a temporary directory.
+- `configs/`: runnable experiment configs at the repository root, each extending a shipped
+  template and passing `dfwb config validate` -- `toyfake-cpu.yaml` (end to end on CPU, tested),
+  a ViT-B/16 run on FaceForensics++ c23, one on Celeb-DF v2, and a cross-dataset evaluation
+  example; the last three need real, licensed data and say so in their header.
+- `scripts/setup.sh`: one command for a fresh clone -- installs the extras you need with
+  `uv sync --locked`, copies `.env.example` to `.env` (never overwriting one that already exists)
+  so every root defaults inside the clone under `./data/`, creates those directories, and runs
+  `dfwb doctor`. `--gpu` prints the CUDA build steps instead of guessing your driver; `--dry-run`
+  prints the rest.
+- The README's "Run it from a clone" section and a new "Reproduce a benchmark" guide
+  (`docs/guides/reproduce-a-benchmark.md`), covering the whole path from a fresh clone -- getting
+  the data under the owner's own terms, inventory, verification, preprocessing, training with
+  `configs/…`, scoring a suite, and evaluation.
 
 ### Changed
 
@@ -29,6 +42,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A relative root (`DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT`, `DFWB_CACHE_ROOT`)
+  set by a `.env` file now resolves against that file's own directory, not against the current
+  directory -- so a `.env` loaded from elsewhere (`--env-file`/`DFWB_ENV_FILE`) with a value such
+  as `./data/datasets` behaves the same wherever `dfwb` is run from. A root already set in the
+  real environment (not by `.env`) still resolves against the current directory, as before.
 - A directory named in `extends`, and a config file that is not valid UTF-8 (an experiment config
   or an `extends` parent), are now a `ConfigError` (exit 2) naming the file, instead of an
   unhandled exception (exit 1). An error while reading an `extends` parent now also names the file

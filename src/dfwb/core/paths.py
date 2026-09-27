@@ -14,11 +14,14 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Final, Literal, get_args
+from typing import TYPE_CHECKING, Final, Literal, get_args
 
 import platformdirs
 
 from dfwb.core.errors import ConfigError, ContractError, did_you_mean
+
+if TYPE_CHECKING:
+    from dfwb.core.envfile import AppliedEnv
 
 __all__ = [
     "PROJECT_CONFIG",
@@ -223,6 +226,7 @@ def resolve_roots(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     user_config: Path | None = None,
+    env_file: AppliedEnv | None = None,
 ) -> dict[RootName, ResolvedRoot]:
     """Resolve all four roots. Nothing is created on disk.
 
@@ -234,9 +238,19 @@ def resolve_roots(
         env: Environment to read (defaults to ``os.environ``).
         cwd: Directory holding the project ``dfwb.toml`` (defaults to the current directory).
         user_config: User config file (defaults to :func:`user_config_path`).
+        env_file: The ``.env`` file the CLI applied before this call, if any (defaults to
+            :func:`dfwb.core.envfile.last_applied` when ``env`` is not given). A relative root
+            value that came from this file resolves against the file's own directory; a root
+            value already present in the real environment (not set by ``.env``) still resolves
+            against ``cwd``, as it always has.
     """
     flags = flags or {}
-    env = os.environ if env is None else env
+    if env is None:
+        env = os.environ
+        if env_file is None:
+            from dfwb.core.envfile import last_applied
+
+            env_file = last_applied()
     cwd = Path.cwd() if cwd is None else cwd
     host = current_host(env)
     project_file = cwd / PROJECT_CONFIG
@@ -246,7 +260,9 @@ def resolve_roots(
 
     resolved: dict[RootName, ResolvedRoot] = {}
     for name in ROOT_NAMES:
-        resolved[name] = _resolve_one(name, flags, env, cwd, host, project, user, resolved)
+        resolved[name] = _resolve_one(
+            name, flags, env, cwd, host, project, user, resolved, env_file
+        )
     return resolved
 
 
@@ -270,6 +286,7 @@ def _resolve_one(
     project: _FileSettings,
     user: _FileSettings,
     resolved: Mapping[RootName, ResolvedRoot],
+    env_file: AppliedEnv | None,
 ) -> ResolvedRoot:
     variable = ROOT_ENV[name]
     # A value of only empty or blank entries (``":"``) is no value: the next source decides.
@@ -281,7 +298,12 @@ def _resolve_one(
     env_value = env.get(variable)
     values = _given(name, env_value) if env_value else []
     if values:
-        paths = tuple(absolute(v, cwd) for v in values)
+        # A value the .env file itself set is relative to that file, not to cwd; a value already
+        # present in the real environment (env_file did not set it) keeps resolving against cwd.
+        base = cwd
+        if env_file is not None and variable in env_file.applied:
+            base = env_file.file.parent
+        paths = tuple(absolute(v, base) for v in values)
         return ResolvedRoot(name, paths[0], "env", variable, paths=paths)
     if name in project.host_roots:
         values = _values_of(name, project.host_roots[name])

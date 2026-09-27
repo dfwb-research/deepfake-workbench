@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from dfwb.core.envfile import AppliedEnv
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.paths import RelPath, relativize, require_root, resolve_roots
 
@@ -57,6 +58,31 @@ def test_relative_values_resolve_against_cwd_or_file(places):
     roots = resolve_roots(env={"DFWB_DATASETS_ROOT": "data"}, cwd=cwd, user_config=user)
     assert roots["datasets"].path == cwd / "data"
     assert roots["work"].path == cwd / "work"
+
+
+def test_a_relative_env_value_set_by_dotenv_resolves_against_the_dotenv_directory(places):
+    # DFWB_DATASETS_ROOT came from a .env file that lives outside cwd, with a relative value
+    # (e.g. ./data/datasets): it must resolve against that file's own directory, not cwd.
+    cwd, user = places
+    env_dir = cwd.parent / "elsewhere"
+    env_dir.mkdir()
+    env_file = AppliedEnv(env_dir / ".env", ("DFWB_DATASETS_ROOT",), ())
+    env = {"DFWB_DATASETS_ROOT": "./data/datasets", "DFWB_WORK_ROOT": "./data/work"}
+    roots = resolve_roots(env=env, cwd=cwd, user_config=user, env_file=env_file)
+    assert roots["datasets"].path == env_dir / "data" / "datasets"
+    # DFWB_WORK_ROOT is a real environment variable here (not one the .env file set): it keeps
+    # resolving against cwd, exactly as before.
+    assert roots["work"].path == cwd / "data" / "work"
+
+
+def test_a_relative_datasets_list_from_dotenv_resolves_every_entry_against_it(places):
+    cwd, user = places
+    env_dir = cwd.parent / "elsewhere"
+    env_dir.mkdir()
+    env_file = AppliedEnv(env_dir / ".env", ("DFWB_DATASETS_ROOT",), ())
+    env = {"DFWB_DATASETS_ROOT": "./a:./b"}
+    roots = resolve_roots(env=env, cwd=cwd, user_config=user, env_file=env_file)
+    assert roots["datasets"].paths == (env_dir / "a", env_dir / "b")
 
 
 def test_bad_config_files(places):

@@ -13,13 +13,31 @@ One command, `dfwb`, covers every stage.
 > **Status:** pre-release (`0.1.0b2`). Nothing is released on PyPI yet; install from a clone.
 > Linux is the only supported and tested OS. Python ≥ 3.12.
 
-## Run from a clone
+## Run it from a clone
 
 ```bash
 git clone https://github.com/dfwb-research/deepfake-workbench && cd deepfake-workbench
-uv sync
-uv run dfwb doctor
+./scripts/setup.sh
+uv run dfwb config validate -c configs/toyfake-cpu.yaml
 ```
+
+`scripts/setup.sh` is one command: it installs the `train` and `preprocess` extras with
+`uv sync --locked`, copies `.env.example` to `.env` (never overwriting one that is already there)
+so `DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT` and `DFWB_CACHE_ROOT` all default to
+`./data/{datasets,work,runs,cache}` inside the clone, creates those directories, and runs `dfwb
+doctor` to confirm it all worked. Run `./scripts/setup.sh --gpu` instead on a CUDA machine,
+`--help` for every flag.
+
+[`configs/`](https://github.com/dfwb-research/deepfake-workbench/tree/main/configs) holds
+runnable experiment configs, each extending a shipped template: `toyfake-cpu.yaml` (end to end on
+CPU with nothing to download -- the same synthetic dataset the [quickstart](#quickstart) below
+builds by hand), a ViT-B/16 run on FaceForensics++ c23, one on Celeb-DF v2, and a cross-dataset
+evaluation example -- the last three need real, licensed data of your own. `dfwb config validate`
+needs no data at all: it checks a config's shape and every component against the installed
+plugins, so it is worth running on any of them right after a clone, well before pointing it at
+real data. See
+[Reproduce a benchmark](https://github.com/dfwb-research/deepfake-workbench/blob/main/docs/guides/reproduce-a-benchmark.md)
+for the full walkthrough, real data included.
 
 ## Where to start
 
