@@ -5,6 +5,7 @@ import time
 import pytest
 import yaml
 from pydantic import TypeAdapter, ValidationError
+from tests._cpu_budget import assert_cpu_budget
 
 from dfwb.core.errors import ContractError
 from dfwb.core.records import (
@@ -153,22 +154,24 @@ def _video_record_line() -> str:
 @pytest.mark.slow
 def test_reading_250k_video_records_takes_under_a_second(tmp_path):
     # Process CPU time (time.process_time()), not wall-clock: the budget is the code's own cost,
-    # not how much of another process's work this machine interleaves with it while it runs.
+    # not how much of another process's work this machine interleaves with it while it runs. It
+    # is asserted only when the load average is below the CPU count (see tests._cpu_budget).
     path = tmp_path / "videos.jsonl"
     path.write_text((_video_record_line() + "\n") * 250_000)
     start = time.process_time()
     rows = read_jsonl(path, VideoRecord)
     elapsed = time.process_time() - start
     assert len(rows) == 250_000
-    assert elapsed < 1.0, f"read took {elapsed:.2f}s of CPU time"
+    assert_cpu_budget(elapsed, 1.0, "reading 250k video records")
 
 
 @pytest.mark.slow
 def test_reading_250k_video_records_from_gz_takes_under_a_second(tmp_path):
     """The ``.gz`` form of the same 250k-row budget: decompression is extra work on top of the
     plain form's JSON parsing and object construction, so it is benchmarked (and gated) on its
-    own rather than assumed to inherit the plain form's headroom. CPU time, not wall-clock -- see
-    the comment on the plain-form test above."""
+    own rather than assumed to inherit the plain form's headroom. CPU time, not wall-clock, and
+    asserted only on a machine that is not oversubscribed -- see the comment on the plain-form
+    test above."""
     path = tmp_path / "videos.jsonl.gz"
     text = (_video_record_line() + "\n") * 250_000
     with gzip.open(path, "wt", encoding="utf-8") as handle:
@@ -177,7 +180,7 @@ def test_reading_250k_video_records_from_gz_takes_under_a_second(tmp_path):
     rows = read_jsonl(path, VideoRecord)
     elapsed = time.process_time() - start
     assert len(rows) == 250_000
-    assert elapsed < 1.0, f"gz read took {elapsed:.2f}s of CPU time"
+    assert_cpu_budget(elapsed, 1.0, "reading 250k video records from .gz")
 
 
 def test_processing_profile_round_trips_through_yaml():
