@@ -10,9 +10,11 @@ inventory → face clips → trained detector → score file → evaluation repo
 pluggable and every result traceable to the protocol version it used and to how it was produced.
 One command, `dfwb`, covers every stage.
 
+<!-- release-status:start -->
 > **Status:** pre-release (`0.1.0b3.dev0`, in development after `0.1.0b2`). Nothing is
 > released on PyPI yet; install from a clone.
 > Linux is the only supported and tested OS. Python ≥ 3.12.
+<!-- release-status:end -->
 
 ## Run it from a clone
 
@@ -405,11 +407,23 @@ Contributions are welcome; see the organisation's
 [contributing guidelines](https://github.com/dfwb-research/.github/blob/main/CONTRIBUTING.md).
 
 **Releasing.** A release is the tag `v<version>` of the commit whose `src/dfwb/_version.py` holds
-that version; the release workflow checks the two agree before it builds anything. The commit
-that bumps the version to a final release (no `a`, `b`, `rc` or `dev` segment) also rewrites the
-status lines that describe a pre-release: the one at the top of this README, the note at the top
-of `docs/index.md` and the "Not on PyPI yet" note in `docs/install.md`.
-`tests/unit/docs/test_release_status.py` fails on that commit's pull request until it has.
+that version; the release workflow checks the two agree before it builds anything, and refuses the
+tag otherwise. The commit that bumps the version does all of the following, in one pull request:
+
+- `src/dfwb/_version.py`: set `__version__` to the new version.
+- `CITATION.cff`: set `version` and `date-released` (this repository's `CITATION.cff` does not
+  carry either field yet, so the first release adds both).
+- `CHANGELOG.md`: turn `## [Unreleased]` into `## [<version>] - <date>`.
+- `uv lock --check`; if the bump leaves `uv.lock` stale, run plain `uv lock` and commit the
+  refreshed lock alongside everything else.
+- Only once every file above matches the new version, tag the merged commit `v<version>`.
+
+A commit that bumps the version to a final release (no `a`, `b`, `rc` or `dev` segment) also
+rewrites the three marked status blocks that say the package is unreleased: the one at the top of
+this README, the note at the top of `docs/index.md`, and the "Not on PyPI yet" note in
+`docs/install.md`. `tests/unit/docs/test_release_status.py` reads only those marked blocks and
+fails on that commit's pull request until every one of them has been rewritten -- whatever this
+paragraph itself goes on to say about a pre-release or PyPI plays no part in the check.
 
 ## Acknowledgments
 

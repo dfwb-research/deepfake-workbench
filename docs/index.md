@@ -8,9 +8,11 @@ verified inventory → face clips → trained detector → score file → evalua
 stage pluggable and every score file recording the protocol version it covers and how it was
 produced -- for a trained run, the processing profile and the config fingerprint too.
 
+<!-- release-status:start -->
 !!! note "Pre-release"
     `dfwb` is at `0.1.0b3.dev0`. Nothing is published on PyPI yet -- install from a clone (see
     [Install](install.md)). Linux is the only supported and tested OS, on Python 3.12 or newer.
+<!-- release-status:end -->
 
 ## Principles
 
