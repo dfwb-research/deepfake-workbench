@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from dfwb.cli._output import emit_json, json_option, table
+from dfwb.cli._output import emit_json, hint_line, json_option, table
 from dfwb.core.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -229,6 +229,27 @@ def fetch(name: str, weights_id: str | None, accept_license: bool, as_json: bool
 # ============================================================================================
 
 
+def _verify_hints(
+    card_name: str, weight_rows: list[dict[str, Any]], code_row: dict[str, Any] | None
+) -> list[str]:
+    """One hint per failing category ``verify`` found, each naming what actually resolves it.
+
+    A weight mismatch really is fixed by ``dfwb zoo fetch``: :func:`dfwb.zoo.weights.ensure_weights`
+    re-verifies a cached file every time and deletes-and-redownloads it on a mismatch. A pinned
+    clone that is dirty or at the wrong commit is not: :func:`dfwb.zoo.strategies.ensure_clone`
+    reuses an existing clone as-is when its cache path already exists, and refuses (naming the
+    same remedy) rather than overwrite or reset it -- so the path has to be removed by hand first.
+    """
+    hints: list[str] = []
+    if any(row["status"] == "mismatch" for row in weight_rows):
+        hints.append(f"re-run `dfwb zoo fetch {card_name}` to re-download the mismatched weights")
+    if code_row is not None and code_row["status"] in ("wrong-commit", "dirty"):
+        hints.append(
+            f"remove {code_row['path']}, then re-run `dfwb zoo fetch {card_name}` to re-clone it"
+        )
+    return hints
+
+
 @zoo.command("verify")
 @click.argument("name")
 @json_option
@@ -276,6 +297,8 @@ def verify(name: str, as_json: bool) -> int:
 
     if as_json:
         emit_json({"name": card.name, "ok": ok, "weights": weight_rows, "code": code_row})
+        for hint in _verify_hints(card.name, weight_rows, code_row):
+            hint_line(hint)
         return 0 if ok else 4
 
     click.echo(f"{card.name}: {'ok' if ok else 'problems found'}")
@@ -286,6 +309,8 @@ def verify(name: str, as_json: bool) -> int:
         click.echo(f"  code: {code_row['status']} ({code_row['path']})")
     if not weight_rows and code_row is None:
         click.echo("  nothing to verify (no weights, no pinned-clone code)")
+    for hint in _verify_hints(card.name, weight_rows, code_row):
+        hint_line(hint)
     return 0 if ok else 4
 
 
@@ -413,6 +438,11 @@ def parity(
             "the overlay was not written",
             hint="process the missing videos (`dfwb preprocess`) so the parity set is scored "
             "whole, or pass a lower --min-coverage",
+        )
+    if not ok:
+        hint_line(
+            "check --tolerance and --weights, and whether the adapter card's reported numbers "
+            "are still accurate"
         )
     return 0 if ok else 4
 

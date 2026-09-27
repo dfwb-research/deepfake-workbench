@@ -78,6 +78,7 @@ def _check(exe: Path, **env: str) -> None:
     assert (
         "which failed to load (RuntimeError: simulated failure inside register())" in lookup.stderr
     )
+    assert "hint: " in lookup.stderr
 
 
 def test_fake_distributions_on_the_path(tmp_path):

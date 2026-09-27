@@ -1,7 +1,7 @@
 # Installing extras
 
-`dfwb` itself needs only the dependencies in `uv sync` / `pip install deepfake-workbench`, and
-never pulls in PyTorch on its own. Media probing, the face pipeline and its detection backends,
+`dfwb` itself needs only the dependencies `uv sync` installs from a clone, and never pulls in
+PyTorch on its own. Media probing, the face pipeline and its detection backends,
 evaluation plots, training, the model zoo, Hugging Face backbones, PEFT adapters and Weights &
 Biases logging are all optional extras, installed only when you need them.
 
@@ -24,37 +24,64 @@ non-commercial research use only, and `wandb` needs a Weights & Biases account. 
 explicitly if you use it. Extras compose, so install only what you need, for example:
 
 ```bash
-pip install "deepfake-workbench[train,hf,peft]"
+uv sync --extra train --extra hf --extra peft
+# or, into an editable install from a clone:
+pip install -e ".[train,hf,peft]"
 ```
 
-## Training: install a PyTorch build first
+!!! note "Not on PyPI yet"
+    dfwb is not published on PyPI: install from a clone, as above
+    (`git clone https://github.com/dfwb-research/deepfake-workbench && cd deepfake-workbench`
+    first). Once a release is published, `pip install "deepfake-workbench[train,hf,peft]"` will
+    install the same combination directly, with no clone needed -- the same form the CLI's own
+    `InstallationError` hints already use.
 
-Install the PyTorch build that matches your hardware before the `train` (or `zoo`) extra, so the
-extra finds it already installed instead of pulling the default build from PyPI. Pick the command
-for your platform from the official selector at
-[pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/), which covers both CPU
-and the CUDA build matching your driver, for example:
+## Training: a CUDA build, with `uv`
+
+`uv.lock` pins `torch` and `torchvision` to the CPU build, from the CPU-only index
+`https://download.pytorch.org/whl/cpu` (see `[tool.uv.sources]` and `[[tool.uv.index]]` in
+`pyproject.toml`). `uv sync --extra train` always installs that pinned CPU build, even on a machine
+with a GPU and even if a CUDA build of `torch` is already installed: `uv sync` reconciles the
+environment to exactly what the lock says, so it replaces whatever `torch` was there before. There
+is no `uv sync` flag that changes what the lock itself pins.
+
+To train on a GPU with `uv`, install the CPU build the lock expects, then reinstall a matching CUDA
+build over it by hand, then run everything after that with `--no-sync` so `uv` never gets a chance
+to put the CPU build back:
 
 ```bash
-# CPU only
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+uv sync --extra train
 
-# CUDA 12.x (check pytorch.org for the current index for your driver)
+# Pick the index for your driver from the official selector at
+# https://pytorch.org/get-started/locally/ -- cu121 here is an example.
+uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+uv run --no-sync dfwb train -c your-config.yaml --device cuda:0
+```
+
+!!! warning "Every later command needs `--no-sync` too"
+    A later `uv sync` (for any reason, with any extras) or a plain `uv run ...` (without
+    `--no-sync`) reconciles the environment against the lock again and restores the CPU build.
+    Use `uv run --no-sync ...` for every command from here on, for as long as you want the CUDA
+    build in place.
+
+### Without `uv`: a plain venv
+
+`pip` does not reconcile an already-satisfied requirement the way `uv sync` does, so installing the
+CUDA build first, then the package, leaves it alone:
+
+```bash
+python -m venv .venv-train && source .venv-train/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-```
-
-then:
-
-```bash
-pip install "deepfake-workbench[train]"
+pip install -e ".[train]"
 ```
 
 ## `preprocess`: media probing and the face pipeline's own code
 
 ```bash
 uv sync --extra preprocess
-# or, into an existing install:
-pip install "deepfake-workbench[preprocess]"
+# or, into an editable install from a clone:
+pip install -e ".[preprocess]"
 ```
 
 Installs PyAV and `opencv-python-headless`. Needed for `dfwb inventory build --probe`, for
@@ -71,8 +98,9 @@ uv sync --extra face-insightface   # insightface's buffalo_l models, run with on
 uv sync --extra face-mediapipe     # Google MediaPipe's BlazeFace detector
 ```
 
-(or `pip install "deepfake-workbench[face-insightface]"` / `[face-mediapipe]`.) No extra is
-needed for the `center` backend (no detector, just a centred crop) beyond `preprocess` itself.
+(or, into an editable install from a clone, `pip install -e ".[face-insightface]"` /
+`".[face-mediapipe]"`.) No extra is needed for the `center` backend (no detector, just a centred
+crop) beyond `preprocess` itself.
 
 ### `face-insightface`: CPU by default, GPU by hand
 

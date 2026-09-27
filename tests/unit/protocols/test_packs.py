@@ -122,11 +122,10 @@ def test_read_model_errors(tmp_path):
     assert info.value.hint == "not a valid PackCard"
 
 
-# --- fix round 1 -------------------------------------------------------------------------------
-# Finding 1: read_model errors named only the bare filename, so a broken dataset.yaml could not be
-# told apart from any other pack's. Finding 2: two providers registering the same protocol_packs
-# key were resolved silently (first one found), instead of raising like every other registry
-# collision (C1).
+# --- error messages and provider collisions -------------------------------------------------------
+# A read_model error must name the full path, so a broken dataset.yaml can be told apart from any
+# other pack's; and two providers registering the same protocol_packs key must raise, like every
+# other registry collision (C1), rather than resolving silently to the first one found.
 
 
 def test_read_model_error_names_the_full_path_not_just_the_filename(fixture_packs):

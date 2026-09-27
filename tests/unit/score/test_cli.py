@@ -4,15 +4,14 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("torch")
 
+from tests._dfwb_cli import run_dfwb
 from tests.unit.score._toy import PROTOCOL, SUITE, SUITE_ANY_OF, toy_profile, write_toy_store
 
-from dfwb.cli.main import main
 from dfwb.core.records import read_scores
 
 # `score_roots` (which requires `scoretoy_pack`) comes from tests/unit/score/conftest.py.
@@ -23,10 +22,8 @@ def cli(capsys, monkeypatch, tmp_path, score_roots):
     """Run ``dfwb ARGS...`` in-process, with roots already pointed at the scoretoy fixtures."""
     monkeypatch.chdir(tmp_path)
 
-    def _run(*args: str) -> SimpleNamespace:
-        code = main(list(args))
-        captured = capsys.readouterr()
-        return SimpleNamespace(code=code, out=captured.out, err=captured.err)
+    def _run(*args: str):
+        return run_dfwb(capsys, *args)
 
     return _run
 

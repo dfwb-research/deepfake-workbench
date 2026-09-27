@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A documentation site (MkDocs Material): the six user journeys (a five-minute toyfake walkthrough,
+  the same shape with real datasets, evaluating score files from your own code with no `torch`
+  install, adding a dataset, adding a detector, and adding a plugin), plus concept pages for the
+  pipeline, protocols, processing profiles, detectors, score files, training and plugins.
+- A generated reference, rebuilt from the code at every docs build rather than hand-maintained: the
+  full `dfwb` CLI tree with its help and options, the experiment config schema, the C1-C5 contract
+  JSON Schemas, the public API of every layer, and one page per dataset dfwb has a built-in
+  inventory builder for.
+- `examples/`: runnable scripts mirroring the toyfake quickstart, importing foreign score files,
+  and scoring a detector of your own -- each exercised by its own test, in a temporary directory.
+
+### Changed
+
+- Every failing `dfwb` command now ends with a `hint: ` line explaining the remedy, including the
+  commands that report a non-zero exit themselves rather than raising: `dfwb eval` under
+  `--min-coverage`, `dfwb protocols verify`, `dfwb protocols lint`, `dfwb protocols diff
+  --expect-bump`, `dfwb zoo verify` and `dfwb zoo parity`. A command aborted mid-run (Ctrl+C, or
+  input hitting EOF) also prints a hint alongside `aborted`.
+
 ## [0.1.0b2] - 2026-09-26
 
 ### Added

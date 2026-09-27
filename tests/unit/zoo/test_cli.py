@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
+from tests._dfwb_cli import run_dfwb
 from tests.unit.zoo._fixtures import WeightedTestAdapter
 
-from dfwb.cli.main import main
 from dfwb.core import licenses
 from dfwb.core.plugins import get_registry
 from dfwb.zoo.card import AdapterCard, parse_card
@@ -28,10 +27,8 @@ def run(capsys, monkeypatch, tmp_path):
     fixture already redirected."""
     monkeypatch.chdir(tmp_path)
 
-    def _run(*args: str) -> SimpleNamespace:
-        code = main(list(args))
-        captured = capsys.readouterr()
-        return SimpleNamespace(code=code, out=captured.out, err=captured.err)
+    def _run(*args: str):
+        return run_dfwb(capsys, *args)
 
     return _run
 
@@ -495,6 +492,19 @@ def test_verify_detects_a_sha_mismatch_without_touching_the_network(run, server,
     assert data["ok"] is False
     assert data["weights"][0]["status"] == "mismatch"
     assert server.requests == []  # verify never touches the network
+    assert (
+        "hint: re-run `dfwb zoo fetch verify-mismatch` to re-download the mismatched weights"
+        in result.err
+    )
+
+    # Following the hint actually fixes it: fetch re-verifies the cached file, finds the same
+    # mismatch, deletes it and re-downloads -- and a second verify then passes.
+    server.routes["/w.safetensors"] = CONTENT
+    fetched = run("zoo", "fetch", "verify-mismatch")
+    assert fetched.code == 0
+    refreshed = run("zoo", "verify", "verify-mismatch", "--json")
+    assert refreshed.code == 0
+    assert json.loads(refreshed.out)["ok"] is True
 
 
 def test_verify_plain_text_output(run, server, monkeypatch):
@@ -572,7 +582,8 @@ def test_verify_reports_a_dirty_pinned_clone(run, tmp_path, monkeypatch):
     card = _pinned_card("verify-clone-dirty", repo, commit)
     monkeypatch.setattr(WeightedTestAdapter, "card", card, raising=False)
     run("zoo", "fetch", "verify-clone-dirty")
-    (clone_cache_dir("verify-clone-dirty", commit) / "entry.py").write_text("VALUE = 999\n")
+    clone_dir = clone_cache_dir("verify-clone-dirty", commit)
+    (clone_dir / "entry.py").write_text("VALUE = 999\n")
 
     result = run("zoo", "verify", "verify-clone-dirty", "--json")
 
@@ -580,6 +591,21 @@ def test_verify_reports_a_dirty_pinned_clone(run, tmp_path, monkeypatch):
     data = json.loads(result.out)
     assert data["ok"] is False
     assert data["code"]["status"] == "dirty"
+    assert (
+        f"hint: remove {clone_dir}, then re-run `dfwb zoo fetch verify-clone-dirty` to re-clone it"
+        in result.err
+    )
+
+    # Following the hint actually fixes it: removing the dirty clone and re-fetching leaves a
+    # clean one at the pin, and a second verify then passes.
+    import shutil
+
+    shutil.rmtree(clone_dir)
+    refetched = run("zoo", "fetch", "verify-clone-dirty")
+    assert refetched.code == 0
+    refreshed = run("zoo", "verify", "verify-clone-dirty", "--json")
+    assert refreshed.code == 0
+    assert json.loads(refreshed.out)["ok"] is True
 
 
 def test_verify_reports_a_pinned_clone_at_the_wrong_commit(run, tmp_path, monkeypatch):
@@ -611,6 +637,20 @@ def test_verify_reports_a_pinned_clone_at_the_wrong_commit(run, tmp_path, monkey
 
     assert result.code == 4
     assert "wrong-commit" in result.out
+    assert (
+        f"hint: remove {clone_dir}, then re-run `dfwb zoo fetch verify-clone-wrong` to re-clone it"
+        in result.err
+    )
+
+    # Following the hint actually fixes it: removing the mis-pinned clone and re-fetching leaves
+    # one at the right commit, and a second verify then passes.
+    import shutil
+
+    shutil.rmtree(clone_dir)
+    refetched = run("zoo", "fetch", "verify-clone-wrong")
+    assert refetched.code == 0
+    refreshed = run("zoo", "verify", "verify-clone-wrong")
+    assert refreshed.code == 0
 
 
 # =============================================================================================
@@ -728,6 +768,10 @@ def test_parity_reports_a_mismatch_but_still_writes_the_overlay(run, scoretoy, m
     data = json.loads(result.out)
     assert data["ok"] is False
     assert data["checks"][0]["passed"] is False
+    assert (
+        "hint: check --tolerance and --weights, and whether the adapter card's reported numbers "
+        "are still accurate" in result.err
+    )
 
     from dfwb.zoo.parity import read_parity_overlay
 
@@ -806,6 +850,10 @@ def test_parity_plain_text_failing(run, scoretoy, monkeypatch):
     assert result.code == 4
     assert "FAIL" in result.out
     assert "wrote " in result.out
+    assert (
+        "hint: check --tolerance and --weights, and whether the adapter card's reported numbers "
+        "are still accurate" in result.err
+    )
 
 
 # ---------------------------------------------------------- parity: coverage and weight variants

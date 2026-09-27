@@ -760,7 +760,10 @@ def run(
     of the dataset folder is recorded as ``decode_error`` with reason ``"source not found"``; one
     whose processing raises, with reason ``"error: <Type>: <message>"``; one that kills its
     worker process (after being re-run on its own to be sure), with ``"error: worker crashed"``.
-    Every row is appended as its video finishes, so rows written before an interrupt stay.
+    Every row is appended as its video finishes, so rows written before an interrupt stay. A
+    ``ConfigError``, ``ContractError`` or ``InstallationError`` raised while a video is being
+    processed stops the run too, rather than being recorded as that video's ``decode_error``;
+    every row recorded before it stays in the index.
 
     Args:
         dataset_id: The dataset, whose inventory must already be built.
@@ -796,10 +799,6 @@ def run(
             is not installed. Raised before any video is touched.
         UnknownKeyError: The profile or backend is unknown.
         ContractError: The profile, protocol or inventory is invalid.
-
-        A ``ConfigError``, ``ContractError`` or ``InstallationError`` raised while a video is
-        being processed stops the run too, rather than being recorded as that video's
-        ``decode_error``; every row recorded before it stays in the index.
     """
     redo_statuses = _check_redo(redo)
     shard = _check_shard(shard)

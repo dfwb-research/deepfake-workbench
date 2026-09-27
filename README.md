@@ -153,7 +153,9 @@ The six videos above are matched by key; the other 35 videos of the split's test
 `missing` rows, and the printed coverage (`{'expected': 41, 'ok': 6, 'missing': 35, 'error': 0}`)
 says so plainly rather than pretending the file covers more than it does. `dfwb eval` still
 prints its metrics, over the six scored videos, then exits with status 3, because the file's
-coverage (0.1463) is below `--min-coverage` (0.99 by default).
+coverage (0.1463) is below `--min-coverage` (0.99 by default); its last line, on stderr, is
+`hint: process the missing videos, or lower --min-coverage`. Every failing `dfwb` command ends
+with a `hint:` line like it.
 
 ### I want to add a detector
 
@@ -237,6 +239,8 @@ this release, no real third-party adapters.
 | Page | What it covers |
 |---|---|
 | [Installing extras](docs/install.md) | The optional extras, a PyTorch build (CPU or CUDA), and the face-detection backends |
+| [Quickstart](docs/quickstart.md) | The toyfake journey from synthetic videos to evaluated scores, on CPU |
+| [The pipeline](docs/concepts/pipeline.md) | The stages, from inventory to evaluation, and the five contracts between them |
 | [Protocols](docs/concepts/protocols.md) | Protocol references, split schemes, `verify` and its exit codes |
 | [Processing profiles](docs/concepts/processing-profiles.md) | The shipped face-processing profiles, the processed store, resuming and sharding |
 | [Training](docs/concepts/training.md) | What each training key does |
@@ -247,8 +251,25 @@ this release, no real third-party adapters.
 | [Cross-dataset evaluation](docs/guides/cross-dataset-eval.md) | Scoring and evaluating suites, the coverage policy, `compare` and DeLong |
 | [Reproducing a run](docs/guides/reproduce-a-run.md) | From a run directory to a score file comparable with others |
 | [Writing a plugin](docs/guides/write-a-plugin.md) | Layers, backbones, losses and other components, registered through `register(api)` |
+| [Plugins](docs/concepts/plugins.md) | Entry points, the registries, and `dfwb plugins list` |
+| [Ecosystem](docs/ecosystem.md) | The companion packages and protocol packs |
+| [Citing](docs/citing.md) | How to cite the software |
 
-[`CHANGELOG.md`](CHANGELOG.md) lists what each version added.
+[`examples/`](examples/) holds runnable scripts that mirror the quickstart, the score-files
+journey and a detector of your own, and [`CHANGELOG.md`](CHANGELOG.md) lists what each version
+added.
+
+The same pages build into a documentation site (MkDocs Material) that adds generated reference
+pages, made from the code at build time: every `dfwb` command and option, every configuration
+key, the JSON Schemas of the five contracts, the Python API, and one page per dataset from its
+dataset card. None of this needs any extra installed -- every subcommand module and every
+inventory builder imports its heavy dependencies only inside functions, so the `docs` group alone
+is enough. The site is not published yet; build and browse it locally:
+
+```bash
+uv run --group docs mkdocs serve          # http://127.0.0.1:8000, reloads as you edit
+uv run --group docs mkdocs build --strict # the check CI runs on every pull request
+```
 
 ## Data in several places, several machines
 

@@ -142,6 +142,7 @@ def test_runs_commands_read_runs_with_torch_blocked(blocked, tmp_path, monkeypat
     assert done.returncode == 5, done.stderr
     assert "blocked by dfwb tests" not in done.stderr
     assert "deepfake-workbench[train]" in done.stderr
+    assert "hint: " in done.stderr
 
 
 def test_protocols_verify_runs_with_torch_blocked(blocked, tmp_path):

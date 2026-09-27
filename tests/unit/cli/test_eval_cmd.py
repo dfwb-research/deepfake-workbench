@@ -76,6 +76,7 @@ def test_eval_bare_low_coverage_exits_3(run, tmp_path):
     assert result.code == 3
     data = json.loads(result.out)
     assert data["exit_code"] == 3
+    assert result.err.strip() == "hint: process the missing videos, or lower --min-coverage"
 
 
 def test_eval_bare_directory_expands_score_files(run, tmp_path):

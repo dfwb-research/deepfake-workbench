@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-
-from dfwb.cli.main import main
+from tests._dfwb_cli import run_dfwb
 
 
 @pytest.fixture
 def run(capsys, monkeypatch, tmp_path):
-    """Run `dfwb ARGS...` in-process through main() in an isolated directory and home."""
+    """Run `dfwb ARGS...` in-process through the shared helper, in an isolated directory and
+    home."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home" / ".config"))
@@ -23,9 +21,7 @@ def run(capsys, monkeypatch, tmp_path):
     ):
         monkeypatch.delenv(name, raising=False)
 
-    def _run(*args: str) -> SimpleNamespace:
-        code = main(list(args))
-        captured = capsys.readouterr()
-        return SimpleNamespace(code=code, out=captured.out, err=captured.err)
+    def _run(*args: str):
+        return run_dfwb(capsys, *args)
 
     return _run
