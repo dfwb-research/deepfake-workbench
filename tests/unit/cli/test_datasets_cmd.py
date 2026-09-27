@@ -96,7 +96,14 @@ def test_info_shows_the_card_layout_folder_and_schemes(run, monkeypatch, tmp_pat
         ],
     }
     assert data["schemes"] == [
-        {"pack": "demo-pack", "scheme": "official", "kind": "official", "default": True}
+        {
+            "pack": "demo-pack",
+            "scheme": "official",
+            "kind": "official",
+            "default": True,
+            "distribution": "undecided",
+            "materialized": None,
+        }
     ]
 
 

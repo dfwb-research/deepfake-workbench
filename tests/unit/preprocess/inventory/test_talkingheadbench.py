@@ -18,7 +18,7 @@ import pytest
 
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.paths import resolve_roots
-from dfwb.core.records import BuilderRef, PairRecord, SchemeCard
+from dfwb.core.records import BuilderRef, PairRecord, SchemeCard, to_video_record
 from dfwb.preprocess.inventory.builders.talkingheadbench import TalkingHeadBenchBuilder
 from dfwb.preprocess.inventory.runner import (
     build_inventory,
@@ -174,6 +174,16 @@ def test_a_name_without_the_expected_parts_has_no_driver(thb_root):
     records = _records(thb_root)
     assert records["TH_LP/00001--LivePortrait"].source_id is None
     assert records["TH_H3/00002"].source_id is None
+
+
+def test_the_audio_relpath_describes_the_local_copy_and_is_never_published(thb_root):
+    _touch(thb_root / "original_content" / "fake_celebvhq", "abcDEF_0.wav")
+    builder = TalkingHeadBenchBuilder()
+    real = _records(thb_root, builder)["REAL_FF/001"]
+
+    assert builder.local_attrs == frozenset({"audio_relpath"})
+    assert "audio_relpath" in real.attrs
+    assert "audio_relpath" not in to_video_record(real, local_attrs=builder.local_attrs).attrs
 
 
 def test_the_audio_relpath_is_set_only_when_the_wav_exists(thb_root):

@@ -2,14 +2,16 @@
 
 A :class:`Protocol` is one hash-checked ``dataset/scheme`` inside one installed pack. ``load``
 resolves the reference (defaulting the scheme, checking a pin, and hashing the split file to catch
-drift between an installed pack and its card), falling back to a materialized recipe scheme under
-the work root when the pack itself carries no split file. ``list_protocols`` enumerates every
-scheme of every dataset of every installed pack, without reading any split file.
+drift between an installed pack and its card), falling back to the lists materialised under the
+work root when the pack itself carries none: a recipe scheme's split file, or every list of a
+recipe dataset whose pack ships no key list at all. ``list_protocols`` enumerates every scheme of
+every dataset of every installed pack, without reading any split file.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections import Counter
 from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass, field
@@ -29,12 +31,20 @@ from dfwb.core.records import (
     read_split_tsv,
     split_sha256,
 )
+from dfwb.protocols._materialized import HASHES_FILE, materialize_command, materialized_dir
 from dfwb.protocols._versions import parse_version
 from dfwb.protocols._yaml import read_card, read_labels
 from dfwb.protocols.packs import Pack, find_dataset, installed_packs
 from dfwb.protocols.refs import ProtocolRef, parse_ref
 
-__all__ = ["LabelMapping", "Protocol", "ProtocolInfo", "list_protocols", "load"]
+__all__ = [
+    "LabelMapping",
+    "Protocol",
+    "ProtocolInfo",
+    "list_protocols",
+    "load",
+    "materialized_schemes",
+]
 
 # Plain VideoRecord fields the ``where`` filter may query, plus the derived "task" key (the key
 # prefix before the first "/"). ``attrs.<name>`` is handled separately (its vocabulary is per
@@ -92,7 +102,13 @@ class LabelMapping:
 
 @dataclass(frozen=True)
 class ProtocolInfo:
-    """One row of :func:`list_protocols`: a scheme of a dataset, or a broken pack."""
+    """One row of :func:`list_protocols`: a scheme of a dataset, or a broken pack.
+
+    ``distribution`` is the dataset card's (``list``, ``recipe`` or ``undecided``; empty for a
+    broken row). ``materialized`` is ``None`` when the pack ships the dataset's key lists, and
+    otherwise whether this scheme is materialised under the work root, against the card's
+    current hashes.
+    """
 
     dataset_id: str
     scheme: str
@@ -102,6 +118,8 @@ class ProtocolInfo:
     default: bool
     counts: dict[str, int] | None
     broken: str | None
+    distribution: str = ""
+    materialized: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -335,20 +353,79 @@ def _check_pin(ref: str, pin: str, pack_version: str, scheme_sha256: str) -> Non
         )
 
 
+def _read_hashes(path: Path) -> dict[str, Any] | None:
+    """The card hashes a materialised dataset recorded, or ``None`` when they cannot be read."""
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _key_free_lists(
+    parsed: ProtocolRef, card: DatasetCard, scheme: str, work_root: Path
+) -> tuple[Path, Path, Path | None]:
+    """The materialised split, videos and pairs of a dataset whose pack ships no key list.
+
+    Raises:
+        ContractError: the card is not a recipe's (a broken pack), nothing is materialised,
+            the copy was materialised against other video or pair hashes than the card's, or
+            before the scheme was added to the pack.
+    """
+    canonical_ref = f"{parsed.dataset}/{scheme}"
+    if card.distribution != "recipe":
+        raise ContractError(
+            f"{canonical_ref}: the installed pack ships no videos.jsonl.gz for {parsed.dataset}, "
+            f"and its card says distribution: {card.distribution}, not recipe",
+            hint="the pack is broken; reinstall or rebuild it",
+        )
+    command = materialize_command(parsed)
+    materialized = materialized_dir(work_root, parsed.dataset)
+    split = materialized / "splits" / f"{scheme}.tsv.gz"
+    videos = materialized / "videos.jsonl.gz"
+    recorded = _read_hashes(materialized / HASHES_FILE)
+    if recorded is None or not videos.is_file():
+        raise ContractError(
+            f"{canonical_ref}: {parsed.dataset} is a recipe dataset, whose pack ships no key "
+            f"list, and nothing is materialised for it under {materialized}",
+            hint=f"run: {command}",
+        )
+    for name in ("videos_sha256", "pairs_sha256"):
+        published = getattr(card, name)
+        if recorded.get(name) != published:
+            raise ContractError(
+                f"{canonical_ref}: the lists under {materialized} were materialised against "
+                f"{name} {recorded.get(name)}, and the installed card's is {published}",
+                hint=f"the pack changed since it was materialised; run: {command}",
+            )
+    if not split.is_file():
+        # The same lists, but the pack has gained a scheme since (an upgrade adding one).
+        raise ContractError(
+            f"{canonical_ref}: the lists under {materialized} were materialised before scheme "
+            f"{scheme!r} was added to the pack",
+            hint=f"run again: {command}",
+        )
+    pairs = materialized / "pairs.jsonl.gz"
+    return split, videos, pairs if pairs.is_file() else None
+
+
 def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
     """Load and hash-check one protocol.
 
-    The scheme defaults to the dataset card's ``default_scheme``. When the pack carries no split
-    file for the scheme (a recipe scheme), this reads
-    ``<work_root>/<dataset>/materialized/{splits/<scheme>.tsv.gz,videos.jsonl.gz}`` instead
-    (``work_root`` defaults to the resolved ``work`` root); if those are missing too, it raises
-    :class:`ContractError` with a ``materialize`` hint.
+    The scheme defaults to the dataset card's ``default_scheme``. When the pack ships no
+    ``videos.jsonl.gz`` for the dataset (a recipe dataset published without its key lists), every
+    list comes from ``<work_root>/<dataset>/materialized/`` (``work_root`` defaults to the
+    resolved ``work`` root), as ``dfwb protocols materialize`` wrote it: the scheme's split, the
+    videos, the pairs, and ``hashes.json``, which must record the card's own ``videos_sha256`` and
+    ``pairs_sha256``. When the pack ships its videos but no split file for the scheme (a recipe
+    scheme), only the split and the videos come from there. Either way, nothing materialised
+    raises :class:`ContractError` whose hint is the ``materialize`` command to run.
 
     Raises:
         UnknownKeyError: the dataset or pack is unknown, or the scheme is not one of the card's.
         ContractError: a pin does not match, the split file has drifted from the card, the pack
-            is broken, or a recipe scheme has nothing materialized yet or was materialized for
-            another version of the pack (the hint says to materialize it again).
+            is broken, or a recipe has nothing materialised yet or was materialised for another
+            version of the pack (the hint says to materialise it again).
     """
     parsed = parse_ref(ref) if isinstance(ref, str) else ref
     pack = find_dataset(parsed.dataset, pack=parsed.pack)
@@ -359,7 +436,7 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
         raise UnknownKeyError(
             f"unknown scheme {scheme!r} for dataset {parsed.dataset!r}"
             f"{did_you_mean(scheme, card.schemes)}",
-            hint=f"run `dfwb protocols info {parsed.dataset}` to see its schemes",
+            hint=f"run `dfwb protocols list` to see {parsed.dataset}'s schemes",
         )
     scheme_card = card.schemes[scheme]
     canonical_ref = f"{parsed.dataset}/{scheme}"
@@ -369,29 +446,38 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
 
     split_path = dataset_dir / "splits" / f"{scheme}.tsv.gz"
     videos_path = dataset_dir / "videos.jsonl.gz"
-    materialized_copy = not split_path.is_file()
-    if materialized_copy:
+    pairs_file = dataset_dir / "pairs.jsonl.gz"
+    pairs_path: Path | None = pairs_file if pairs_file.is_file() else None
+    # The command a stale materialised copy is fixed by, or None when the pack's own files serve.
+    rematerialize: str | None = None
+    if not (videos_path.is_file() and split_path.is_file()):
         resolved_work_root = (
             work_root if work_root is not None else require_root("work", resolve_roots())
         )
-        materialized = resolved_work_root / parsed.dataset / "materialized"
-        split_path = materialized / "splits" / f"{scheme}.tsv.gz"
-        videos_path = materialized / "videos.jsonl.gz"
-        if not split_path.is_file() or not videos_path.is_file():
-            raise ContractError(
-                f"{canonical_ref}: no materialized split for this recipe scheme",
-                hint=f"run: dfwb protocols materialize {canonical_ref}",
+        if not videos_path.is_file():
+            split_path, videos_path, pairs_path = _key_free_lists(
+                parsed, card, scheme, resolved_work_root
             )
+            rematerialize = materialize_command(parsed)
+        else:
+            materialized = materialized_dir(resolved_work_root, parsed.dataset)
+            split_path = materialized / "splits" / f"{scheme}.tsv.gz"
+            videos_path = materialized / "videos.jsonl.gz"
+            if not split_path.is_file() or not videos_path.is_file():
+                raise ContractError(
+                    f"{canonical_ref}: no materialized split for this recipe scheme",
+                    hint=f"run: dfwb protocols materialize {canonical_ref}",
+                )
+            rematerialize = f"dfwb protocols materialize {canonical_ref}"
 
     rows = read_split_tsv(split_path)
     sha256 = split_sha256(rows)
-    if sha256 != scheme_card.sha256 and materialized_copy:
-        # The pack's card moved on (an upgrade) since this recipe scheme was materialized.
+    if sha256 != scheme_card.sha256 and rematerialize is not None:
+        # The pack's card moved on (an upgrade) since this recipe was materialised.
         raise ContractError(
             f"{canonical_ref}: the materialized split {split_path} hashes to {sha256}, not the "
             f"card's {scheme_card.sha256}",
-            hint=f"the pack changed since it was materialized; run: dfwb protocols materialize "
-            f"{canonical_ref}",
+            hint=f"the pack changed since it was materialised; run: {rematerialize}",
         )
     if sha256 != scheme_card.sha256:
         raise ContractError(
@@ -399,9 +485,6 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
             f"{scheme_card.sha256}",
             hint="the installed pack drifted from its card; reinstall or rebuild the pack",
         )
-
-    pairs_file = dataset_dir / "pairs.jsonl.gz"
-    pairs_path: Path | None = pairs_file if pairs_file.is_file() else None
 
     return Protocol(
         pack=pack,
@@ -418,13 +501,51 @@ def load(ref: str | ProtocolRef, *, work_root: Path | None = None) -> Protocol:
     )
 
 
-def list_protocols() -> list[ProtocolInfo]:
+def materialized_schemes(
+    dataset_dir: Path, dataset: str, card: DatasetCard, work_root: Path | None = None
+) -> frozenset[str] | None:
+    """The schemes of a dataset shipped without key lists that are materialised here.
+
+    ``None`` when the pack ships the dataset's key lists (``videos.jsonl.gz``), since nothing
+    needs materialising. Otherwise the schemes whose split sits under
+    ``<work_root>/<dataset>/materialized/`` with the card's current hashes, as ``hashes.json``
+    records them: none when nothing is materialised, the copy predates the card's lists, or no
+    work root is set (``work_root`` defaults to the resolved ``work`` root). No split file is
+    read.
+    """
+    if (dataset_dir / "videos.jsonl.gz").is_file():
+        return None
+    if work_root is None:
+        try:
+            work_root = require_root("work", resolve_roots())
+        except ConfigError:
+            return frozenset()
+    materialized = materialized_dir(work_root, dataset)
+    recorded = _read_hashes(materialized / HASHES_FILE)
+    if recorded is None or not (materialized / "videos.jsonl.gz").is_file():
+        return frozenset()
+    if any(recorded.get(name) != getattr(card, name) for name in ("videos_sha256", "pairs_sha256")):
+        return frozenset()
+    schemes = recorded.get("schemes")
+    if not isinstance(schemes, dict):
+        return frozenset()
+    return frozenset(
+        name
+        for name, scheme in card.schemes.items()
+        if schemes.get(name) == scheme.sha256
+        and (materialized / "splits" / f"{name}.tsv.gz").is_file()
+    )
+
+
+def list_protocols(*, work_root: Path | None = None) -> list[ProtocolInfo]:
     """One row per scheme per dataset per healthy pack, plus one row per broken pack or dataset.
 
     ``counts`` comes straight from :attr:`SchemeCard.counts`, so no split file is read. A pack
     that cannot be read gives one row with an empty ``dataset_id``; a dataset whose card cannot
     be read gives one row with its ``dataset_id`` and an empty ``scheme``. Either way ``broken``
-    holds the reason, and every other pack and dataset is still listed.
+    holds the reason, and every other pack and dataset is still listed. Each row also carries the
+    card's ``distribution`` and, for a dataset the pack ships without key lists, whether the
+    scheme is materialised under ``work_root`` (see :func:`materialized_schemes`).
     """
     rows: list[ProtocolInfo] = []
     for pack in installed_packs():
@@ -442,6 +563,7 @@ def list_protocols() -> list[ProtocolInfo]:
                     )
                 )
                 continue
+            here = materialized_schemes(pack.dataset_dir(dataset_id), dataset_id, card, work_root)
             for scheme_name, scheme_card in card.schemes.items():
                 rows.append(
                     ProtocolInfo(
@@ -455,6 +577,8 @@ def list_protocols() -> list[ProtocolInfo]:
                         if scheme_card.counts
                         else None,
                         broken=None,
+                        distribution=card.distribution,
+                        materialized=None if here is None else scheme_name in here,
                     )
                 )
     return sorted(rows, key=lambda r: (r.dataset_id, r.scheme, r.pack, r.broken or ""))

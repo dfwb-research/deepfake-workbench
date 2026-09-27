@@ -51,22 +51,31 @@ from dfwb.core.records import (
     SchemeCard,
     SplitRow,
     read_jsonl,
+    records_sha256,
     to_video_record,
 )
 from dfwb.preprocess.inventory.base import BaseBuilder, SchemeSpec
 from dfwb.preprocess.inventory.runner import (
     dataset_copies,
     get_builder,
+    inventory_path,
     metadata_copy,
     read_inventory,
 )
+from dfwb.protocols._notice import holds_paragraph, terms_sentence
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.materialization import (
     OFFICIAL_RULES,
+    DatasetMaterialization,
     assign_rule,
     benchmark_params,
+    check_recipe_card,
+    materialize_dataset,
+    release_rows,
     rule_needs_official,
 )
+from dfwb.protocols.packs import find_dataset
+from dfwb.protocols.refs import ProtocolRef, parse_ref
 from dfwb.protocols.rules import Assignment, Split, resolve_pairs
 from dfwb.protocols.writer import rows_from_assignment, scheme_card_for, write_dataset_files
 
@@ -76,18 +85,12 @@ __all__ = [
     "assign_scheme",
     "build_dataset",
     "locate_metadata_root",
+    "materialize_recipe",
 ]
 
 _log = logging.getLogger(__name__)
 
 PACK_YAML: Final = "pack.yaml"
-
-# What a decided distribution lets the pack publish, as the NOTICE words it.
-_DISTRIBUTION_MEANING: Final = {
-    "list": "these lists may be redistributed",
-    "recipe": "the pack publishes each split's rule, parameters and hash rather than its "
-    "list; dfwb protocols materialize recomputes the list from a local copy of the dataset",
-}
 
 
 def _locate_hint(dataset_id: str) -> str:
@@ -373,9 +376,7 @@ def _notice(card: DatasetCard) -> str:
         "",
         "## What these files hold",
         "",
-        "Never media: this folder lists video keys, labels, split assignments and fake/real "
-        "pairs, derived from the release's file names and metadata. It holds no videos, frames, "
-        "crops, face boxes, landmarks or anything else derived from pixels.",
+        holds_paragraph(card.distribution),
         "",
         "## Terms",
         "",
@@ -391,17 +392,7 @@ def _terms(card: DatasetCard) -> str:
     is appended whether or not the distribution itself has been decided yet, so it is never
     silently dropped from the published notice.
     """
-    if card.distribution == "undecided":
-        text = (
-            "Terms review pending: whether these lists may be redistributed has not been decided "
-            "yet, so dataset.yaml records distribution: undecided. This notice is completed once "
-            "the dataset's terms have been reviewed."
-        )
-    else:
-        text = (
-            f"Terms reviewed: dataset.yaml records distribution: {card.distribution}, so "
-            f"{_DISTRIBUTION_MEANING[card.distribution]}."
-        )
+    text = terms_sentence(card.distribution)
     return f"{text} {card.terms.notes}" if card.terms.notes else text
 
 
@@ -447,10 +438,14 @@ def build_dataset(
             must be among them.
         roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
 
-    The videos are the inventory's rows; each scheme's rows come from its rule (see
+    The videos are the inventory's rows, without the attributes the builder declares as facts
+    about the local copy (``local_attrs``); each scheme's rows come from its rule (see
     :func:`assign_scheme`) and its card records the rule, its parameters, the split counts and
-    the rows' hash; the pairs come from the builder's pairing rule; the labels, the dataset card
-    and the notice come from the builder, except that a rebuild keeps the ``distribution`` and
+    the rows' hash; the pairs come from the builder's pairing rule; the dataset card also records
+    the hashes of the video and pair lists (``videos_sha256``, ``pairs_sha256``) and the pairing
+    rule, so the dataset can later be published as a recipe, without its key lists, and still be
+    rebuilt and checked by ``dfwb protocols materialize``; the labels, the rest of the dataset
+    card and the notice come from the builder, except that a rebuild keeps the ``distribution`` and
     ``terms`` already recorded in ``out/dataset.yaml`` (the maintainer's terms review, not the
     builder's). ``PROVENANCE.json`` records the builder, the dfwb version, each scheme's rule and
     parameters, and the hash of the inventory's ``key``/``compression``/``relpath`` listing. The
@@ -489,8 +484,15 @@ def build_dataset(
         )
         rules[name] = {"rule": spec.rule, "params": params}
 
+    videos = [to_video_record(record, local_attrs=builder.local_attrs) for record in records]
     pairs = _pairs(builder, records)
-    card = _keep_terms_review(builder.dataset_card(cards), out)
+    card = _keep_terms_review(builder.dataset_card(cards), out).model_copy(
+        update={
+            "videos_sha256": records_sha256(videos),
+            "pairs_sha256": records_sha256(pairs),
+            "pairing_rule": builder.pairing_rule,
+        }
+    )
     provenance = PackProvenance(
         builder={"id": builder.dataset_id, "version": builder.version},
         dfwb=__version__,
@@ -499,7 +501,7 @@ def build_dataset(
     )
     write_dataset_files(
         out,
-        videos=[to_video_record(record) for record in records],
+        videos=videos,
         schemes=rows,
         pairs=pairs,
         card=card,
@@ -508,6 +510,69 @@ def build_dataset(
         notice=_notice(card),
     )
     return BuildResult(out, cards, len(records), len(pairs))
+
+
+def materialize_recipe(
+    ref: str | ProtocolRef,
+    *,
+    inventory: Path | None = None,
+    roots: Mapping[RootName, ResolvedRoot] | None = None,
+) -> DatasetMaterialization:
+    """Rebuild every list of a recipe dataset shipped without them, with its inventory builder.
+
+    What only the dataset's builder knows is supplied here: the publisher's split, read from the
+    dataset folder (located as ``dfwb inventory build`` locates it) only when a scheme's rule reads
+    it; the pairs, drawn by the builder's pairing rule, which must be the rule the pack's card
+    declares; and the attributes that describe the local copy, which are left out. The split
+    and the pairs are drawn from the inventory rows of the release the card describes (see
+    :func:`~dfwb.protocols.materialization.release_rows`).
+    :func:`~dfwb.protocols.materialization.materialize_dataset` then rebuilds and checks every
+    list and writes them under the work root.
+
+    Args:
+        ref: The dataset (a scheme or pin in it is checked; every scheme is materialised).
+        inventory: The inventory to rebuild from (default: the work root's).
+        roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
+
+    Raises:
+        UnknownKeyError: the dataset, pack, scheme or builder is unknown.
+        ConfigError: there is no inventory, or the dataset folder is needed and not found.
+        ContractError: the card lacks the hashes of its lists or a scheme's rule cannot be
+            recomputed, the builder pairs by another rule than the card declares, or as
+            :func:`~dfwb.protocols.materialization.materialize_dataset` raises, notably when a
+            rebuilt list does not hash to its published value.
+    """
+    parsed = parse_ref(ref) if isinstance(ref, str) else ref
+    resolved = resolve_roots() if roots is None else roots
+    work_root = require_root("work", resolved)
+    dataset_id = parsed.dataset
+    card = read_card(find_dataset(dataset_id, pack=parsed.pack).dataset_dir(dataset_id))
+    check_recipe_card(card)
+    builder = get_builder(dataset_id)
+    if builder.pairing_rule != card.pairing_rule:
+        raise ContractError(
+            f"{dataset_id}: the pack pairs fakes with reals by the rule {card.pairing_rule!r}, "
+            f"and this dfwb's {dataset_id} inventory builder pairs by {builder.pairing_rule!r}",
+            hint="install the dfwb version the pack was built with (its PROVENANCE.json "
+            "records it)",
+        )
+    source = inventory if inventory is not None else inventory_path(dataset_id, work_root)
+    records = release_rows(read_jsonl(source, InventoryRecord), card) if source.is_file() else []
+    official: dict[str, Split] | None = None
+    if source.is_file() and any(
+        rule_needs_official(scheme.rule, scheme.params) for scheme in card.schemes.values()
+    ):
+        official = builder.official_splits(locate_metadata_root(builder, resolved), records)
+    datasets = resolved.get("datasets")
+    return materialize_dataset(
+        parsed,
+        inventory=source,
+        official=official,
+        pairs=_pairs(builder, records),
+        work_root=work_root,
+        datasets_roots=datasets.paths if datasets else (),
+        local_attrs=builder.local_attrs,
+    )
 
 
 def add_to_pack_yaml(pack_root: Path, dataset_id: str) -> bool:

@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
+import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 
 from dfwb.core.records import (
@@ -19,10 +21,12 @@ from dfwb.core.records import (
     VideoRecord,
     read_jsonl,
     read_split_tsv,
+    records_sha256,
     write_jsonl,
     write_split_tsv,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+from dfwb.preprocess.packbuild import _notice
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.lint import LintIssue, lint_pack
 from dfwb.protocols.writer import scheme_card_for, write_dataset_files
@@ -561,3 +565,314 @@ def test_absolute_path_in_provenance_is_the_only_reported_error(tmp_path):
 def test_lint_issue_is_a_plain_frozen_record():
     issue = LintIssue("error", "toylint/dataset.yaml", "boom")
     assert (issue.severity, issue.where, issue.message) == ("error", "toylint/dataset.yaml", "boom")
+
+
+# -------------------------------------------------------------------------------------------
+# Key-free recipe datasets: the card's hashes stand in for the key lists.
+# -------------------------------------------------------------------------------------------
+
+
+def _hash_the_lists(dataset_dir: Path, **changes: object) -> DatasetCard:
+    """Record the shipped lists' hashes (and the pairing rule) in the card, then ``changes``."""
+    card = read_card(dataset_dir)
+    pairs_path = dataset_dir / "pairs.jsonl.gz"
+    pairs = read_jsonl(pairs_path, PairRecord) if pairs_path.is_file() else []
+    card = card.model_copy(
+        update={
+            "videos_sha256": records_sha256(
+                read_jsonl(dataset_dir / "videos.jsonl.gz", VideoRecord)
+            ),
+            "pairs_sha256": records_sha256(pairs),
+            "pairing_rule": "toy",
+            **changes,
+        }
+    )
+    _dump_card(dataset_dir, card)
+    return card
+
+
+def _strip(dataset_dir: Path) -> None:
+    """Take out every key list, as a release build does for a recipe dataset."""
+    (dataset_dir / "videos.jsonl.gz").unlink()
+    (dataset_dir / "pairs.jsonl.gz").unlink(missing_ok=True)
+    shutil.rmtree(dataset_dir / "splits")
+
+
+def test_a_key_free_recipe_dataset_passes_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    _strip(root / "toylint")
+
+    assert sorted(p.name for p in (root / "toylint").iterdir()) == [
+        "NOTICE.md",
+        "PROVENANCE.json",
+        "dataset.yaml",
+        "labels.yaml",
+    ]
+    assert lint_pack(root, release=True) == []
+
+
+def _shipped_recipe_issue(files: str, severity: str = "error") -> LintIssue:
+    return LintIssue(
+        severity,  # type: ignore[arg-type]
+        "toylint",
+        f"a recipe dataset is published without its key lists, and this one ships {files}: "
+        "take them out of the folder you publish (a release build that strips recipe datasets "
+        "does), or record distribution: list if its terms let them be redistributed",
+    )
+
+
+def test_a_recipe_that_still_ships_its_key_lists_fails_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+
+    files = "videos.jsonl.gz, pairs.jsonl.gz, splits/official.tsv.gz"
+    assert lint_pack(root, release=True) == [_shipped_recipe_issue(files)]
+    # While a pack is being built, before a release strips it, this is only a warning.
+    assert lint_pack(root) == [_shipped_recipe_issue(files, "warning")]
+
+
+def test_a_recipe_stripped_of_its_splits_alone_still_fails_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    shutil.rmtree(root / "toylint" / "splits")
+
+    assert lint_pack(root, release=True) == [
+        _shipped_recipe_issue("videos.jsonl.gz, pairs.jsonl.gz")
+    ]
+
+
+def test_a_list_dataset_whose_notice_was_written_for_a_recipe_fails_a_release_lint(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(_notice_for("recipe"))
+
+    stale = LintIssue(
+        "error",
+        "toylint/NOTICE.md",
+        "the notice is the one written for a recipe dataset, which ships no key list, but this "
+        "dataset ships its lists (distribution: list); rebuild the dataset with dfwb protocols "
+        "build, which rewrites its notice",
+    )
+    assert lint_pack(root, release=True) == [stale]
+    assert lint_pack(root) == [dataclasses.replace(stale, severity="warning")]
+    (root / "toylint" / "NOTICE.md").write_text(_notice_for("list", "Owned by nobody."))
+    assert lint_pack(root, release=True) == []
+
+
+def test_a_key_free_recipe_needs_the_hashes_of_its_lists(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _dump_card(
+        root / "toylint", read_card(root / "toylint").model_copy(update={"distribution": "recipe"})
+    )
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/dataset.yaml"
+    assert "videos_sha256" in issues[0].message
+    assert "pairs_sha256" in issues[0].message
+    assert "dfwb protocols build" in issues[0].message
+
+
+def test_a_key_free_dataset_that_is_not_a_recipe_still_misses_its_lists(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint")  # distribution: list
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert LintIssue("error", "toylint/videos.jsonl.gz", "file is missing") in issues
+    assert (
+        LintIssue("error", "toylint/splits/official.tsv.gz", "scheme has no split file") in issues
+    )
+
+
+def test_a_recipe_without_its_videos_ships_no_other_key_list(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    (root / "toylint" / "videos.jsonl.gz").unlink()
+
+    issues = lint_pack(root)
+
+    assert sorted(issue.where for issue in issues) == [
+        "toylint/pairs.jsonl.gz",
+        "toylint/splits/official.tsv.gz",
+    ]
+    assert all(issue.severity == "error" for issue in issues)
+    assert all("no videos.jsonl.gz" in issue.message for issue in issues)
+
+
+@pytest.mark.parametrize("rule", [None, "md5-carve-key"])
+def test_every_scheme_of_a_key_free_recipe_can_be_recomputed(tmp_path, rule):
+    root = _write_pack(tmp_path, ["toylint"])
+    card = _hash_the_lists(root / "toylint", distribution="recipe")
+    scheme = card.schemes["official"].model_copy(update={"rule": rule})
+    _dump_card(root / "toylint", card.model_copy(update={"schemes": {"official": scheme}}))
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/dataset.yaml"
+    assert f"scheme 'official' has rule {rule!r}" in issues[0].message
+    assert "cannot recompute" in issues[0].message
+
+
+def test_a_key_free_recipe_with_pairs_names_its_pairing_rule(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe", pairing_rule=None)
+    _strip(root / "toylint")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/dataset.yaml"
+    assert "pairing_rule" in issues[0].message
+
+
+def test_shipped_videos_that_differ_from_the_card_hash_are_the_only_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    card = _hash_the_lists(root / "toylint")
+    path = root / "toylint" / "videos.jsonl.gz"
+    videos = read_jsonl(path, VideoRecord)
+    write_jsonl(path, [dataclasses.replace(videos[0], method="Other"), *videos[1:]])
+
+    issues = lint_pack(root)
+
+    assert issues == [
+        LintIssue(
+            "error",
+            "toylint/videos.jsonl.gz",
+            f"the videos hash to {records_sha256(read_jsonl(path, VideoRecord))}, the card's "
+            f"videos_sha256 is {card.videos_sha256}",
+        )
+    ]
+
+
+def test_shipped_pairs_that_differ_from_the_card_are_reported(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    card = _hash_the_lists(root / "toylint", pairing_rule="other")
+    path = root / "toylint" / "pairs.jsonl.gz"
+    write_jsonl(path, read_jsonl(path, PairRecord)[1:])
+
+    issues = lint_pack(root)
+
+    assert issues == [
+        LintIssue(
+            "error",
+            "toylint/pairs.jsonl.gz",
+            f"the pairs hash to {records_sha256(read_jsonl(path, PairRecord))}, the card's "
+            f"pairs_sha256 is {card.pairs_sha256}",
+        ),
+        LintIssue(
+            "error",
+            "toylint/pairs.jsonl.gz",
+            "the pairs record the rule 'toy', the card's pairing_rule is 'other'",
+        ),
+    ]
+
+
+def test_no_pairs_file_hashes_as_no_pairs(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "pairs.jsonl.gz").unlink()
+    _hash_the_lists(root / "toylint", pairing_rule=None)
+
+    assert read_card(root / "toylint").pairs_sha256 == records_sha256([])
+    assert lint_pack(root) == []
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_a_list_dataset_without_readable_videos_gets_no_hash_error_on_top(tmp_path, damage):
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint")
+    videos = root / "toylint" / "videos.jsonl.gz"
+    if damage == "missing":
+        videos.unlink()
+    else:
+        with gzip.open(videos, "wt", encoding="utf-8") as handle:
+            handle.write("not json\n")
+
+    issues = lint_pack(root)
+
+    assert [i for i in issues if i.where == "toylint/videos.jsonl.gz"] == [
+        next(i for i in issues if i.where == "toylint/videos.jsonl.gz")
+    ]
+    assert not any("videos_sha256" in issue.message for issue in issues)
+
+
+def test_videos_of_a_compression_the_card_does_not_list_are_the_only_reported_error(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    path = root / "toylint" / "videos.jsonl.gz"
+    videos = read_jsonl(path, VideoRecord)
+    write_jsonl(path, [*videos, dataclasses.replace(videos[0], compression="c23")])
+
+    issues = lint_pack(root)
+
+    assert issues == [
+        LintIssue(
+            "error",
+            "toylint/videos.jsonl.gz",
+            "1 video(s) are of a compression the card's compressions do not list (c23); "
+            "list it in the card, since a recipe's lists are rebuilt from the listed "
+            "compressions only",
+        )
+    ]
+
+
+def _notice_for(distribution: str, notes: str | None = None) -> str:
+    """The notice ``dfwb protocols build`` writes for toylint with ``distribution``."""
+    card = DatasetCard(
+        id="toylint",
+        name="toylint",
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only; never media",
+        distribution=distribution,  # type: ignore[arg-type]
+        terms={"notes": notes},  # type: ignore[arg-type]
+        modalities=["video"],
+        key_rule="<task>/<stem>",
+        schemes={"official": scheme_card_for([], kind="official", rule="official")},
+        default_scheme="official",
+    )
+    return _notice(card)
+
+
+def _key_free_recipe_with_notice(tmp_path: Path, notice: str) -> Path:
+    root = _write_pack(tmp_path, ["toylint"])
+    _hash_the_lists(root / "toylint", distribution="recipe")
+    _strip(root / "toylint")
+    (root / "toylint" / "NOTICE.md").write_text(notice)
+    return root
+
+
+@pytest.mark.parametrize("distribution", ["list", "undecided"])
+def test_a_key_free_recipe_whose_notice_was_written_for_its_lists_fails_a_release_lint(
+    tmp_path, distribution
+):
+    # The notice the build wrote before the dataset was decided a recipe, never rewritten.
+    root = _key_free_recipe_with_notice(tmp_path, _notice_for(distribution))
+
+    stale = LintIssue(
+        "error",
+        "toylint/NOTICE.md",
+        "the notice is the one written for a dataset that ships its key lists (distribution: "
+        "list or undecided), but this recipe ships none; rebuild the dataset with dfwb "
+        "protocols build, which rewrites its notice",
+    )
+    assert lint_pack(root, release=True) == [stale]
+    assert lint_pack(root) == [dataclasses.replace(stale, severity="warning")]
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "These lists are released under the MIT licence and may be redistributed.",
+        "Upstream says this folder lists video keys for research use only.",
+    ],
+)
+def test_terms_notes_about_redistribution_never_trigger_the_stale_notice_check(tmp_path, notes):
+    root = _key_free_recipe_with_notice(tmp_path, _notice_for("recipe", notes))
+
+    assert notes in (root / "toylint" / "NOTICE.md").read_text()
+    assert lint_pack(root, release=True) == []
