@@ -221,6 +221,17 @@ def test_refuses_a_hardlink_member(tmp_path, builder):
         unpack_wilddeepfake(builder, archives, to)
 
 
+def test_refuses_a_corrupt_archive(tmp_path, builder):
+    archive = tmp_path / "archives" / "real_train" / "6.tar.gz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"not actually a tar file")
+    to = tmp_path / "WildDeepfake"
+
+    with pytest.raises(ContractError, match="not a readable tar archive") as excinfo:
+        unpack_wilddeepfake(builder, tmp_path / "archives", to)
+    assert excinfo.value.hint
+
+
 def test_refuses_a_device_file_member(tmp_path, builder):
     archives = tmp_path / "archives"
     device = _member("6/real/54/0.png", type=tarfile.CHRTYPE, devmajor=1, devminor=5)
@@ -262,6 +273,28 @@ def test_non_frame_members_are_ignored_not_refused(tmp_path, builder):
             (_member("6/real/54/0.png"), b"ok"),
             (_member("6/real/54/notes.txt"), b"metadata, not a frame"),
             (_member("README.txt"), b"top-level, not shaped like a frame"),
+        ],
+    )
+    to = tmp_path / "WildDeepfake"
+
+    result = unpack_wilddeepfake(builder, archives, to)
+
+    assert result.frames_written == 1
+    assert _frame_files(to / REAL_DIR / "real_train_6_54") == {"000000.png": b"ok"}
+
+
+def test_directory_members_are_ignored_not_refused(tmp_path, builder):
+    """A real ``tar`` archive typically has an explicit entry for each directory it holds; those
+    are safe (checked like any other member) but carry no frame of their own, and must not be
+    mistaken for one."""
+    archives = tmp_path / "archives"
+    write_raw_shard(
+        archives / "real_train" / "6.tar.gz",
+        [
+            (_member("6/", type=tarfile.DIRTYPE), None),
+            (_member("6/real/", type=tarfile.DIRTYPE), None),
+            (_member("6/real/54/", type=tarfile.DIRTYPE), None),
+            (_member("6/real/54/0.png"), b"ok"),
         ],
     )
     to = tmp_path / "WildDeepfake"
