@@ -58,12 +58,10 @@ __all__ = [
     "collect_records",
     "dataset_copies",
     "describe_location",
-    "discover_located",
     "folder_copies",
     "folder_status",
     "get_builder",
     "inventory_path",
-    "located_copies",
     "metadata_copy",
     "read_inventory",
     "resolve_video_path",
@@ -167,7 +165,7 @@ def _root_source(path: Path, expected_folder: str, roots: Mapping[RootName, Reso
     return "a datasets root"
 
 
-def located_copies(
+def _located_copies(
     builder: BaseBuilder, roots: Mapping[RootName, ResolvedRoot]
 ) -> tuple[DatasetCopy, ...]:
     """Every copy of ``builder``'s dataset folder that :func:`build_inventory` reads when it is
@@ -183,7 +181,7 @@ def located_copies(
     return dataset_copies(builder, location, roots)
 
 
-def discover_located(
+def _discover_located(
     builder: BaseBuilder, roots: Mapping[RootName, ResolvedRoot] | None = None
 ) -> tuple[Path, list[InventoryRecord]]:
     """What ``dfwb inventory build`` would find for ``builder``'s dataset, without writing
@@ -194,11 +192,11 @@ def discover_located(
         roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
 
     Raises:
-        ConfigError: the dataset folder is not found (see :func:`located_copies`).
+        ConfigError: the dataset folder is not found (see :func:`_located_copies`).
         ContractError: the builder yields a bad or duplicate key.
     """
     resolved = resolve_roots() if roots is None else roots
-    copies = located_copies(builder, resolved)
+    copies = _located_copies(builder, resolved)
     paths = tuple(copy.path for copy in copies)
     builder.bind_copies(paths, builder.choose_copies(paths, compressions=None))
     folder = metadata_copy(builder, copies).path
@@ -611,7 +609,7 @@ def build_inventory(
             ),
         )
     else:
-        copies = located_copies(builder, resolved)
+        copies = _located_copies(builder, resolved)
     _warn_if_no_videos_anywhere(builder, copies)
 
     paths = tuple(copy.path for copy in copies)

@@ -37,9 +37,9 @@ non-frame member).
 
 The destination is a datasets root: the dataset lands in ``<root>/<builder.expected_folder>``
 (``WildDeepfake``), the folder ``dfwb inventory build`` looks for under a datasets root.
-Afterwards, discovery runs exactly where ``dfwb inventory build`` will look (see
-:func:`~dfwb.preprocess.inventory.runner.discover_located`), which is not this folder when the
-configured datasets roots do not include ``<root>`` or an override points elsewhere.
+Afterwards, discovery runs exactly where ``dfwb inventory build`` will look (the same root and
+override lookup, and the same choice of copy), which is not this folder when the configured
+datasets roots do not include ``<root>`` or an override points elsewhere.
 
 Unpacking is resumable and idempotent, driven entirely by what is already on disk: a sequence
 whose target folder already holds exactly the frame files the archive says it should is left
@@ -59,7 +59,7 @@ from pathlib import Path, PurePosixPath
 from typing import IO, TYPE_CHECKING, Final
 
 from dfwb.core.errors import ConfigError, ContractError
-from dfwb.preprocess.inventory.runner import discover_located
+from dfwb.preprocess.inventory.runner import _discover_located
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -427,7 +427,7 @@ def unpack_wilddeepfake(
     inventory_folder: Path | None
     by_task: dict[str, int] | None
     try:
-        inventory_folder, records = discover_located(builder, roots)
+        inventory_folder, records = _discover_located(builder, roots)
     except ConfigError:
         inventory_folder, by_task = None, None
     else:
