@@ -32,7 +32,12 @@ def _require_train_extra() -> None:
         if not found:
             raise InstallationError(
                 f"dfwb train needs {name!r}, which is not installed",
-                hint='pip install "deepfake-workbench[train]" (with the torch build you need)',
+                hint=(
+                    "install torch first (CPU: pip install torch torchvision --index-url "
+                    "https://download.pytorch.org/whl/cpu; CUDA: the selector at "
+                    "https://pytorch.org/get-started/locally/), then pip install "
+                    '"deepfake-workbench[train]"'
+                ),
             )
 
 

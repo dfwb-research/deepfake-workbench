@@ -151,6 +151,10 @@ All notable changes to this project are documented here. The format follows
   these newly-caught shapes now fails lint where it previously passed. A path segment inside an
   `http://` or `https://` address (a download page with a `data` segment, say) is not a local
   path, and is not reported.
+- `dfwb train`'s `InstallationError` hint for a missing `torch` now names the CPU wheel index
+  (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) and
+  pytorch.org's selector for a CUDA build, alongside the extra to install -- installing the extra
+  on its own resolves PyPI's default torch wheel, which is the CUDA build, even with no GPU.
 
 ## [0.1.0b2] - 2026-09-26
 
