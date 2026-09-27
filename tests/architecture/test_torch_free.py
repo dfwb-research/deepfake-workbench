@@ -13,7 +13,7 @@ from dfwb.core.records import write_scores
 DFWB = Path(sys.executable).parent / "dfwb"  # the console script of this environment
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-TORCH_FREE = ("dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess", "dfwb.cli")
+TORCH_FREE = ("dfwb.core", "dfwb.protocols", "dfwb.eval", "dfwb.preprocess", "dfwb.cli", "dfwb.zoo")
 
 IMPORT_ALL = """
 import importlib, json, pkgutil, sys
@@ -86,10 +86,18 @@ TORCH_FREE_COMMANDS = [
     ["schema", "export", "c3"],
     ["schema", "export", "c4"],
     ["schema", "export", "c5"],
+    ["score", "--help"],
     ["train", "--help"],
     ["runs", "--help"],
     ["runs", "list"],
     ["runs", "list", "--json"],
+    ["zoo", "list"],
+    ["zoo", "list", "--json"],
+    ["zoo", "info", "chance"],
+    ["zoo", "licenses"],
+    ["zoo", "verify", "chance"],
+    ["zoo", "fetch", "chance"],
+    ["zoo", "parity", "chance"],
 ]
 
 

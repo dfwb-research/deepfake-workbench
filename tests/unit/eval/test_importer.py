@@ -403,3 +403,87 @@ def test_suggest_key_fixes_unit():
     assert any("directory prefix" in s for s in suggest_key_fixes(["real/00001"], expected))
     assert any("task prefix" in s for s in suggest_key_fixes(["00001"], expected))
     assert suggest_key_fixes(["totally/unrelated"], expected) == []
+
+
+# ----------------------------------------------------------------- keys from another split
+
+
+def _write_two_split_dataset(dataset_dir, dataset_id):
+    """``CDF/00001``..``00004`` in ``test``, ``CDF/00005``..``00006`` in ``train``."""
+    import yaml
+
+    from dfwb.core.records import (
+        DatasetCard,
+        LabelVocab,
+        SchemeCard,
+        SplitRow,
+        VideoRecord,
+        write_jsonl,
+        write_split_tsv,
+    )
+    from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+
+    def dump(model):
+        return yaml.safe_dump(model.model_dump(mode="json", by_alias=True), sort_keys=False)
+
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "splits").mkdir()
+    labels = {
+        1: "CDF-REAL",
+        2: "CDF-FAKE",
+        3: "CDF-REAL",
+        4: "CDF-FAKE",
+        5: "CDF-REAL",
+        6: "CDF-FAKE",
+    }
+    videos = [
+        VideoRecord(f"CDF/{i:05d}", None, label_key, "m", identity=f"{i:05d}")
+        for i, label_key in labels.items()
+    ]
+    write_jsonl(dataset_dir / "videos.jsonl.gz", videos)
+    rows = [SplitRow(v.key, None, "test" if i <= 4 else "train") for i, v in enumerate(videos, 1)]
+    sha256 = write_split_tsv(dataset_dir / "splits" / "official.tsv.gz", rows)
+    card = DatasetCard(
+        id=dataset_id,
+        name="Two Splits",
+        release="1",
+        license=LicenseInfo(summary="Synthetic fixture pack for tests"),
+        access="tests only",
+        modalities=["video"],
+        key_rule="fixture",
+        schemes={"official": SchemeCard(kind="official", source="fixture", sha256=sha256)},
+        default_scheme="official",
+    )
+    (dataset_dir / "dataset.yaml").write_text(dump(card))
+    vocab = {"CDF-REAL": {"binary": 0}, "CDF-FAKE": {"binary": 1}}
+    mapping = LabelVocab(vocab=vocab, mappings={"binary": LabelMappingSpec(from_="binary")})
+    (dataset_dir / "labels.yaml").write_text(dump(mapping))
+
+
+@pytest.fixture
+def two_split_pack(tmp_path, monkeypatch):
+    from tests.unit.protocols.conftest import make_pack, register_packs
+
+    root = make_pack(
+        tmp_path, "two-split-pack", {"cdf2": {}}, builders={"cdf2": _write_two_split_dataset}
+    )
+    register_packs(monkeypatch, {"two-split-pack": root})
+    return root / "cdf2"
+
+
+def test_import_of_a_file_spanning_splits_says_which_split_the_extra_keys_are_in(
+    tmp_path, two_split_pack
+):
+    path = _csv(
+        tmp_path,
+        "videos.csv",
+        ["key", "prediction"],
+        [(f"CDF/{i:05d}", 0.1 * i) for i in range(1, 7)],  # test and train together
+    )
+
+    with pytest.raises(ContractError) as excinfo:
+        import_scores(path, protocol="cdf2/official", split="test", key="key", score="prediction")
+
+    assert "CDF/00005" in excinfo.value.message
+    assert "in the pack's 'train' split" in excinfo.value.hint
+    assert "2 of these keys" in excinfo.value.hint

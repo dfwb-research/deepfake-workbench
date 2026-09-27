@@ -1,0 +1,13 @@
+name: random
+display_name: Random
+contract_version: [1, 0]
+license:
+  code: MIT
+  requires_ack: false
+code_strategy: pip
+input:
+  crop: face
+  crop_scale: 1.3
+  size: [64, 64]
+  frames: 1
+polarity: fake-high

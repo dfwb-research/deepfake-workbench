@@ -67,6 +67,13 @@ PROTOCOL_PACKS: tuple[tuple[str, str, str], ...] = (
     ("toyfake", "dfwb:_packs/toyfake", "Built-in synthetic toyfake protocol pack"),
 )
 
+# Eval suites shipped inside the framework, one row each:
+#   (suite name, "<package>:<file>" of its YAML, one-line summary)
+# A suite is data too: registering it locates a file and imports nothing.
+EVAL_SUITES: tuple[tuple[str, str, str], ...] = (
+    ("toyfake", "dfwb:_packs/suites/toyfake.yaml", "Built-in synthetic toyfake eval suite"),
+)
+
 # The package every built-in face backend lives in.
 _FACE_BACKENDS_PACKAGE: Final = "dfwb.preprocess.face.backends"
 
@@ -290,6 +297,26 @@ def register(api: PluginAPI) -> None:
         summary="Rebuild a detector saved by training, from its run directory",
         requires=("torch",),
     )
+    api.detector_sources.add(
+        "py",
+        target="dfwb.score.sources:load_py",
+        summary="Call a user's own factory function to build a Detector (runs user code)",
+    )
+    api.detector_sources.add(
+        "zoo",
+        target="dfwb.zoo.source:load_zoo",
+        summary="Build a Detector from a registered zoo adapter (zoo:<name>[@<weights id>])",
+    )
+    api.detectors.add(
+        "chance",
+        target="dfwb.zoo.adapters.chance:ChanceAdapter",
+        summary="Sanity floor: predicts P(fake) = 0.5 for everything",
+    )
+    api.detectors.add(
+        "random",
+        target="dfwb.zoo.adapters.random:RandomAdapter",
+        summary="Sanity floor: seeded uniform scores, independent of batch or clip order",
+    )
     for dataset_id, target, name, folder in INVENTORY_BUILDERS:
         api.inventory_builders.add(
             dataset_id, target=f"{_BUILDERS_PACKAGE}.{target}", summary=name, folder=folder
@@ -300,3 +327,5 @@ def register(api: PluginAPI) -> None:
         )
     for pack, target, summary in PROTOCOL_PACKS:
         api.protocol_packs.add(pack, target=target, summary=summary)
+    for suite, target, summary in EVAL_SUITES:
+        api.eval_suites.add(suite, target=target, summary=summary)

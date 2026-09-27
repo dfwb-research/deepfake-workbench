@@ -81,7 +81,12 @@ def _metric_cells(row: dict[str, Any], metrics: Sequence[str], *, latex: bool) -
             cells.append("")
             continue
         value, lo, hi = info["value"], info["ci_lo"], info["ci_hi"]
-        if latex:
+        if value is None:  # undefined on this file's rows; the reason is in the JSON
+            cells.append("undefined")
+            continue
+        if lo is None or hi is None:  # --bootstrap 0: a value, but no confidence interval
+            cells.append(f"${value:.4f}$" if latex else f"{value:.4f}")
+        elif latex:
             half_width = (hi - lo) / 2
             cells.append(f"${value:.4f} \\pm {half_width:.4f}$")
         else:
@@ -144,7 +149,7 @@ def _suite_block(rows: Sequence[dict[str, Any]]) -> Block:
             row["group"],
             row["metric"],
             row["how"],
-            f"{row['value']:.4f}",
+            "undefined" if row["value"] is None else f"{row['value']:.4f}",
             row["n_entries"],
             row["n_expected"],
         ]
@@ -340,7 +345,10 @@ def compare(files: tuple[Path, ...], metrics: str, bootstrap: int, seed: int, as
         return 0
     click.echo(f"holm correction applied: {result.holm_applied}")
     for comparison in result.comparisons:
-        click.echo(f"{comparison.a} vs {comparison.b} (n={comparison.n})")
+        click.echo(
+            f"{comparison.a} vs {comparison.b} (n={comparison.n}; only in {comparison.a}: "
+            f"{comparison.only_a}, only in {comparison.b}: {comparison.only_b})"
+        )
         for metric, values in comparison.metrics.items():
             click.echo(f"  {metric}: {values}")
     return 0

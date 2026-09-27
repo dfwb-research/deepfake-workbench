@@ -2,9 +2,12 @@ import logging
 import random
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from dfwb.core.log import get_logger, setup_logging
 from dfwb.core.paths import resolve_roots
@@ -141,6 +144,58 @@ def test_collect_run_info(tmp_path):
     assert info.command == "dfwb doctor"
     assert info.git is None
     assert "dfwb" in info.plugins  # the built-ins entry point is installed with the package
+
+
+# Tokens the whole-token rules alone left with an absolute path inside them, so a record holding
+# the command (a score file's meta, say) failed the absolute-path guard when it was written.
+_EMBEDDED_PATH_TOKENS = [
+    "note=a /elsewhere/x",  # a path after a space, inside one argument
+    "a,/elsewhere/x",  # after a comma
+    "a;/elsewhere/x",  # after a semicolon
+    "(/elsewhere/x",  # after a parenthesis
+    "file:///elsewhere/x",  # a file URL
+    "file:////elsewhere/x",  # a file URL with an extra slash
+    "a/b=/elsewhere/x",  # key=value whose key holds a slash
+    ":/elsewhere/x",  # a bare colon prefix
+    "1:/elsewhere/x",  # a prefix that does not start with a letter
+    "x'/elsewhere/y",  # after a quote
+    "k=v:/elsewhere/x,/r/y",  # several, one of them under a root
+]
+
+
+@pytest.mark.parametrize("token", _EMBEDDED_PATH_TOKENS)
+def test_sanitize_command_output_always_passes_the_absolute_path_guard(tmp_path, token):
+    from dfwb.core.records import assert_no_absolute_paths
+
+    roots = resolve_roots(env={"DFWB_RUNS_ROOT": "/r"}, cwd=tmp_path, user_config=tmp_path / "x")
+
+    command = sanitize_command(["/venv/bin/dfwb", "score", token], roots)
+
+    assert_no_absolute_paths(command, where="command")
+    assert "elsewhere" not in command  # only a path's final component survives
+
+
+def test_sanitize_command_keeps_a_root_relative_path_inside_a_token(tmp_path):
+    roots = resolve_roots(env={"DFWB_RUNS_ROOT": "/r"}, cwd=tmp_path, user_config=tmp_path / "x")
+
+    command = sanitize_command(["dfwb", "x", "note=see /r/vit/2026"], roots)
+
+    assert command == "dfwb x 'note=see $DFWB_RUNS_ROOT/vit/2026'"
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    st.lists(
+        st.text(alphabet=st.sampled_from(list("/~:=,;'\"( \tabcfile.x0-_$<>")), max_size=24),
+        max_size=6,
+    )
+)
+def test_sanitize_command_and_the_absolute_path_guard_agree_on_any_argv(tokens):
+    from dfwb.core.records import assert_no_absolute_paths
+
+    roots = resolve_roots(env={"DFWB_RUNS_ROOT": "/r"}, cwd=Path("/w"), user_config=Path("/nx"))
+
+    assert_no_absolute_paths(sanitize_command(["dfwb", *tokens], roots), where="command")
 
 
 def test_sanitize_command_cleans_config_overrides(tmp_path):

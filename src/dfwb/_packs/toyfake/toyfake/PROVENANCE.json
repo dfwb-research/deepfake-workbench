@@ -3,7 +3,7 @@
     "id": "toyfake",
     "version": "1"
   },
-  "dfwb": "0.1.0b1",
+  "dfwb": "0.1.0b2",
   "rules": {
     "all-test": {
       "params": {},

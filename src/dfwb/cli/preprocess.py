@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from dfwb.cli._output import emit_json, json_option, table
+from dfwb.cli._where import parse_where, where_option
 from dfwb.core.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -19,28 +20,6 @@ _SHARD_RE = re.compile(r"^(\d+)/(\d+)$")
 @click.group()
 def preprocess() -> None:
     """Run the face pipeline, check its progress, and merge sharded runs."""
-
-
-def _parse_where(pairs: tuple[str, ...]) -> dict[str, Any]:
-    """``("compression=c23", "identity=000", "identity=002")`` -> ``{"compression": "c23",
-    "identity": ["000", "002"]}``: repeating a key collects its values as a list, meaning any of
-    them (the same ``where`` semantics :func:`dfwb.preprocess.face.runner.run` uses)."""
-    where: dict[str, Any] = {}
-    for pair in pairs:
-        key, sep, value = pair.partition("=")
-        key = key.strip()
-        if not sep or not key:
-            raise ConfigError(
-                f"--where {pair!r} is not key=value",
-                hint="use --where key=value, e.g. "
-                "--where compression=c23 (repeat --where to give a key more than one value)",
-            )
-        if key in where:
-            existing = where[key]
-            where[key] = [*existing, value] if isinstance(existing, list) else [existing, value]
-        else:
-            where[key] = value
-    return where
 
 
 def _parse_shard(value: str | None) -> tuple[int, int] | None:
@@ -66,13 +45,6 @@ _protocol_option = click.option(
     help="A protocol reference to take the videos from, e.g. ffpp/official.",
 )
 _split_option = click.option("--split", default=None, help="The protocol split; needs --protocol.")
-_where_option = click.option(
-    "--where",
-    "where_pairs",
-    multiple=True,
-    metavar="KEY=VALUE",
-    help="Restrict to videos matching KEY=VALUE (repeatable; repeat a key for any-of).",
-)
 
 
 @preprocess.command("run")
@@ -80,7 +52,7 @@ _where_option = click.option(
 @_profile_option
 @_protocol_option
 @_split_option
-@_where_option
+@where_option
 @click.option(
     "--shard", "shard_text", default=None, metavar="I/N", help="Process only shard I of N."
 )
@@ -122,7 +94,7 @@ def run(
         profile=profile,
         protocol=protocol,
         split=split,
-        where=_parse_where(where_pairs) or None,
+        where=parse_where(where_pairs) or None,
         shard=_parse_shard(shard_text),
         workers=workers,
         device=device,

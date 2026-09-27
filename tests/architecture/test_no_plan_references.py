@@ -55,8 +55,19 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # (relative path, pattern index) pairs known to be false positives, kept explicit so a new one
-# cannot be added silently. Empty: nothing in this tree has needed one so far.
-_ALLOWLIST: frozenset[tuple[str, int]] = frozenset()
+# cannot be added silently.
+_ALLOWLIST: frozenset[tuple[str, int]] = frozenset(
+    {
+        # The hero SVGs are copied byte-identical from the organisation's own generator (never
+        # edited here); their embedded woff2 fonts are base64, and two of those characters -- the
+        # letter this pattern's third alternative is, immediately followed by a single digit --
+        # happen to fall on a word boundary in that data in both files. A coincidence of the font
+        # bytes, not a decision id, and not something editing the SVG (which must stay
+        # byte-identical) could fix.
+        ("docs/assets/hero-dark.svg", 0),
+        ("docs/assets/hero-light.svg", 0),
+    }
+)
 
 
 def _scanned_files() -> list[Path]:

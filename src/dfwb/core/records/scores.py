@@ -30,6 +30,8 @@ __all__ = [
     "ScoreFile",
     "ScoreMeta",
     "ScoreRow",
+    "canonical_where",
+    "coverage_counts",
     "meta_path_for",
     "read_scores",
     "score_row_json_schema",
@@ -176,6 +178,23 @@ class ScoreMeta(RecordModel):
     calibration: CalibrationInfo | None = None
 
 
+def canonical_where(where: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``where``, canonical: a membership value (a list, tuple or set of values, meaning any of
+    them -- repeated ``--where key=v``, or a suite entry's ``[a, b]``) becomes a list sorted by
+    each value's text, so the same set of values given in a different order means the same thing
+    everywhere a ``where`` is stored or compared: a score file's meta, the scoring cache's key, a
+    cache hit's check against that meta, ``dfwb eval``'s grouping of seeds, and a suite entry's
+    match against a score file. A scalar value (equality) is kept as it is. The order of the keys
+    themselves never matters: dict equality ignores it, and canonical JSON sorts them."""
+    canonical: dict[str, Any] = {}
+    for key, value in (where or {}).items():
+        if isinstance(value, (list, tuple, set, frozenset)):
+            canonical[key] = sorted(value, key=str)
+        else:
+            canonical[key] = value
+    return canonical
+
+
 @dataclass(frozen=True)
 class ScoreFile:
     """A score file as read from disk."""
@@ -198,7 +217,14 @@ def _check_name(path: Path) -> None:
         )
 
 
-def _coverage(rows: list[ScoreRow]) -> dict[str, int]:
+def coverage_counts(rows: list[ScoreRow]) -> dict[str, int]:
+    """``{expected, ok, missing, error}`` counts of ``rows``, by status.
+
+    The one place this is computed: :func:`write_scores` and :func:`read_scores` check a file's
+    ``meta.coverage`` against it, and a caller assembling a meta before writing (e.g.
+    :func:`dfwb.score.writer.assemble_meta`) uses it too, so ``coverage`` can never silently drift
+    from what the rows actually say.
+    """
     counts = Counter(row.status for row in rows)
     return {
         "expected": len(rows),
@@ -222,7 +248,7 @@ def _check_rows(rows: list[ScoreRow], where: str) -> None:
 
 
 def _check_coverage(rows: list[ScoreRow], meta: ScoreMeta, where: str) -> None:
-    actual = _coverage(rows)
+    actual = coverage_counts(rows)
     recorded = meta.coverage.model_dump()
     if actual != recorded:
         raise ContractError(

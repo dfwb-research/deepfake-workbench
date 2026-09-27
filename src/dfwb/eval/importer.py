@@ -22,7 +22,7 @@ from typing import Literal
 
 from dfwb.core.errors import ConfigError, ContractError, did_you_mean
 from dfwb.core.records import ScoreMeta, ScoreRow
-from dfwb.core.records.protocol import VideoRecord
+from dfwb.core.records.protocol import SplitRow, VideoRecord
 from dfwb.core.records.scores import Coverage, DetectorInfo, ProtocolInfo
 from dfwb.core.records.scores import GitState as _MetaGitState
 from dfwb.core.runmeta import RunInfo, collect_run_info
@@ -128,6 +128,25 @@ def suggest_key_fixes(bad_keys: Sequence[str], expected_keys: Sequence[str]) -> 
             unique.append(suggestion)
             seen.add(suggestion)
     return unique
+
+
+def _other_split_hints(
+    bad_keys: Sequence[str], split_rows: Sequence[SplitRow], split: str
+) -> list[str]:
+    """One line per other split holding some of ``bad_keys`` exactly: a file that covers more than
+    the one split being imported (train and test together, say) needs filtering, not a key fix."""
+    splits_of: dict[str, set[str]] = {}
+    for row in split_rows:
+        splits_of.setdefault(row.key, set()).add(row.split)
+    found: dict[str, int] = {}
+    for key in dict.fromkeys(bad_keys):
+        for other in sorted(splits_of.get(key, set()) - {split}):
+            found[other] = found.get(other, 0) + 1
+    return [
+        f"{count} of these keys are in the pack's {other!r} split, not {split!r}: keep only the "
+        f"file's {split!r} rows, or import it once per split"
+        for other, count in sorted(found.items())
+    ]
 
 
 def _read_csv(path: Path, delimiter: str) -> tuple[list[str], list[tuple[int, dict[str, str]]]]:
@@ -270,7 +289,10 @@ def import_scores(
 
     if unmatched_keys:
         expected_keys = [v.key for v in videos]
-        suggestions = suggest_key_fixes(unmatched_keys, expected_keys)
+        suggestions = [
+            *_other_split_hints(unmatched_keys, proto.split_rows(), split),
+            *suggest_key_fixes(unmatched_keys, expected_keys),
+        ]
         hint = (
             "; ".join(suggestions) if suggestions else "check --map key=... against the pack's keys"
         )

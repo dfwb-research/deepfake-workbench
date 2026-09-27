@@ -11,7 +11,14 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from dfwb.core.errors import ContractError
 
-__all__ = ["DatasetId", "RecordModel", "SchemeName", "Sha256", "assert_no_absolute_paths"]
+__all__ = [
+    "ABSOLUTE_PATH",
+    "DatasetId",
+    "RecordModel",
+    "SchemeName",
+    "Sha256",
+    "assert_no_absolute_paths",
+]
 
 DatasetId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")]
 SchemeName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:[-+][a-z0-9]+)*$")]
@@ -24,14 +31,16 @@ class RecordModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-# An absolute path starts a value or follows a separator: "/x", "~/x", "run:/x", "--out=/x",
-# "file:///x". Not paths: "//" as in "https://", and a slash before a space ("real / fake").
-_ABSOLUTE = re.compile(r"(?:^|[\s=:,;\"'(])(?:~/|/(?![/\s]))|file:///")
+#: What the absolute-path guard flags: a path that starts a value or follows a separator ("/x",
+#: "~/x", "run:/x", "--out=/x"), or a file URL ("file:///x"). Not paths: "//" as in "https://",
+#: and a slash before a space ("real / fake"). :func:`dfwb.core.runmeta.sanitize_command` uses
+#: this same pattern to find what it must still clean, so the two always agree.
+ABSOLUTE_PATH = re.compile(r"(?:^|[\s=:,;\"'(])(?:~/|/(?![/\s]))|file:///")
 
 
 def _walk(value: Any, where: str) -> None:
     if isinstance(value, str):
-        if _ABSOLUTE.search(value):
+        if ABSOLUTE_PATH.search(value):
             raise ContractError(
                 f"{where}: {value!r} looks like an absolute path",
                 hint="records store paths relative to a DFWB root (see dfwb.core.paths.RelPath)",

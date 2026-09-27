@@ -430,3 +430,28 @@ def test_summary_returns_a_copy_its_caller_can_change(tmp_path, toyone_pack):
     )
     index.summary()["sources"][0]["counts"]["included"] = -1
     assert index.summary()["sources"][0]["counts"]["included"] != -1
+
+
+# ----------------------------------------------------------------------------- store index hash
+
+
+def test_store_index_sha256_is_none_for_a_store_with_no_index_yet(tmp_path):
+    from dfwb.data.index import store_index_sha256
+
+    _store_dir(tmp_path / "work").mkdir(parents=True)
+
+    assert store_index_sha256(tmp_path / "work", "toyone", PROFILE_ID) is None
+
+
+def test_store_index_sha256_hashes_the_index_and_changes_when_it_grows(tmp_path):
+    from dfwb.core.hashing import sha256_file
+    from dfwb.data.index import store_index_sha256
+
+    work_root = tmp_path / "work"
+    store_dir = _seed_store(work_root, [processed_record("REAL/a")])
+    before = store_index_sha256(work_root, "toyone", PROFILE_SLUG)
+    assert before == sha256_file(store_dir / "index.jsonl")
+
+    _seed_store(work_root, [processed_record("REAL/a"), processed_record("FAKE/b")])
+
+    assert store_index_sha256(work_root, "toyone", PROFILE_ID) != before

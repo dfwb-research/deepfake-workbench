@@ -247,3 +247,250 @@ def _row(task, i, compression, label, score, label_key, method):
         label_key=label_key,
         method=method,
     )
+
+
+# ------------------------------------------------------------------ list-valued ``where`` filters
+
+
+def test_evaluate_seed_grouping_handles_a_list_valued_where(tmp_path):
+    """An any-of ``where`` (``--where method=a --where method=b``) is stored as a list; grouping
+    files into "the same run, another seed" must not need it to be hashable."""
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    where = {"method": ["Deepfakes", "original"], "compression": "c23"}
+    protocol = {**_PROTO, "where": where}
+    path_a = _write(
+        tmp_path,
+        "s0.scores.csv",
+        make_rows(20, 20),
+        make_meta(seed=0, protocol=protocol, coverage=cov),
+    )
+    path_b = _write(
+        tmp_path,
+        "s1.scores.csv",
+        make_rows(20, 20, fake_score=0.9),
+        make_meta(seed=1, protocol=protocol, coverage=cov),
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert [row["seeds"] for row in result.tables["seeds"]] == [[0, 1]]
+
+
+def test_evaluate_seed_grouping_treats_list_order_as_irrelevant(tmp_path):
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    first = {**_PROTO, "where": {"method": ["Deepfakes", "original"]}}
+    second = {**_PROTO, "where": {"method": ["original", "Deepfakes"]}}
+    path_a = _write(
+        tmp_path,
+        "s0.scores.csv",
+        make_rows(20, 20),
+        make_meta(seed=0, protocol=first, coverage=cov),
+    )
+    path_b = _write(
+        tmp_path,
+        "s1.scores.csv",
+        make_rows(20, 20),
+        make_meta(seed=1, protocol=second, coverage=cov),
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert [row["seeds"] for row in result.tables["seeds"]] == [[0, 1]]
+
+
+def test_evaluate_suite_matches_a_list_where_whatever_its_order(tmp_path):
+    """A suite entry written the way dfwb-protocols' ``in-domain-ffpp`` writes one (``method:
+    [original, Deepfakes]``) matches the file ``dfwb score`` wrote for it, whose meta holds the
+    same list in canonical (sorted) order."""
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    stored = {"method": ["Deepfakes", "original"], "compression": "c23"}
+    path = _write(
+        tmp_path,
+        "df.scores.csv",
+        make_rows(20, 20),
+        make_meta(
+            seed=None, protocol={**_PROTO, "id": "ffpp/official", "where": stored}, coverage=cov
+        ),
+    )
+    suite = Suite.model_validate(
+        {
+            "name": "in-domain-like",
+            "entries": [
+                {
+                    "protocol": "ffpp/official",
+                    "split": "test",
+                    "where": {"method": ["original", "Deepfakes"], "compression": "c23"},
+                    "group": "in-domain",
+                }
+            ],
+            "aggregates": [{"group": "in-domain", "metric": "auc", "how": "mean"}],
+        }
+    )
+
+    result = evaluate([path], metrics=["auc"], suite=suite, bootstrap=0)
+
+    (row,) = result.tables["suite"]
+    assert row["n_entries"] == 1
+    assert row["value"] == pytest.approx(result.tables["files"][0]["metrics"]["auc"]["value"])
+
+
+# ------------------------------------------------------------------------- undefined metric cells
+
+
+def _all_fake_rows(n):
+    return [ScoreRow("d", f"fake/{i:04d}", None, 1, 0.8, "ok") for i in range(n)]
+
+
+def test_a_single_class_file_gets_undefined_cells_not_an_abort(tmp_path):
+    good = _write(
+        tmp_path,
+        "good.scores.csv",
+        make_rows(10, 10),
+        make_meta(seed=None, coverage={"expected": 20, "ok": 20, "missing": 0, "error": 0}),
+    )
+    one_class = _write(
+        tmp_path,
+        "fakes.scores.csv",
+        _all_fake_rows(10),
+        make_meta(seed=None, coverage={"expected": 10, "ok": 10, "missing": 0, "error": 0}),
+    )
+
+    result = evaluate([good, one_class], metrics=["auc", "brier"], bootstrap=0)
+
+    assert result.exit_code == 0
+    rows = {row["file"]: row for row in result.tables["files"]}
+    assert rows["good.scores.csv"]["metrics"]["auc"]["value"] == pytest.approx(1.0)
+    undefined = rows["fakes.scores.csv"]["metrics"]["auc"]
+    assert undefined["value"] is None
+    assert undefined["ci_lo"] is None
+    assert undefined["ci_hi"] is None
+    assert "every label is 'fake'" in undefined["undefined"]
+    # a metric that is defined on one class is still reported for the same file
+    assert rows["fakes.scores.csv"]["metrics"]["brier"]["value"] is not None
+    json.loads(json.dumps(result.to_json(), allow_nan=False))
+
+
+def test_an_undefined_metric_is_left_out_of_the_seed_and_suite_numbers(tmp_path):
+    cov = {"expected": 20, "ok": 20, "missing": 0, "error": 0}
+    path_a = _write(tmp_path, "s0.scores.csv", make_rows(10, 10), make_meta(seed=0, coverage=cov))
+    path_b = _write(
+        tmp_path,
+        "s1.scores.csv",
+        _all_fake_rows(20),
+        make_meta(seed=1, coverage=cov),
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert "seeds" not in result.tables  # only one seed has a defined auc
+
+
+def test_a_suite_group_whose_only_file_is_single_class_is_an_undefined_row(tmp_path):
+    cov = {"expected": 20, "ok": 20, "missing": 0, "error": 0}
+    path_a = _write(
+        tmp_path,
+        "a.scores.csv",
+        make_rows(10, 10),
+        make_meta(protocol={**_PROTO, "id": "alpha/official"}, coverage=cov),
+    )
+    path_b = _write(
+        tmp_path,
+        "b.scores.csv",
+        _all_fake_rows(20),
+        make_meta(protocol={**_PROTO, "id": "beta/official"}, coverage=cov),
+    )
+    suite = Suite.model_validate(
+        {
+            "name": "demo",
+            "entries": [
+                {"protocol": "alpha/official", "split": "test", "group": "in-domain"},
+                {"protocol": "beta/official", "split": "test", "group": "cross-dataset"},
+            ],
+            "aggregates": [
+                {"group": "in-domain", "metric": "auc"},
+                {"group": "cross-dataset", "metric": "auc"},
+            ],
+        }
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], suite=suite, bootstrap=0)
+
+    suite_rows = {row["group"]: row for row in result.tables["suite"]}
+    assert suite_rows["in-domain"]["value"] == pytest.approx(1.0)
+    assert suite_rows["cross-dataset"]["value"] is None
+    assert suite_rows["cross-dataset"]["n_entries"] == 0
+    assert suite_rows["cross-dataset"]["undefined"]
+    assert result.exit_code == 0
+    json.dumps(result.to_json(), allow_nan=False)  # the undefined row is still valid JSON
+
+
+def test_evaluate_raises_only_when_no_metric_is_defined_for_any_file(tmp_path):
+    from dfwb.eval.metrics import MetricUndefined
+
+    cov = {"expected": 10, "ok": 10, "missing": 0, "error": 0}
+    path_a = _write(
+        tmp_path, "a.scores.csv", _all_fake_rows(10), make_meta(seed=None, coverage=cov)
+    )
+    path_b = _write(
+        tmp_path, "b.scores.csv", _all_fake_rows(10), make_meta(seed=None, coverage=cov)
+    )
+
+    with pytest.raises(MetricUndefined, match="no requested metric") as info:
+        evaluate([path_a, path_b], metrics=["auc", "eer"], bootstrap=0)
+
+    assert info.value.exit_code == 4
+    assert "every label is 'fake'" in info.value.message
+
+
+# ------------------------------------------------------------------ the seeds table's identity
+
+
+def test_two_files_with_one_identity_and_seed_warn_and_keep_the_first(tmp_path, caplog):
+    """``#best`` and ``#last`` of one run share the detector source and the seed; folding both
+    into the seeds table as if they were two seeds would be wrong, and so is silently dropping
+    one. The first file given is kept, and a warning says which was ignored."""
+    import logging
+
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    best = _write(tmp_path, "best.scores.csv", make_rows(20, 20), make_meta(seed=0, coverage=cov))
+    last = _write(
+        tmp_path,
+        "last.scores.csv",
+        make_rows(20, 20, fake_score=0.1),  # an AUC of 0.0: easy to tell apart from best's 1.0
+        make_meta(seed=0, coverage=cov),
+    )
+    other_seed = _write(
+        tmp_path, "s1.scores.csv", make_rows(20, 20), make_meta(seed=1, coverage=cov)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        result = evaluate([best, last, other_seed], metrics=["auc"], bootstrap=0)
+
+    (seed_row,) = result.tables["seeds"]
+    assert seed_row["seeds"] == [0, 1]
+    assert seed_row["values"] == pytest.approx([1.0, 1.0])  # best's value, not last's
+    warnings = [m for m in caplog.messages if "last.scores.csv" in m]
+    assert len(warnings) == 1
+    assert "best.scores.csv" in warnings[0]
+    assert "keeping" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"labels": "family"},
+        {"aggregation": {"clip_to_video": "max", "clips_per_video": 1}},
+        {"processing_profile": {"id": "other-00000000", "sha256": "f" * 64}},
+    ],
+    ids=["labels", "aggregation", "processing_profile"],
+)
+def test_files_scored_differently_are_not_seeds_of_one_run(tmp_path, change):
+    cov = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    path_a = _write(tmp_path, "s0.scores.csv", make_rows(20, 20), make_meta(seed=0, coverage=cov))
+    path_b = _write(
+        tmp_path, "s1.scores.csv", make_rows(20, 20), make_meta(seed=1, coverage=cov, **change)
+    )
+
+    result = evaluate([path_a, path_b], metrics=["auc"], bootstrap=0)
+
+    assert "seeds" not in result.tables

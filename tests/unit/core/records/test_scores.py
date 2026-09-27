@@ -232,3 +232,36 @@ def test_reader_reports_the_physical_line(tmp_path, content):
     path.write_text(content)
     with pytest.raises(ContractError, match=r"lines.scores.csv:4: column 'score' must be float"):
         read_scores(path)
+
+
+# ------------------------------------------------------------------------------- canonical_where
+
+
+def test_canonical_where_sorts_membership_values_and_keeps_scalars():
+    from dfwb.core.records import canonical_where
+
+    where = {"method": ["original", "Deepfakes"], "compression": "c23"}
+
+    assert canonical_where(where) == {"method": ["Deepfakes", "original"], "compression": "c23"}
+
+
+def test_canonical_where_treats_tuples_and_sets_as_membership_too():
+    from dfwb.core.records import canonical_where
+
+    assert canonical_where({"identity": ("b", "a")}) == {"identity": ["a", "b"]}
+    assert canonical_where({"identity": {"b", "a"}}) == {"identity": ["a", "b"]}
+
+
+def test_canonical_where_orders_a_null_member_deterministically():
+    from dfwb.core.records import canonical_where
+
+    first = canonical_where({"compression": ["c23", None]})
+    second = canonical_where({"compression": [None, "c23"]})
+
+    assert first == second
+
+
+def test_canonical_where_of_none_is_empty():
+    from dfwb.core.records import canonical_where
+
+    assert canonical_where(None) == {}

@@ -33,6 +33,7 @@ from dfwb.core.records.scores import (
     ScoreFile,
     ScoreMeta,
     ScoreRow,
+    canonical_where,
     read_scores,
     write_scores,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "TrackStats",
     "VideoRecord",
     "assert_no_absolute_paths",
+    "canonical_where",
     "iter_jsonl_dicts",
     "read_jsonl",
     "read_scores",

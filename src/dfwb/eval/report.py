@@ -8,13 +8,15 @@ roll a suite's entries into its aggregate rows.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 from dfwb.core.errors import ConfigError
-from dfwb.core.records import ScoreFile, ScoreMeta, ScoreRow, read_scores
+from dfwb.core.hashing import canonical_json
+from dfwb.core.records import ScoreFile, ScoreMeta, ScoreRow, canonical_where, read_scores
 from dfwb.eval.bootstrap import bootstrap_ci, summarize_seeds
 from dfwb.eval.breakdown import group_rows
 from dfwb.eval.coverage import Coverage, FloatArray, IntArray, coverage_of, labels_and_scores
@@ -23,7 +25,21 @@ from dfwb.eval.suites import Suite, aggregate_suite, load_suite
 
 __all__ = ["EvalResult", "evaluate"]
 
-_Identity = tuple[str, str, str, tuple[tuple[str, Any], ...]]
+_log = logging.getLogger(__name__)
+
+_Identity = tuple[str, str, str, str, str, str, str]
+
+
+class MetricEntry(TypedDict):
+    """One metric's row: its point estimate and its bootstrap CI -- ``None`` for both bounds when
+    ``bootstrap=0`` asked for no interval (see :func:`~dfwb.eval.bootstrap.bootstrap_ci`). A
+    metric undefined on this file's rows (a two-class metric on a file with one class, say) has
+    ``None`` for all three and its reason in ``undefined``."""
+
+    value: float | None
+    ci_lo: float | None
+    ci_hi: float | None
+    undefined: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -58,20 +74,27 @@ class EvalResult:
         }
 
 
+def _where_key(where: dict[str, Any]) -> str:
+    """A hashable, order-free text form of a ``where`` filter: two filters that select the same
+    videos (the same values, any list order, any key order) give the same text."""
+    return canonical_json(canonical_where(where))
+
+
 def _identity(meta: ScoreMeta) -> _Identity:
-    """Everything about a run that must match for two files to be "the same run, another seed"."""
+    """Everything about a run that must match for two files to be "the same run, another seed":
+    the detector's source, the protocol, split and ``where``, the label mapping, the clip ->
+    video aggregation and the processing profile."""
+    aggregation = meta.aggregation
+    profile = meta.processing_profile
     return (
         meta.detector.source,
         meta.protocol.id,
         meta.protocol.split,
-        tuple(sorted(meta.protocol.where.items())),
+        _where_key(meta.protocol.where),
+        meta.labels,
+        canonical_json(None if aggregation is None else aggregation.model_dump()),
+        "" if profile is None else profile.sha256,
     )
-
-
-def _metric_table(
-    metrics: Sequence[str], values: dict[str, float], lo: dict[str, float], hi: dict[str, float]
-) -> dict[str, dict[str, float]]:
-    return {m: {"value": values[m], "ci_lo": lo[m], "ci_hi": hi[m]} for m in values}
 
 
 def _score_metrics(
@@ -82,21 +105,27 @@ def _score_metrics(
     n_boot: int,
     seed: int,
     skip_undefined: bool,
-) -> dict[str, dict[str, float]]:
-    values: dict[str, float] = {}
-    lo: dict[str, float] = {}
-    hi: dict[str, float] = {}
+) -> dict[str, MetricEntry]:
+    """``{metric: {value, ci_lo, ci_hi}}`` for every metric; ``ci_lo``/``ci_hi`` are ``None``
+    when ``n_boot == 0`` was asked for (no confidence interval, value only -- see
+    :func:`~dfwb.eval.bootstrap.bootstrap_ci`). A metric undefined on these rows is left out when
+    ``skip_undefined``, and otherwise reported with ``None`` values and its reason in
+    ``undefined``."""
+    table: dict[str, MetricEntry] = {}
     for metric in metrics:
         try:
             result = bootstrap_ci(metric, y, p, n_boot=n_boot, seed=seed)
-        except MetricUndefined:
-            if skip_undefined:
-                continue
-            raise
-        values[metric] = result.point
-        lo[metric] = result.lo
-        hi[metric] = result.hi
-    return _metric_table(metrics, values, lo, hi)
+        except MetricUndefined as exc:
+            if not skip_undefined:
+                table[metric] = {
+                    "value": None,
+                    "ci_lo": None,
+                    "ci_hi": None,
+                    "undefined": exc.message,
+                }
+            continue
+        table[metric] = {"value": result.point, "ci_lo": result.lo, "ci_hi": result.hi}
+    return table
 
 
 def _file_row(
@@ -171,7 +200,22 @@ def _seed_table(
         meta = score_file.meta
         if meta is None or meta.seed is None:
             continue
-        groups.setdefault(_identity(meta), {})[meta.seed] = index
+        by_seed = groups.setdefault(_identity(meta), {})
+        kept = by_seed.get(meta.seed)
+        if kept is not None:
+            # e.g. a run's #best and #last checkpoints: the same experiment and seed, twice.
+            _log.warning(
+                "seeds: %s has the same detector source, protocol, split, where, labels, "
+                "aggregation, processing profile and seed (%d) as %s; keeping %s in the seeds "
+                "table and ignoring %s",
+                score_file.path.name,
+                meta.seed,
+                files[kept].path.name,
+                files[kept].path.name,
+                score_file.path.name,
+            )
+            continue
+        by_seed[meta.seed] = index
     rows: list[dict[str, Any]] = []
     for identity, by_seed in groups.items():
         if len(by_seed) < 2:
@@ -197,22 +241,39 @@ def _seed_table(
 
 
 def _suite_table(
-    suite_arg: Suite | str, files: Sequence[ScoreFile], points: list[dict[str, float]]
+    suite_arg: Suite | str, files: Sequence[ScoreFile], values: list[dict[str, float | None]]
 ) -> list[dict[str, Any]]:
     suite = load_suite(suite_arg) if isinstance(suite_arg, str) else suite_arg
-    entry_results: dict[int, dict[str, float]] = {}
+    entry_results: dict[int, dict[str, float | None]] = {}
     for entry_index, entry in enumerate(suite.entries):
+        entry_where = _where_key(entry.where)
         for file_index, score_file in enumerate(files):
             meta = score_file.meta
             if (
                 meta is not None
                 and meta.protocol.id == entry.protocol
                 and meta.protocol.split == entry.split
-                and meta.protocol.where == entry.where
+                and _where_key(meta.protocol.where) == entry_where
             ):
-                entry_results[entry_index] = points[file_index]
+                entry_results[entry_index] = values[file_index]
                 break
     return aggregate_suite(suite, entry_results)
+
+
+def _raise_nothing_defined(files: Sequence[ScoreFile], file_rows: Sequence[dict[str, Any]]) -> None:
+    reasons = [
+        f"{score_file.path.name}: {entry['undefined']}"
+        for score_file, row in zip(files, file_rows, strict=True)
+        for entry in row["metrics"].values()
+    ]
+    raise MetricUndefined(
+        f"no requested metric is defined for any of the {len(files)} file(s) ("
+        + "; ".join(reasons[:4])
+        + ("; ..." if len(reasons) > 4 else "")
+        + ")",
+        hint="check each file holds both real and fake rows, or ask for a metric that needs "
+        "only one class (e.g. brier, nll, acc@thr=0.5)",
+    )
 
 
 def evaluate(
@@ -232,7 +293,11 @@ def evaluate(
     ``missing``/``error``, always over every row, unaffected by ``missing``), ``n`` (how many rows
     were actually fed to the metric once ``missing`` was applied -- equal to ``ok`` for
     ``"exclude"``, to every row for the other three policies), and every metric's point estimate
-    with its stratified-bootstrap CI. ``exit_code`` is ``3`` (never raised as an exception -- the
+    with its stratified-bootstrap CI (``bootstrap=0`` means no CI: ``ci_lo``/``ci_hi`` are
+    ``None``, the point estimate is still reported). A metric undefined for a file (a two-class
+    metric on a file whose rows are all one class, say) is an undefined cell -- ``None`` value
+    and bounds, with the reason in ``undefined`` -- rather than an error, so one such file never
+    hides every other file's numbers. ``exit_code`` is ``3`` (never raised as an exception -- the
     tables are still built and returned) when any file's coverage is below ``min_coverage``.
 
     ``by`` additionally breaks each file down by ``"method"``, ``"compression"``, ``"label_key"``
@@ -243,33 +308,44 @@ def evaluate(
     metric still undefined for a group (most often a cross-class metric on the real group itself,
     which nothing is added to) is left out of that group's row rather than failing the whole call.
 
-    Several files that agree on everything but ``meta.seed`` get an extra ``tables["seeds"]`` row
-    per metric: the per-seed values plus their mean and sample standard deviation.
+    Several files that agree on the detector's source, the protocol, split and ``where``, the
+    label mapping, the aggregation and the processing profile, but not on ``meta.seed``, get an
+    extra ``tables["seeds"]`` row per metric: the per-seed values plus their mean and sample
+    standard deviation (a seed whose metric is undefined is left out). Two such files that also
+    share a seed (a run's ``#best`` and ``#last``, say) are not two seeds: the first one given is
+    kept, and a warning names the one ignored.
 
     ``suite`` (a loaded :class:`~dfwb.eval.suites.Suite`, or a name registered in the
     ``eval_suites`` data registry) matches each of its entries to the input file whose meta
-    protocol/split/where agree, and adds a ``tables["suite"]`` row per aggregate.
+    protocol/split/where agree, and adds a ``tables["suite"]`` row per aggregate; a group whose
+    matched files all have the metric undefined gets an undefined row (``value`` ``None``, the
+    reason in ``undefined``).
 
     Raises:
         ConfigError: ``files`` is empty.
         ContractError: a file cannot be read, or ``by="family"`` is requested for a file with no
             ``.meta.json``.
-        MetricUndefined: a top-level metric (not a breakdown group) is undefined for a file.
+        MetricUndefined: no requested metric is defined for any file (the message gives each
+            file's reason).
     """
     if not files:
         raise ConfigError("evaluate needs at least one score file", hint="pass 1 or more files")
     loaded = [read_scores(f) for f in files]
 
     coverages = [coverage_of(sf.rows) for sf in loaded]
-    points: list[dict[str, float]] = []
+    points: list[dict[str, float]] = []  # defined values only
+    values: list[dict[str, float | None]] = []  # every requested metric; None where undefined
     file_rows: list[dict[str, Any]] = []
     for score_file, coverage in zip(loaded, coverages, strict=True):
         y, p, kept = labels_and_scores(score_file.rows, missing=missing)
         metric_table = _score_metrics(
             metrics, y, p, n_boot=bootstrap, seed=seed, skip_undefined=False
         )
-        points.append({m: v["value"] for m, v in metric_table.items()})
+        values.append({m: v["value"] for m, v in metric_table.items()})
+        points.append({m: v for m, v in values[-1].items() if v is not None})
         file_rows.append(_file_row(score_file, coverage, len(kept), metric_table))
+    if metrics and not any(points):
+        _raise_nothing_defined(loaded, file_rows)
 
     tables: dict[str, list[dict[str, Any]]] = {"files": file_rows}
 
@@ -283,7 +359,7 @@ def evaluate(
         tables["seeds"] = seed_rows
 
     if suite is not None:
-        tables["suite"] = _suite_table(suite, loaded, points)
+        tables["suite"] = _suite_table(suite, loaded, values)
 
     exit_code = 3 if any(not c.meets(min_coverage) for c in coverages) else 0
     return EvalResult(

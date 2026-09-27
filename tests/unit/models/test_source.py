@@ -109,3 +109,55 @@ def test_registered_as_a_builtin_detector_source():
     assert entry.requires == ("torch",)
     loader = get_registry("detector_sources").load("run")
     assert loader is load_run
+
+
+# ------------------------------------------------------------------- checkpoint_sha256 / seed
+
+
+def test_checkpoint_sha256_equals_the_weights_files_hash(tmp_path):
+    from dfwb.core.hashing import sha256_file
+
+    run_dir, _ = _make_run(tmp_path)
+    detector = load_run(f"{run_dir}#best")
+    expected = sha256_file(checkpoint.weights_path(run_dir / "checkpoints" / "best"))
+    assert detector.checkpoint_sha256 == expected
+
+
+def test_checkpoint_sha256_differs_between_best_and_last(tmp_path):
+    run_dir = tmp_path / "runs" / "toy" / "20260925-120000-s0"
+    for tag in ("best", "last"):
+        checkpoint_dir = run_dir / "checkpoints" / tag
+        checkpoint_dir.mkdir(parents=True)
+        # Freshly (and separately) initialised weights: never seeded the same way twice, so
+        # their sha256 differ, exactly like two real, independently trained checkpoints would.
+        detector = build_detector(_model_cfg(), source="run:shared-fingerprint")
+        checkpoint.save(checkpoint_dir, detector, _model_cfg())
+
+    best = load_run(f"{run_dir}#best")
+    last = load_run(f"{run_dir}#last")
+    assert best.checkpoint_sha256 != last.checkpoint_sha256
+    assert best.meta.source == last.meta.source == "run:shared-fingerprint"
+
+
+def test_training_seed_is_read_from_env_json(tmp_path):
+    import json
+
+    run_dir, _ = _make_run(tmp_path)
+    (run_dir / "env.json").write_text(json.dumps({"seed": 7}), encoding="utf-8")
+
+    detector = load_run(f"{run_dir}#best")
+
+    assert detector.training_seed == 7
+
+
+def test_training_seed_is_none_without_an_env_json(tmp_path):
+    run_dir, _ = _make_run(tmp_path)  # _make_run never writes env.json
+    detector = load_run(f"{run_dir}#best")
+    assert detector.training_seed is None
+
+
+def test_training_seed_is_none_for_an_unreadable_env_json(tmp_path):
+    run_dir, _ = _make_run(tmp_path)
+    (run_dir / "env.json").write_text("not json", encoding="utf-8")
+    detector = load_run(f"{run_dir}#best")
+    assert detector.training_seed is None

@@ -31,7 +31,7 @@ from dfwb.core.registry import BUILTIN_PROVIDER, LOCAL_PROVIDER
 from dfwb.models.backbone import Backbone
 from dfwb.models.detector import AssembledDetector, assemble_detector
 
-__all__ = ["load", "save"]
+__all__ = ["load", "save", "weights_path"]
 
 _MODEL_FILE = "model.safetensors"
 _META_FILE = "detector.json"
@@ -68,6 +68,13 @@ def _components(section: ModelSection) -> list[dict[str, Any]]:
     if section.stem is not None:
         components.append(_component_entry("layers", section.stem.name, versions))
     return components
+
+
+def weights_path(directory: str | Path) -> Path:
+    """The ``model.safetensors`` file inside a checkpoint ``directory`` -- for a caller (the
+    ``run:`` detector source) that wants to hash or otherwise inspect the exact weights file
+    without knowing this module's own layout."""
+    return Path(directory) / _MODEL_FILE
 
 
 def save(

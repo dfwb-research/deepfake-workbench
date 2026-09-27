@@ -44,3 +44,12 @@ def test_built_in_protocol_packs_register_as_data(monkeypatch):
     (entry,) = api.protocol_packs.entries()
     assert (entry.key, entry.target) == ("toyfake", "dfwb:_packs/toyfake")
     assert entry.summary == "Built-in synthetic toyfake protocol pack"
+
+
+def test_built_in_eval_suites_register_as_data(monkeypatch):
+    monkeypatch.setattr(_builtins, "INVENTORY_BUILDERS", ())
+    api = _api()
+    _builtins.register(api)
+    (entry,) = api.eval_suites.entries()
+    assert (entry.key, entry.target) == ("toyfake", "dfwb:_packs/suites/toyfake.yaml")
+    assert entry.summary == "Built-in synthetic toyfake eval suite"

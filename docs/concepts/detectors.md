@@ -1,9 +1,12 @@
 # Detectors
 
 A **detector** is anything that can score clips: a model `dfwb train` just produced, a run trained
-earlier and reloaded, or (later) a pretrained adapter. Every one of them implements the same small
-contract, `dfwb.core.detector.Detector`, so any code that scores clips — training's own validation
-loop, and future evaluation code — works the same way whatever detector it is holding.
+earlier and reloaded, or a zoo adapter. Every one of them implements the same small contract,
+`dfwb.core.detector.Detector`, so any code that scores clips — training's own validation loop, and
+`dfwb score` — works the same way whatever detector it is holding. A detector source (`run:`,
+`zoo:`, `py:`) may also set a few optional attributes beyond the contract itself
+(`checkpoint_sha256`, `training_seed`, `fingerprint_extra`, `cacheable`) that sharpen a score
+file's meta and its cache key; see `docs/concepts/score-files.md`.
 
 ## The `Detector` contract
 
@@ -157,7 +160,7 @@ after the upstream model is removed.
 ```
 runs/<run.name>/<YYYYmmdd-HHMMSS>-s<seed>/
   config.resolved.yaml          # the resolved config
-  fingerprint.txt                # the config's fingerprint (same for every run of the experiment)
+  fingerprint.txt                # the config's fingerprint (shared by every seed in run.seeds)
   env.json                       # seed, versions, device, git state, command, plugin providers
   data.json                      # per source: protocol, pack version, split hash, profile, counts
   checkpoints/best/model.safetensors
@@ -230,5 +233,9 @@ transform pipeline — a backbone declares the mean/std its pretrained weights e
   precision, freezing, the optimiser, and what a run's checkpoints and score files hold.
 - `docs/concepts/processing-profiles.md` — what a processed store's `ProcessingProfile` records,
   which `adapt()` reads.
+- `docs/concepts/score-files.md` — the C5 score file `dfwb score` writes from any `Detector`, and
+  the optional attributes a detector source can set on one.
 - `docs/guides/write-a-plugin.md` — registering a `backbones`, `temporal_pools`, `heads` or `layers`
   (stem) component that assembles into a `Detector`.
+- `docs/guides/add-a-detector.md` — scoring a detector of your own (`py:`) or a zoo adapter
+  (`zoo:`).

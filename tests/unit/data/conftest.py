@@ -29,7 +29,12 @@ __all__ = [
     "write_store_index",
 ]
 
-_TINY_PNG = cv2.imencode(".png", np.zeros((2, 2, 3), dtype=np.uint8))[1].tobytes()
+
+def _tiny_png(size: int = 2) -> bytes:
+    return cv2.imencode(".png", np.zeros((size, size, 3), dtype=np.uint8))[1].tobytes()
+
+
+_TINY_PNG = _tiny_png()
 
 
 @pytest.fixture
@@ -68,12 +73,23 @@ def write_store_index(store_dir: Path, records: Sequence[ProcessedRecord]) -> No
     write_jsonl(store_dir / "index.jsonl", records)
 
 
-def write_store_frames(store_dir: Path, record: ProcessedRecord, n: int | None = None) -> None:
-    """Write ``n`` (default: ``record.n_frames``) tiny black PNGs under ``record``'s frame dir."""
+def write_store_frames(
+    store_dir: Path, record: ProcessedRecord, n: int | None = None, *, size: int | None = None
+) -> None:
+    """Write ``n`` (default: ``record.n_frames``) black PNGs under ``record``'s frame dir.
+
+    ``size`` (default: the module's tiny 2x2 placeholder) should be the store's own
+    ``profile.crop.size`` whenever a real C4 detector will actually run over these frames: input
+    adaptation may see the store's declared crop size already equal to what the detector wants and
+    skip inserting a resize step (a real store's frames are always genuinely that size), so a
+    placeholder narrower than declared silently starves a detector whose architecture needs real
+    spatial extent (a fixed-size CNN, unlike a detector that only ever reduces over every pixel).
+    """
     frame_dir = store_dir / record.relpath
     frame_dir.mkdir(parents=True, exist_ok=True)
+    payload = _TINY_PNG if size is None else _tiny_png(size)
     for i in range(record.n_frames if n is None else n):
-        (frame_dir / f"frame_{i:06d}.png").write_bytes(_TINY_PNG)
+        (frame_dir / f"frame_{i:06d}.png").write_bytes(payload)
 
 
 def write_provenance(dataset_dir: Path, *, builder_version: str) -> None:

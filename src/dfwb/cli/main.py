@@ -39,7 +39,15 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
     "runs": ("dfwb.cli.runs:runs", "List and show training runs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),
+    "score": (
+        "dfwb.cli.score:score",
+        "Run a detector over a protocol split (or a suite) and write score files.",
+    ),
     "train": ("dfwb.cli.train:train", "Train a config, or resume an interrupted run."),
+    "zoo": (
+        "dfwb.cli.zoo:zoo",
+        "List, inspect, fetch and check parity of registered zoo adapters.",
+    ),
 }
 
 ISSUES_URL = "https://github.com/dfwb-research/deepfake-workbench/issues"
