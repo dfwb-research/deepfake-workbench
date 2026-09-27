@@ -26,18 +26,22 @@ def _write_sample_archives(archives):
     write_shard(archives / "fake_test" / "100.tar.gz", "100", "fake", [("0", "0.png", b"f0")])
 
 
-def test_unpack_writes_the_tree_and_reports_counts(run, tmp_path):
+def test_unpack_writes_the_tree_and_reports_counts(run, tmp_path, monkeypatch):
     archives = tmp_path / "archives"
     _write_sample_archives(archives)
-    to = tmp_path / "out" / "WildDeepfake"
+    root = tmp_path / "out"
+    to = root / "WildDeepfake"
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", str(root))
 
     result = run(
-        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to), "--json"
+        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root), "--json"
     )
     assert result.code == 0, result.err
     data = json.loads(result.out)
     assert data["dataset_id"] == "wilddeepfake"
+    assert data["datasets_root"] == str(root)
     assert data["to"] == str(to)
+    assert data["inventory_folder"] == str(to)
     assert sorted(data["categories"]) == ["fake_test", "real_train"]
     assert data["shards_found"] == 2
     assert data["sequences_written"] == 2
@@ -45,26 +49,84 @@ def test_unpack_writes_the_tree_and_reports_counts(run, tmp_path):
     assert data["frames_written"] == 3
     assert data["by_task"] == {"REAL": 1, "FAKE": 1}
     assert data["warnings"] == {"count": 0, "first": []}
+    assert data["layout_warnings"] == []
     assert (to / REAL_DIR / "real_train_6_54" / "000000.png").read_bytes() == b"r0"
     assert (to / FAKE_DIR / "fake_test_100_0" / "000000.png").read_bytes() == b"f0"
 
 
-def test_unpack_prints_a_plain_summary_without_json(run, tmp_path):
+def test_unpack_prints_a_plain_summary_without_json(run, tmp_path, monkeypatch):
     archives = tmp_path / "archives"
     _write_sample_archives(archives)
-    to = tmp_path / "out" / "WildDeepfake"
+    root = tmp_path / "out"
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", str(root))
 
-    result = run("datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to))
+    result = run("datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root))
     assert result.code == 0, result.err
-    assert str(to) in result.out
+    assert str(root / "WildDeepfake") in result.out
     assert "REAL 1" in result.out
     assert "FAKE 1" in result.out
+    assert "warning" not in result.out + result.err
+
+
+def test_after_unpack_to_a_root_inventory_build_with_that_root_finds_the_records(
+    run, tmp_path, monkeypatch
+):
+    archives = tmp_path / "archives"
+    _write_sample_archives(archives)
+    root = tmp_path / "datasets"
+    monkeypatch.setenv("DFWB_DATASETS_ROOT", str(root))
+    monkeypatch.setenv("DFWB_WORK_ROOT", str(tmp_path / "work"))
+
+    unpacked = run(
+        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root), "--json"
+    )
+    assert unpacked.code == 0, unpacked.err
+    built = run("inventory", "build", "wilddeepfake", "--json")
+    assert built.code == 0, built.err
+
+    found = json.loads(unpacked.out)["by_task"]
+    inventory = json.loads(built.out)
+    assert inventory["dataset_dir"] == str(root / "WildDeepfake")
+    assert inventory["by_task"] == found == {"REAL": 1, "FAKE": 1}
+
+
+def test_unpack_warns_when_inventory_build_would_not_look_there(run, tmp_path):
+    archives = tmp_path / "archives"
+    _write_sample_archives(archives)
+    root = tmp_path / "datasets"  # no DFWB_DATASETS_ROOT names it
+
+    result = run("datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root))
+    assert result.code == 0, result.err
+    assert "warning: `dfwb inventory build wilddeepfake` will not find" in result.err
+    assert f"DFWB_DATASETS_ROOT={root}" in result.err
+
+    data = json.loads(
+        run(
+            "datasets",
+            "unpack",
+            "wilddeepfake",
+            "--from",
+            str(archives),
+            "--to",
+            str(root),
+            "--json",
+        ).out
+    )
+    assert data["inventory_folder"] is None
+    assert data["by_task"] is None
+
+
+def test_unpack_help_says_to_is_a_datasets_root(run):
+    result = run("datasets", "unpack", "--help")
+    assert result.code == 0
+    text = " ".join(result.out.split())
+    assert "--to DIRECTORY The datasets root to unpack into" in text
 
 
 def test_unpack_is_resumable_across_two_invocations(run, tmp_path):
     archives = tmp_path / "archives"
     _write_sample_archives(archives)
-    to = tmp_path / "out" / "WildDeepfake"
+    to = tmp_path / "out"
 
     first = run(
         "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to), "--json"
@@ -97,10 +159,11 @@ def test_unpack_defaults_to_is_the_first_datasets_root(run, tmp_path, monkeypatc
 def test_unpack_reports_a_mismatched_inner_label_as_a_warning_not_a_failure(run, tmp_path):
     archives = tmp_path / "archives"
     write_shard(archives / "real_train" / "6.tar.gz", "6", "fake", [("54", "0.png", b"x")])
-    to = tmp_path / "out" / "WildDeepfake"
+    root = tmp_path / "out"
+    to = root / "WildDeepfake"
 
     json_result = run(
-        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to), "--json"
+        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root), "--json"
     )
     assert json_result.code == 0, json_result.err
     data = json.loads(json_result.out)
@@ -111,22 +174,22 @@ def test_unpack_reports_a_mismatched_inner_label_as_a_warning_not_a_failure(run,
     assert (to / REAL_DIR / "real_train_6_54" / "000000.png").read_bytes() == b"x"
 
     plain_result = run(
-        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to)
+        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root)
     )
     assert plain_result.code == 0, plain_result.err
-    assert "warning: 1 frame(s)" in plain_result.out
-    assert "fake" in plain_result.out
+    assert "warning: 1 frame(s)" in plain_result.err
+    assert "fake" in plain_result.err
 
 
 def test_unpack_creates_nothing_when_there_are_no_shards(run, tmp_path):
     archives = tmp_path / "archives"
     (archives / "real_train").mkdir(parents=True)
-    to = tmp_path / "out" / "WildDeepfake"
+    root = tmp_path / "out"
 
-    result = run("datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to))
+    result = run("datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(root))
     assert result.code == 2
     assert "hint: " in result.err
-    assert not to.exists()
+    assert not root.exists()
 
 
 def test_unpack_from_a_missing_directory_fails_with_a_hint(run, tmp_path):
@@ -137,7 +200,7 @@ def test_unpack_from_a_missing_directory_fails_with_a_hint(run, tmp_path):
         "--from",
         str(tmp_path / "nope"),
         "--to",
-        str(tmp_path / "WildDeepfake"),
+        str(tmp_path / "datasets"),
     )
     assert result.code == 2
     assert "not a directory" in result.err

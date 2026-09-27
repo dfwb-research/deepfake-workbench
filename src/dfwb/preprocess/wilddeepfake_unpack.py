@@ -16,12 +16,17 @@ A frame's destination path is never built from the archive's own member name -- 
 label, sequence and frame components validated out of it -- so even a member that slipped past
 those checks could not otherwise steer where its bytes land.
 
-A frame is always keyed by its *category's* label -- the ``real``/``fake`` named by the
-``real_train``/``real_test``/``fake_train``/``fake_test`` folder its shard sits in, per the
-maintainer's own build process for the release -- never by the ``<label>`` path component inside
-the shard. A member whose inner ``<label>`` disagrees with its category is not a safety problem
-(it changes nothing about where the frame ends up), so it is not refused; it is reported as a
-warning instead, both on :class:`UnpackResult` and, summarised, in the CLI output.
+The label comes from the category folder: a frame is keyed by the ``real``/``fake`` of the
+``real_train``/``real_test``/``fake_train``/``fake_test`` folder its shard sits in, never by the
+``<label>`` path component inside the shard. An inner label folder that disagrees with its
+category is warned about (it changes nothing about where the frame ends up, so it is not a
+safety problem and not refused), both on :class:`UnpackResult` and, summarised, in the CLI
+output.
+
+Two archives with the same shard id (the name up to its first ``.``) in one category would write
+the same sequence folders, so they are refused, both named, before anything is written. A folder
+next to the categories that is not one of them, and an archive below a category rather than
+directly in it, are not unpacked, and each is warned about.
 
 Real shards' members are commonly named with a leading ``./`` (e.g. ``./6/real/54/0.png``) and
 carry an explicit entry for every directory they hold; both are handled the same as their
@@ -29,6 +34,12 @@ without-prefix, without-directory-entries equivalents (``pathlib.PurePosixPath``
 a leading ``./`` and a trailing ``/``, and a directory entry never matches the four-part
 ``<shard>/<label>/<sequence>/<frame>`` shape a frame needs, so it is skipped like any other
 non-frame member).
+
+The destination is a datasets root: the dataset lands in ``<root>/<builder.expected_folder>``
+(``WildDeepfake``), the folder ``dfwb inventory build`` looks for under a datasets root.
+Afterwards, discovery runs exactly where ``dfwb inventory build`` will look (see
+:func:`~dfwb.preprocess.inventory.runner.discover_located`), which is not this folder when the
+configured datasets roots do not include ``<root>`` or an override points elsewhere.
 
 Unpacking is resumable and idempotent, driven entirely by what is already on disk: a sequence
 whose target folder already holds exactly the frame files the archive says it should is left
@@ -48,9 +59,12 @@ from pathlib import Path, PurePosixPath
 from typing import IO, TYPE_CHECKING, Final
 
 from dfwb.core.errors import ConfigError, ContractError
-from dfwb.preprocess.inventory.runner import collect_records
+from dfwb.preprocess.inventory.runner import discover_located
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from dfwb.core.paths import ResolvedRoot, RootName
     from dfwb.preprocess.inventory.base import BaseBuilder, TaskSpec
 
 __all__ = ["UnpackResult", "unpack_wilddeepfake"]
@@ -68,15 +82,20 @@ class UnpackResult:
 
     dataset_id: str
     from_dir: Path
-    to: Path
+    datasets_root: Path
+    to: Path  # the dataset folder written: datasets_root / builder.expected_folder
     categories: tuple[str, ...]  # category folders found under from_dir and processed
     shards_found: int
     sequences_total: int
     sequences_written: int  # created or rewritten (missing, or incomplete on disk)
     sequences_skipped: int  # already held exactly the expected frames
     frames_written: int
-    by_task: dict[str, int]  # collect_records(builder, to) counts, by task abbr
+    # The folder `dfwb inventory build` reads, and what discovery finds there by task abbr;
+    # both None when it would not find the dataset at all.
+    inventory_folder: Path | None
+    by_task: dict[str, int] | None
     warnings: tuple[str, ...]  # one per frame whose inner label disagreed with its category
+    layout_warnings: tuple[str, ...]  # folders and archives under from_dir left alone
 
 
 @dataclass
@@ -176,10 +195,10 @@ def _grouped_frames(
     not refused -- an archive may hold other files dfwb does not need, and a real shard commonly
     holds an explicit entry for every directory it has, none of which is ever four parts deep.
 
-    A frame is always grouped (and later keyed) by ``label`` -- the category the shard itself sits
-    in -- never by its own inner ``<label>`` path component: the maintainer's own build of the
-    release keys every frame this way regardless of what that inner folder says, and a disagreement
-    there is reported as a warning, not treated as unsafe or refused.
+    The label comes from the category folder: a frame is always grouped (and later keyed) by
+    ``label``, the category the shard itself sits in, never by its own inner ``<label>`` path
+    component. An inner label folder that disagrees is warned about, not treated as unsafe or
+    refused.
 
     Raises:
         ContractError: an unsafe member (see :func:`_unsafe_reason`).
@@ -263,7 +282,7 @@ def _unpack_shard(
             message), or two frames of one sequence normalise to the same output name (see
             :func:`_grouped_frames` and :func:`_unpack_sequence`).
     """
-    shard_id = archive_path.name.partition(".")[0]
+    shard_id = _shard_id(archive_path)
     stats = _ShardStats()
     try:
         with tarfile.open(archive_path, mode="r:*") as tar:
@@ -290,17 +309,77 @@ def _unpack_shard(
     return stats
 
 
-def unpack_wilddeepfake(builder: BaseBuilder, from_dir: Path, to: Path) -> UnpackResult:
-    """Unpack every shard under ``from_dir`` into ``to``, then verify with ``builder``'s discovery.
+def _shard_id(archive_path: Path) -> str:
+    return archive_path.name.partition(".")[0]
+
+
+def _shards_of(from_dir: Path, category: str) -> tuple[list[Path], list[str]]:
+    """The ``*.tar.gz`` shards directly in ``from_dir / category``, and one warning per archive
+    below it instead, which is not unpacked.
+
+    Raises:
+        ConfigError: two shards share a shard id (see the module docstring).
+    """
+    folder = from_dir / category
+    shards = sorted(folder.glob("*.tar.gz"))
+    by_id: dict[str, list[Path]] = {}
+    for shard in shards:
+        by_id.setdefault(_shard_id(shard), []).append(shard)
+    for shard_id, paths in sorted(by_id.items()):
+        if len(paths) > 1:
+            names = " and ".join(path.name for path in paths)
+            raise ConfigError(
+                f"{folder}: {names} are both shard {shard_id} of {category}, and would write the "
+                "same sequence folders",
+                hint="keep one archive per shard in each category folder (a shard's id is its "
+                "name up to the first '.'), and move the other out of --from",
+            )
+    nested = sorted(path for path in folder.rglob("*.tar.gz") if path.parent != folder)
+    warnings = [
+        f"{path.relative_to(from_dir).as_posix()} is below {category}, not directly in it, so it "
+        f"was not unpacked; move it up into {category}/ if it is a shard of the release"
+        for path in nested
+    ]
+    return shards, warnings
+
+
+def _unrecognised_folders(from_dir: Path) -> list[str]:
+    """One warning per folder in ``from_dir`` that is not one of the release's categories."""
+    return [
+        f"{entry.name}/ in {from_dir} is not one of {', '.join(_CATEGORIES)}, so it was not "
+        "unpacked"
+        for entry in sorted(from_dir.iterdir())
+        if entry.is_dir() and entry.name not in _CATEGORIES and not entry.name.startswith(".")
+    ]
+
+
+def _check_directory(path: Path, what: str) -> None:
+    if path.exists() and not path.is_dir():
+        raise ConfigError(
+            f"{path}: not a directory", hint=f"point --to at {what}, not a file, or remove it"
+        )
+
+
+def unpack_wilddeepfake(
+    builder: BaseBuilder,
+    from_dir: Path,
+    datasets_root: Path,
+    *,
+    roots: Mapping[RootName, ResolvedRoot] | None = None,
+) -> UnpackResult:
+    """Unpack every shard under ``from_dir`` into ``datasets_root / builder.expected_folder``,
+    then run discovery where ``dfwb inventory build`` will look.
 
     ``from_dir`` holds one or more of the release's category folders (``real_train``,
-    ``real_test``, ``fake_train``, ``fake_test``), each holding ``<shard>.tar.gz`` files. ``to`` is
-    the dataset folder itself (created if missing), matching ``builder.expected_folder`` -- not
-    its parent datasets root.
+    ``real_test``, ``fake_train``, ``fake_test``), each holding ``<shard>.tar.gz`` files.
+    ``datasets_root`` is a datasets root: the dataset folder is created inside it if missing.
+    ``roots`` are the resolved roots discovery locates the dataset with, exactly as
+    ``dfwb inventory build`` does (default: :func:`~dfwb.core.paths.resolve_roots`).
 
     Raises:
         ConfigError: ``from_dir`` is not a directory, holds none of the release's category
-            folders, or holds no ``*.tar.gz`` shard anywhere.
+            folders, holds no ``*.tar.gz`` shard directly in one, or holds two shards with the
+            same id in one category; or ``datasets_root`` or the dataset folder is a file.
         ContractError: a shard is unreadable or holds an unsafe or inconsistent member (see
             :func:`_unpack_shard`).
     """
@@ -316,17 +395,20 @@ def unpack_wilddeepfake(builder: BaseBuilder, from_dir: Path, to: Path) -> Unpac
             f"{from_dir}: none of {', '.join(_CATEGORIES)} was found",
             hint="point --from at the directory holding those category folders of tar shards",
         )
-    if to.exists() and not to.is_dir():
-        raise ConfigError(f"{to}: not a directory", hint="point --to at a folder, or remove it")
+    to = datasets_root / builder.expected_folder
+    _check_directory(datasets_root, "a datasets root")
+    _check_directory(to, f"a datasets root whose {builder.expected_folder} is a folder")
 
+    layout_warnings = _unrecognised_folders(from_dir)
     shards: list[tuple[str, str, str, Path]] = []  # (label, split, task_video_dir, shard_path)
     for category in categories_present:
         label, _, split = category.partition("_")
         task = tasks_by_kind.get(label)
         if task is None:
             continue
-        for shard_path in sorted((from_dir / category).glob("*.tar.gz")):
-            shards.append((label, split, task.video_dir, shard_path))
+        category_shards, nested = _shards_of(from_dir, category)
+        layout_warnings.extend(nested)
+        shards.extend((label, split, task.video_dir, path) for path in category_shards)
 
     if not shards:
         raise ConfigError(
@@ -335,21 +417,28 @@ def unpack_wilddeepfake(builder: BaseBuilder, from_dir: Path, to: Path) -> Unpac
         )
 
     # Only created once there is at least one shard to unpack, so a refusal above never leaves an
-    # empty --to folder behind.
+    # empty folder behind.
     to.mkdir(parents=True, exist_ok=True)
     totals = _Totals()
     for label, split, task_video_dir, shard_path in shards:
         totals.shards_found += 1
         totals.add(_unpack_shard(shard_path, label, split, task_video_dir, to))
 
-    records = collect_records(builder, to)
-    by_task = {task.abbr: 0 for task in builder.tasks}
-    for record in records:
-        by_task[record.key.partition("/")[0]] += 1
+    inventory_folder: Path | None
+    by_task: dict[str, int] | None
+    try:
+        inventory_folder, records = discover_located(builder, roots)
+    except ConfigError:
+        inventory_folder, by_task = None, None
+    else:
+        by_task = {task.abbr: 0 for task in builder.tasks}
+        for record in records:
+            by_task[record.key.partition("/")[0]] += 1
 
     return UnpackResult(
         dataset_id=builder.dataset_id,
         from_dir=from_dir,
+        datasets_root=datasets_root,
         to=to,
         categories=tuple(categories_present),
         shards_found=totals.shards_found,
@@ -357,6 +446,8 @@ def unpack_wilddeepfake(builder: BaseBuilder, from_dir: Path, to: Path) -> Unpac
         sequences_written=totals.sequences_written,
         sequences_skipped=totals.sequences_skipped,
         frames_written=totals.frames_written,
+        inventory_folder=inventory_folder,
         by_task=by_task,
         warnings=tuple(totals.warnings),
+        layout_warnings=tuple(layout_warnings),
     )

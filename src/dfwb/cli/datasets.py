@@ -445,9 +445,9 @@ def synth(dataset: str, out: Path, videos: int, seed: int, no_media: bool, as_js
     "--to",
     type=click.Path(path_type=Path, file_okay=False),
     default=None,
-    help="Where to write the unpacked dataset folder (default: DATASET's expected folder, e.g. "
-    "WildDeepfake, under the first configured datasets root -- see DFWB_DATASETS_ROOT and "
-    "`dfwb doctor`).",
+    help="The datasets root to unpack into: the dataset lands in <to>/WildDeepfake (DATASET's "
+    "expected folder), where `dfwb inventory build` looks for it under a datasets root "
+    "(default: the first configured datasets root -- see DFWB_DATASETS_ROOT and `dfwb doctor`).",
 )
 @json_option
 def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None:
@@ -455,13 +455,16 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
 
     Every archive member is checked before anything is written: an absolute path, a '..'
     segment, a symlink, a hard link, or a device or FIFO file refuses the whole archive, naming
-    the first offending member. A frame filed under an inner label that disagrees with its
-    archive's own real_train/real_test/fake_train/fake_test category is not refused -- it is
-    unpacked under the category's label regardless, and reported as a warning. Unpacking is
+    the first offending member, and two archives with the same shard id in one category are
+    refused, both named. The label comes from the real_train/real_test/fake_train/fake_test
+    category folder: a frame filed under an inner label that disagrees is unpacked under the
+    category's label regardless, and reported as a warning, as are a folder that is not a
+    category and an archive below a category folder (neither is unpacked). Unpacking is
     resumable: a sequence already holding exactly its expected frames is left alone, and any
     other sequence folder is removed and rewritten from scratch, so re-running after an
-    interrupted unpack is always safe and never duplicates frames. Discovery is then run on the
-    result and its counts are reported.
+    interrupted unpack is always safe and never duplicates frames. Discovery then runs where
+    `dfwb inventory build` will look, and its counts are reported, with a warning when that is
+    not the folder just written.
     """
     from dfwb.core.paths import absolute, require_root, resolve_roots
     from dfwb.preprocess.inventory.runner import get_builder
@@ -469,19 +472,18 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
 
     builder = get_builder(dataset)
     source = absolute(from_dir)
-    if to is not None:
-        target = absolute(to)
-    else:
-        target = require_root("datasets", resolve_roots()) / builder.expected_folder
+    datasets_root = absolute(to) if to is not None else require_root("datasets", resolve_roots())
 
-    result = unpack_wilddeepfake(builder, source, target)
+    result = unpack_wilddeepfake(builder, source, datasets_root)
     shown = result.warnings[:_WARNINGS_SHOWN]
+    inventory_folder = None if result.inventory_folder is None else str(result.inventory_folder)
 
     if as_json:
         emit_json(
             {
                 "dataset_id": result.dataset_id,
                 "from": str(result.from_dir),
+                "datasets_root": str(result.datasets_root),
                 "to": str(result.to),
                 "categories": list(result.categories),
                 "shards_found": result.shards_found,
@@ -489,8 +491,10 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
                 "sequences_written": result.sequences_written,
                 "sequences_skipped": result.sequences_skipped,
                 "frames_written": result.frames_written,
+                "inventory_folder": inventory_folder,
                 "by_task": result.by_task,
                 "warnings": {"count": len(result.warnings), "first": list(shown)},
+                "layout_warnings": list(result.layout_warnings),
             }
         )
         return
@@ -500,12 +504,33 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
         f"complete) from {result.shards_found} shard(s) in {', '.join(result.categories)} into "
         f"{result.to}"
     )
-    counts = ", ".join(f"{task} {count}" for task, count in result.by_task.items())
-    click.echo(f"discovery now finds {sum(result.by_task.values())} record(s) ({counts})")
+    command = f"`dfwb inventory build {result.dataset_id}`"
+    if result.by_task is not None:
+        counts = ", ".join(f"{task} {count}" for task, count in result.by_task.items())
+        where = "there" if result.inventory_folder == result.to else f"in {inventory_folder}"
+        click.echo(f"discovery {where} finds {sum(result.by_task.values())} record(s) ({counts})")
+    fix = (
+        f"set DFWB_DATASETS_ROOT={result.datasets_root} (or DFWB_DATASET_"
+        f"{result.dataset_id.upper().replace('-', '_')}={result.to}) where you run it"
+    )
+    if result.inventory_folder is None:
+        click.echo(
+            f"warning: {command} will not find {result.to}: no datasets root or override "
+            f"points at it; {fix}",
+            err=True,
+        )
+    elif result.inventory_folder != result.to:
+        click.echo(
+            f"warning: {command} will read {inventory_folder}, not {result.to}; {fix}",
+            err=True,
+        )
+    for warning in result.layout_warnings:
+        click.echo(f"warning: {warning}", err=True)
     if result.warnings:
         more = len(result.warnings) - len(shown)
         suffix = f"; and {more} more" if more else ""
         click.echo(
             f"warning: {len(result.warnings)} frame(s) filed under a label that disagrees with "
-            f"their category: {'; '.join(shown)}{suffix}"
+            f"their category: {'; '.join(shown)}{suffix}",
+            err=True,
         )
