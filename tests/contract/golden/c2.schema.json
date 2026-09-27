@@ -19,6 +19,12 @@
           ],
           "title": "Sampling",
           "type": "string"
+        },
+        "stride": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Stride",
+          "type": "integer"
         }
       },
       "required": [
@@ -69,6 +75,11 @@
     "DataSection": {
       "additionalProperties": false,
       "properties": {
+        "allow_input_mismatch": {
+          "default": false,
+          "title": "Allow Input Mismatch",
+          "type": "boolean"
+        },
         "clip": {
           "$ref": "#/$defs/ClipSection"
         },
@@ -78,6 +89,11 @@
         },
         "loader": {
           "$ref": "#/$defs/LoaderSection"
+        },
+        "pairs": {
+          "default": false,
+          "title": "Pairs",
+          "type": "boolean"
         },
         "processing": {
           "title": "Processing",
@@ -142,6 +158,12 @@
           "title": "Split",
           "type": "string"
         },
+        "weight": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        },
         "where": {
           "additionalProperties": {
             "anyOf": [
@@ -195,6 +217,28 @@
       "title": "DataSource",
       "type": "object"
     },
+    "EarlyStopSection": {
+      "additionalProperties": false,
+      "description": "Stop once the monitor has gone ``patience`` validations without improving by more than\n``min_delta``.",
+      "properties": {
+        "min_delta": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Min Delta",
+          "type": "number"
+        },
+        "patience": {
+          "minimum": 1,
+          "title": "Patience",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "patience"
+      ],
+      "title": "EarlyStopSection",
+      "type": "object"
+    },
     "EvalSection": {
       "additionalProperties": false,
       "properties": {
@@ -218,12 +262,203 @@
       "title": "EvalSection",
       "type": "object"
     },
+    "InputOverrides": {
+      "additionalProperties": false,
+      "description": "``model.input``: overrides of the backbone's own input spec (the detector contract's\n``InputSpec``).\n\nOnly the keys written here override; every other one keeps the backbone's value. So the\nresolved config keeps exactly the keys that were written, and ``crop_scale: null`` (any crop\nscale the store kept, e.g. for a full-frame input) stays distinct from leaving it out.",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "enum": [
+                "rgb",
+                "bgr"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Color"
+        },
+        "crop": {
+          "anyOf": [
+            {
+              "enum": [
+                "face",
+                "full-frame"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Crop"
+        },
+        "crop_scale": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Crop Scale"
+        },
+        "frames": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frames"
+        },
+        "mean": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean"
+        },
+        "modality": {
+          "anyOf": [
+            {
+              "enum": [
+                "frames",
+                "audio",
+                "audiovisual"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modality"
+        },
+        "preferred_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preferred Profile"
+        },
+        "sampling": {
+          "anyOf": [
+            {
+              "enum": [
+                "uniform",
+                "consecutive",
+                "any"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sampling"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size"
+        },
+        "std": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std"
+        },
+        "value_range": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value Range"
+        }
+      },
+      "title": "InputOverrides",
+      "type": "object"
+    },
     "LoaderSection": {
       "additionalProperties": false,
       "properties": {
         "balance": {
           "anyOf": [
             {
+              "enum": [
+                "none",
+                "video-label",
+                "source"
+              ],
               "type": "string"
             },
             {
@@ -259,6 +494,28 @@
         },
         "head": {
           "$ref": "#/$defs/ComponentSpec"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputOverrides"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "stem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComponentSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "temporal_pool": {
           "$ref": "#/$defs/ComponentSpec"
@@ -373,10 +630,51 @@
     "TrainSection": {
       "additionalProperties": false,
       "properties": {
+        "callbacks": {
+          "items": {
+            "$ref": "#/$defs/ComponentSpec"
+          },
+          "title": "Callbacks",
+          "type": "array"
+        },
         "devices": {
           "minimum": 1,
           "title": "Devices",
           "type": "integer"
+        },
+        "early_stop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EarlyStopSection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "heartbeat_steps": {
+          "default": 50,
+          "minimum": 1,
+          "title": "Heartbeat Steps",
+          "type": "integer"
+        },
+        "lightning": {
+          "additionalProperties": true,
+          "title": "Lightning",
+          "type": "object"
+        },
+        "loggers": {
+          "items": {
+            "enum": [
+              "csv",
+              "tensorboard",
+              "wandb"
+            ],
+            "type": "string"
+          },
+          "title": "Loggers",
+          "type": "array"
         },
         "max_epochs": {
           "minimum": 1,
@@ -384,6 +682,7 @@
           "type": "integer"
         },
         "mode": {
+          "default": "max",
           "enum": [
             "max",
             "min"
@@ -392,20 +691,31 @@
           "type": "string"
         },
         "monitor": {
+          "default": "val/video_auc",
           "title": "Monitor",
           "type": "string"
         },
+        "nan_tolerance": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Nan Tolerance",
+          "type": "integer"
+        },
         "precision": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "32-true",
+            "bf16-mixed",
+            "16-mixed"
+          ],
           "title": "Precision",
           "type": "string"
         }
       },
       "required": [
         "max_epochs",
-        "precision",
-        "devices",
-        "monitor",
-        "mode"
+        "devices"
       ],
       "title": "TrainSection",
       "type": "object"

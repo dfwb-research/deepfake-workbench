@@ -30,10 +30,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-rich = ["rich>=13"]
-preprocess = ["av>=12", "opencv-python-headless>=4.9"]
+rich             = ["rich>=13"]
+eval             = ["scipy>=1.11", "matplotlib>=3.8"]
+preprocess       = ["opencv-python-headless>=4.9", "av>=12"]
 face-insightface = ["deepfake-workbench[preprocess]", "onnxruntime>=1.17"]
-face-mediapipe = ["deepfake-workbench[preprocess]", "mediapipe>=0.10"]
+face-mediapipe   = ["deepfake-workbench[preprocess]", "mediapipe>=0.10"]
+train            = ["torch>=2.6", "torchvision>=0.21", "lightning>=2.4", "timm>=1.0", "safetensors>=0.4", "pillow>=10.1"]
+hf               = ["deepfake-workbench[train]", "transformers>=4.45"]
+peft             = ["deepfake-workbench[train]", "peft>=0.12"]
+wandb            = ["wandb>=0.17"]
+zoo              = ["torch>=2.6", "torchvision>=0.21", "safetensors>=0.4", "huggingface_hub>=0.24"]
+all = ["deepfake-workbench[preprocess,face-mediapipe,eval,train,hf,peft,zoo,rich]"]
+# insightface and wandb are intentionally NOT in [all] (licence / account requirements)
 
 [project.scripts]
 dfwb = "dfwb.cli.main:main"
@@ -53,6 +61,18 @@ path = "src/dfwb/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dfwb"]
 
+# Dev/CI only: this index and the sources below never appear in the published wheel's metadata
+# (`explicit = true` keeps it out of the default resolution for anyone depending on this package).
+# Users installing `[train]` or `[zoo]` pick their own torch build, as docs/install.md explains.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
 [dependency-groups]
 dev = [
   "ruff",
@@ -64,6 +84,7 @@ dev = [
   "import-linter",
   "scikit-learn",
   "scipy",
+  "matplotlib",
   "pre-commit",
   "types-PyYAML",
   "av>=12",
@@ -98,8 +119,35 @@ mypy_path = "src"
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-# torch is optional; the core names its types only for annotations.
-module = ["torch", "torch.*"]
+# The whole torch stack is optional (the `train`/`hf`/`peft`/`wandb`/`zoo` extras); the org lint
+# job installs only the torch-free dev group, so mypy never sees these packages installed there.
+module = [
+  "torch",
+  "torch.*",
+  "torchvision",
+  "torchvision.*",
+  "lightning",
+  "lightning.*",
+  "timm",
+  "timm.*",
+  "safetensors",
+  "safetensors.*",
+  "transformers",
+  "transformers.*",
+  "peft",
+  "peft.*",
+  "wandb",
+  "wandb.*",
+  "huggingface_hub",
+  "huggingface_hub.*",
+  "PIL",
+  "PIL.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scipy is the optional `[eval]` extra; dfwb.eval imports it lazily, inside functions only.
+module = ["scipy", "scipy.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -132,6 +180,11 @@ markers = [
 ]
 xfail_strict = true
 pythonpath = ["."]
+filterwarnings = [
+  # Lightning's own pytree helper calls a torch API torch has deprecated; nothing here can change
+  # it, and it repeats on every training step. Matched by its message, so no other warning hides.
+  'ignore:`isinstance\(treespec, LeafSpec\)` is deprecated:FutureWarning',
+]
 
 [tool.coverage.run]
 source = ["dfwb"]

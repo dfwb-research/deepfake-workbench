@@ -38,7 +38,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from dfwb.core.errors import ConfigError, InstallationError
 from dfwb.core.hashing import canonical_json
-from dfwb.core.records.local import InventoryRecord, ProcessedRecord, ProcessingProfile, TrackStats
+from dfwb.core.records.local import (
+    FRAME_FILE,
+    InventoryRecord,
+    ProcessedRecord,
+    ProcessingProfile,
+    TrackStats,
+)
 from dfwb.preprocess.face.backends import FaceBackend
 from dfwb.preprocess.face.crop import crop_face, map_landmarks
 from dfwb.preprocess.face.decode import DecodeError, VideoSource, open_source, require_library
@@ -316,7 +322,7 @@ def process_video(
                     ]
                 cv2 = cv2 or _require_cv2()
                 bgr = cv2.cvtColor(crop_result.image, cv2.COLOR_RGB2BGR)
-                name = f"frame_{index:06d}.png"
+                name = FRAME_FILE.format(index=index)
                 if not cv2.imwrite(str(tmp_dir / name), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 6]):
                     raise OSError(f"OpenCV could not write {name} (is the disk full or read-only?)")
                 frames_meta.append(

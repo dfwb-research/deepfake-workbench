@@ -131,10 +131,18 @@ def show(config_path: Path, overrides: tuple[str, ...], as_json: bool) -> None:
 @_overrides_argument
 @json_option
 def validate(config_path: Path, overrides: tuple[str, ...], as_json: bool) -> None:
-    """Check a config, including every component against the installed plugins."""
+    """Check a config, including every component and metric against the installed plugins.
+
+    Protocol packs and processed stores are not needed here: training checks them, before it
+    starts, once it joins the data.
+    """
     from dfwb.core.config import load_config
+    from dfwb.core.config.schema import TrainConfig
+    from dfwb.eval.aggregate import check_eval_config
 
     loaded = load_config(config_path, overrides, check_registries=True)
+    if isinstance(loaded.model, TrainConfig):
+        check_eval_config(loaded.model.eval.metrics, loaded.model.eval.aggregate)
     if as_json:
         emit_json({**_summary(loaded), "valid": True})
     else:

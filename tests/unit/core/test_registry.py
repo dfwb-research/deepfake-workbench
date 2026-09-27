@@ -297,3 +297,10 @@ def test_nested_param_errors_carry_paths_and_suggestions(reg):
     assert info.value.problems == (
         (("freeze", "trainable_block"), "unknown key (did you mean 'trainable_blocks'?)"),
     )
+
+
+@pytest.mark.parametrize("module", ["torch", "torchvision.io", "lightning", "safetensors", "PIL"])
+def test_the_train_extras_modules_name_the_train_extra(module):
+    from dfwb.core.registry import install_hint
+
+    assert install_hint(module) == 'pip install "deepfake-workbench[train]"'

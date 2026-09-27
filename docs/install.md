@@ -1,8 +1,53 @@
 # Installing extras
 
-`dfwb` itself needs only the dependencies in `uv sync` / `pip install deepfake-workbench`. Media
-probing, the face pipeline and its detection backends are optional extras, installed only when you
-need them.
+`dfwb` itself needs only the dependencies in `uv sync` / `pip install deepfake-workbench`, and
+never pulls in PyTorch on its own. Media probing, the face pipeline and its detection backends,
+evaluation plots, training, the model zoo, Hugging Face backbones, PEFT adapters and Weights &
+Biases logging are all optional extras, installed only when you need them.
+
+| Extra | Adds |
+|---|---|
+| `preprocess` | Media probing and the face pipeline's own code (`opencv-python-headless`, `av`) |
+| `face-insightface` | The `insightface` face-detection backend, on top of `preprocess` (`onnxruntime`) |
+| `face-mediapipe` | The `mediapipe` face-detection backend, on top of `preprocess` (`mediapipe`) |
+| `eval` | Bootstrap confidence intervals and plots (`scipy`, `matplotlib`) |
+| `train` | The training stack: `torch`, `torchvision`, `lightning`, `timm`, `safetensors`, `pillow` |
+| `hf` | Hugging Face backbones on top of `train` (`transformers`) |
+| `peft` | Parameter-efficient fine-tuning on top of `train` (`peft`) |
+| `wandb` | Weights & Biases logging (`wandb`) |
+| `zoo` | Loading published checkpoints without the full training stack |
+| `rich` | Nicer CLI output |
+| `all` | `preprocess`, `face-mediapipe`, `eval`, `train`, `hf`, `peft`, `zoo` and `rich` together |
+
+`face-insightface` and `wandb` are not part of `all`: insightface's `buffalo_l` weights are for
+non-commercial research use only, and `wandb` needs a Weights & Biases account. Add either
+explicitly if you use it. Extras compose, so install only what you need, for example:
+
+```bash
+pip install "deepfake-workbench[train,hf,peft]"
+```
+
+## Training: install a PyTorch build first
+
+Install the PyTorch build that matches your hardware before the `train` (or `zoo`) extra, so the
+extra finds it already installed instead of pulling the default build from PyPI. Pick the command
+for your platform from the official selector at
+[pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/), which covers both CPU
+and the CUDA build matching your driver, for example:
+
+```bash
+# CPU only
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# CUDA 12.x (check pytorch.org for the current index for your driver)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+then:
+
+```bash
+pip install "deepfake-workbench[train]"
+```
 
 ## `preprocess`: media probing and the face pipeline's own code
 

@@ -2,6 +2,7 @@ import hashlib
 import http.server
 import socket
 import threading
+import urllib.error
 from collections.abc import Iterator
 
 import pytest
@@ -46,6 +47,7 @@ def server() -> Iterator[str]:
     finally:
         httpd.shutdown()
         thread.join()
+        httpd.server_close()
 
 
 def test_fetch_downloads_and_verifies_the_right_sha(server, tmp_path):
@@ -102,6 +104,16 @@ def test_fetch_raises_installation_error_on_http_error(server, tmp_path):
         fetch(f"{server}/nope.bin", SHA256, dest)
     assert not dest.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_bad_status_closes_the_servers_response(server, tmp_path):
+    # the HTTP error holds the open response; a raised error that keeps it alive (a caller
+    # holding the exception, say) must not keep its socket open with it
+    with pytest.raises(InstallationError) as caught:
+        fetch(f"{server}/nope.bin", SHA256, tmp_path / "model.bin")
+    http_error = caught.value.__context__
+    assert isinstance(http_error, urllib.error.HTTPError)
+    assert http_error.fp is None or http_error.fp.closed
 
 
 def test_fetch_raises_installation_error_on_connection_refused(tmp_path):
