@@ -39,14 +39,57 @@ All notable changes to this project are documented here. The format follows
   (`docs/guides/reproduce-a-benchmark.md`), covering the whole path from a fresh clone -- getting
   the data under the owner's own terms, inventory, verification, preprocessing, training with
   `configs/…`, scoring a suite, and evaluation.
+- **Recipe datasets without key lists.** A dataset whose card says `distribution: recipe` can be
+  published with no key list at all: its pack ships only `dataset.yaml`, `labels.yaml`,
+  `NOTICE.md` and `PROVENANCE.json`. `dfwb protocols materialize DATASET` rebuilds the video, pair
+  and split lists from the local inventory (the pairs with the dataset's inventory builder),
+  checks every one against the hash the card publishes, and only then writes them to
+  `<work root>/<dataset>/materialized/`; a mismatch exits 4, names every list that differs, and
+  writes nothing. Every command that loads a protocol (`protocols info` and `verify`, `preprocess
+  run`, `train`, `score`, `eval`) then reads the materialised copy, and until there is one it
+  stops with a hint naming the command to run. `dfwb protocols lint` accepts such a dataset when
+  its card holds everything materialising needs, and `dfwb protocols diff` compares its lists by
+  hash. A recipe needs every video of the release in each compression the card lists (rows of
+  other compressions are left out), and an inventory built by the builder version the pack's
+  `PROVENANCE.json` records (with the dfwb version the pack was built by, or a later one); a
+  mismatch message gives the split counts, video count, compressions and builder versions, and
+  the hint the likely cause.
+- Three optional dataset card fields (contract C3, backward compatible: a card without them loads
+  and lints as before): `videos_sha256` and `pairs_sha256`, the hashes of the video and pair lists,
+  and `pairing_rule`, the rule the pairs are drawn by. `dfwb protocols build` records them for every
+  dataset, so a built dataset can later be published as a recipe without rebuilding its lists; a
+  rebuild rewrites NOTICE.md for a recipe. `dfwb protocols lint` checks them against the lists a
+  dataset ships. `dfwb.core.records.records_sha256` computes the hashes: the sha256 of a list's
+  JSONL lines, sorted. dfwb 0.1.0b2 and earlier reject a card with fields they do not know, so a
+  protocol pack whose cards carry these needs a dfwb at least this new.
+- `dfwb protocols list` (a DISTRIBUTION column, and `distribution`/`materialized` in `--json`) and
+  `dfwb datasets info` show each dataset's distribution, and for a recipe shipped without its key
+  lists whether it is materialised here.
+- `local_attrs` on an inventory builder: the `attrs` that describe the local copy rather than the
+  dataset. They stay in the inventory and are left out of every published record, so a pack's
+  lists are the same whoever builds them.
 
 ### Changed
 
+- The version is `0.1.0b3.dev0`, the development pre-release after `0.1.0b2`, so a pack this dfwb
+  builds records a dfwb version that can read its cards (`0.1.0b2` rejects the new card fields).
+  The built-in toyfake pack carries the same version; no scheme hash changes.
 - Every failing `dfwb` command now ends with a `hint: ` line explaining the remedy, including the
   commands that report a non-zero exit themselves rather than raising: `dfwb eval` under
   `--min-coverage`, `dfwb protocols verify`, `dfwb protocols lint`, `dfwb protocols diff
   --expect-bump`, `dfwb zoo verify` and `dfwb zoo parity`. A command aborted mid-run (Ctrl+C, or
   input hitting EOF) also prints a hint alongside `aborted`.
+- The `NOTICE.md` that `dfwb protocols build` writes for a recipe dataset says that the published
+  pack holds no key list, only the rules and hashes `dfwb protocols materialize` rebuilds and
+  checks the lists with. `dfwb protocols lint --release` reports a recipe shipped without its
+  lists whose notice is still the one generated for a list or undecided dataset (only the
+  generated text counts, never the card's `terms.notes`).
+- `dfwb protocols lint` reports a video of a compression the card does not list, a recipe
+  dataset that still ships any key list, and a list dataset whose notice is the one generated for
+  a recipe (errors under `--release`, warnings otherwise, for the last two).
+- `dfwb protocols build` no longer publishes the `attrs.audio_relpath` of AV-Deepfake1M++ and
+  TalkingHeadBench videos, which depended on the local copy; their builders declare it in
+  `local_attrs`.
 
 ### Fixed
 

@@ -24,10 +24,12 @@ from dfwb.core.records import (
     DatasetCard,
     LabelVocab,
     PackCard,
+    PairRecord,
     SplitRow,
     VideoRecord,
     read_jsonl,
     read_split_tsv,
+    records_sha256,
 )
 from dfwb.protocols._versions import PackVersion, parse_version
 from dfwb.protocols._yaml import read_card, read_labels, read_model
@@ -66,7 +68,11 @@ class DiffResult:
 
     ``relabelled`` lists, sorted, every video present in both packs whose ``label_key`` or
     ``method`` changed, as ``<dataset>/<key>|<compression>`` (the compression empty when there
-    is none).
+    is none). ``lists_changed`` lists, sorted, the video and pair lists found changed by their
+    hashes alone, as ``<dataset>/videos`` or ``<dataset>/pairs``: those of a dataset one of the
+    packs ships without its key lists, so no video can be named. ``now_key_free`` lists, sorted,
+    the datasets the old pack shipped with their key lists and the new one ships without them,
+    which users must now materialise.
     """
 
     schemes: list[SchemeDiff]
@@ -74,6 +80,8 @@ class DiffResult:
     labels_added: list[str]
     required_bump: Bump
     relabelled: list[str] = field(default_factory=list)
+    lists_changed: list[str] = field(default_factory=list)
+    now_key_free: list[str] = field(default_factory=list)
 
 
 def _parse_version(value: str) -> PackVersion:
@@ -151,6 +159,37 @@ def _relabelled(old: Path, new: Path, dataset_id: str) -> list[str]:
         ):
             changed.append(f"{dataset_id}/{video.key}|{video.compression or ''}")
     return sorted(changed)
+
+
+def _ships_lists(root: Path, dataset_id: str) -> bool:
+    return (root / dataset_id / "videos.jsonl.gz").is_file()
+
+
+def _list_hashes(root: Path, dataset_id: str, card: DatasetCard) -> tuple[str | None, str | None]:
+    """The hashes of a dataset's video and pair lists: of the files it ships, else its card's."""
+    if not _ships_lists(root, dataset_id):
+        return card.videos_sha256, card.pairs_sha256
+    dataset_dir = root / dataset_id
+    pairs_path = dataset_dir / "pairs.jsonl.gz"
+    pairs = set(read_jsonl(pairs_path, PairRecord)) if pairs_path.is_file() else set()
+    return records_sha256(read_jsonl(dataset_dir / "videos.jsonl.gz", VideoRecord)), (
+        records_sha256(pairs)
+    )
+
+
+def _lists_changed(
+    old: Path, new: Path, dataset_id: str, old_card: DatasetCard, new_card: DatasetCard
+) -> list[str]:
+    """The lists of a dataset one of the packs ships without key lists whose hashes changed."""
+    if _ships_lists(old, dataset_id) and _ships_lists(new, dataset_id):
+        return []  # both ship their lists: compared video by video instead
+    old_hashes = _list_hashes(old, dataset_id, old_card)
+    new_hashes = _list_hashes(new, dataset_id, new_card)
+    return [
+        f"{dataset_id}/{name}"
+        for name, before, after in zip(("videos", "pairs"), old_hashes, new_hashes, strict=True)
+        if before != after
+    ]
 
 
 def _files(dataset_dir: Path) -> dict[str, Path]:
@@ -306,9 +345,16 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
 
     The videos of a dataset in both packs are joined on ``(key, compression)``: a video whose
     ``label_key`` or ``method`` changed is a major change even when every scheme is the same, and
-    is listed in :attr:`DiffResult.relabelled`. With nothing major or minor, any other change to a
-    pack file (or to ``pack.yaml`` beyond its version) needs a patch release; none at all needs no
-    release (``"none"``).
+    is listed in :attr:`DiffResult.relabelled`. When either pack ships a dataset without its key
+    lists (a recipe), its video and pair lists are compared by hash instead: the card's
+    ``videos_sha256`` and ``pairs_sha256`` for a pack without the lists, the hash of the shipped
+    lists for one with them. A changed video list is a major change, since a relabel cannot be
+    told apart from any other change to it; a changed pair list is reported like a changed pairs
+    file. Both are listed in :attr:`DiffResult.lists_changed`. A dataset the new pack ships
+    without the key lists the old one shipped is at least a minor change, since its users must
+    now materialise it, and is listed in :attr:`DiffResult.now_key_free`. With nothing major or
+    minor, any other change to a pack file (or to ``pack.yaml`` beyond its version) needs a patch
+    release; none at all needs no release (``"none"``).
     """
     old_card = read_model(old / "pack.yaml", PackCard)
     new_card = read_model(new / "pack.yaml", PackCard)
@@ -320,6 +366,8 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
     labels_changed: list[str] = []
     labels_added: list[str] = []
     relabelled: list[str] = []
+    lists_changed: list[str] = []
+    now_key_free: list[str] = []
     major = bool(old_all - new_all) or bool(old_published - new_published)
     minor = bool(new_all - old_all) or bool(new_published - old_published)
 
@@ -345,8 +393,15 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
         minor = minor or labels_minor
 
         relabelled.extend(_relabelled(old, new, dataset_id))
+        if old_dataset_card is not None and new_dataset_card is not None:
+            lists_changed.extend(
+                _lists_changed(old, new, dataset_id, old_dataset_card, new_dataset_card)
+            )
+            if _ships_lists(old, dataset_id) and not _ships_lists(new, dataset_id):
+                now_key_free.append(dataset_id)
+                minor = True
 
-    major = major or bool(relabelled)
+    major = major or bool(relabelled) or any(name.endswith("/videos") for name in lists_changed)
     required_bump: Bump
     if major:
         required_bump = "major"
@@ -362,4 +417,6 @@ def diff_packs(old: Path, new: Path) -> DiffResult:
         labels_added=labels_added,
         required_bump=required_bump,
         relabelled=relabelled,
+        lists_changed=sorted(lists_changed),
+        now_key_free=sorted(now_key_free),
     )

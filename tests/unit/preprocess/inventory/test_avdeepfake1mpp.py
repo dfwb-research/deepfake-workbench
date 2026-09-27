@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from dfwb.core.errors import ConfigError, ContractError
-from dfwb.core.records import BuilderRef, PairRecord, SchemeCard
+from dfwb.core.records import BuilderRef, PairRecord, SchemeCard, to_video_record
 from dfwb.preprocess.inventory.builders.avdeepfake1mpp import AVDeepfake1MPPBuilder
 from dfwb.preprocess.inventory.runner import collect_records, get_builder
 from dfwb.protocols.rules import (
@@ -460,6 +460,16 @@ def test_the_generator_is_recorded(avdf_root):
     assert task_of(d2l.key) == "LS_D2L"
     assert d2l.attrs["video_model"] == "diff2lip"
     assert d2l.method == "diff2lip"
+
+
+def test_the_audio_relpath_describes_the_local_copy_and_is_never_published(avdf_root):
+    builder = AVDeepfake1MPPBuilder()
+    real = _records(avdf_root, builder)[f"{UTTERANCE_KEY}__real"]
+
+    assert builder.local_attrs == frozenset({"audio_relpath"})
+    published = to_video_record(real, local_attrs=builder.local_attrs)
+    assert "audio_relpath" not in published.attrs
+    assert set(published.attrs) == set(real.attrs) - {"audio_relpath"}
 
 
 def test_the_audio_is_inside_the_video_and_absent_without_audio_frames(avdf_root):

@@ -16,10 +16,37 @@ Installing it registers `$name` with `dfwb` through the `dfwb.plugins` entry poi
 
 ## Adding a dataset
 
-Add a directory under `src/$import/packs/<dataset_id>/` holding `dataset.yaml`,
-`labels.yaml`, `videos.jsonl.gz`, `splits/*.tsv.gz` and `NOTICE.md`, then list
-`<dataset_id>` under `datasets:` in `src/$import/packs/pack.yaml`. Run
-`dfwb protocols lint` against the `packs` directory before committing.
+With the dataset's inventory builder installed and a local inventory built, write the dataset's
+files from it:
+
+```
+dfwb protocols build <dataset_id> --out src/$import/packs/<dataset_id> --update-pack-yaml
+```
+
+That writes `dataset.yaml`, `labels.yaml`, `videos.jsonl.gz`, `pairs.jsonl.gz` (when the
+dataset has pairs), one `splits/<scheme>.tsv.gz` per scheme, `NOTICE.md` and
+`PROVENANCE.json`, and lists `<dataset_id>` under `datasets:` in `src/$import/packs/pack.yaml`.
+Once you have reviewed the dataset's terms, record the decision as `distribution` in its
+`dataset.yaml` and build again, which rewrites `NOTICE.md` to match:
+
+- `distribution: list`: the terms let the key lists be redistributed, and the pack ships every
+  file above.
+- `distribution: recipe`: they do not. The folder you publish leaves out `videos.jsonl.gz`,
+  `pairs.jsonl.gz` and `splits/`, and ships only `dataset.yaml`, `labels.yaml`, `NOTICE.md` and
+  `PROVENANCE.json`. Users rebuild the lists from their own copy of the dataset with
+  `dfwb protocols materialize <dataset_id>`, which checks them against the hashes in
+  `dataset.yaml`. That needs every video of the release, in each compression the card lists,
+  and an inventory built by the builder version `PROVENANCE.json` records.
+
+Run `dfwb protocols lint --release` against the `packs` folder you publish before releasing it.
+
+## Requirements
+
+This pack has no runtime dependencies, so its `pyproject.toml` pins no dfwb version; the
+requirement is stated here instead. Cards written by `dfwb protocols build` carry the recipe
+hash fields (`videos_sha256`, `pairs_sha256` and `pairing_rule`), which an earlier dfwb cannot
+read, so the pack needs a dfwb that reads the recipe hash fields: 0.1.0b3 or later, once
+released.
 
 ## Licence
 

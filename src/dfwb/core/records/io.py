@@ -29,6 +29,7 @@ __all__ = [
     "iter_jsonl_dicts",
     "read_jsonl",
     "read_split_tsv",
+    "records_sha256",
     "split_sha256",
     "write_jsonl",
     "write_split_tsv",
@@ -150,6 +151,12 @@ def read_jsonl[R](
     return list(iter_jsonl(Path(path), record_type, strict=strict))
 
 
+def _json_line(record: Any) -> str:
+    """One record as the line a JSONL file holds: compact, key-sorted JSON, then a newline."""
+    data = dataclasses.asdict(record)
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+
+
 def write_jsonl(path: str | os.PathLike[str], records: Iterable[Any]) -> None:
     """Write records as compact, key-sorted JSON lines; ``.gz`` output is byte-reproducible.
 
@@ -162,14 +169,22 @@ def write_jsonl(path: str | os.PathLike[str], records: Iterable[Any]) -> None:
         with _open_text(tmp, "w") as handle:
             for index, record in enumerate(records):
                 assert_no_absolute_paths(record, where=f"{target.name}[{index}]")
-                data = dataclasses.asdict(record)
-                handle.write(
-                    json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                )
-                handle.write("\n")
+                handle.write(_json_line(record))
         tmp.replace(target)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def records_sha256(records: Iterable[Any]) -> str:
+    """The hash of a record list, whatever its order: sha256 of its sorted JSONL lines.
+
+    Each record is the line :func:`write_jsonl` writes for it (compact, key-sorted JSON, UTF-8,
+    ending in a newline); the lines are sorted and hashed together, uncompressed. For a file
+    ``write_jsonl`` wrote, that is the sha256 of the file's decompressed lines, sorted. A dataset
+    card records this hash of its videos and of its pairs (``videos_sha256``, ``pairs_sha256``);
+    no records at all hash as empty content.
+    """
+    return sha256_text("".join(sorted(_json_line(record) for record in records)))
 
 
 def _canonical_split_lines(rows: Iterable[SplitRow]) -> list[str]:

@@ -1,7 +1,10 @@
+import dataclasses
 import gzip
 import json
+import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 from tests.unit.preprocess.test_packbuild import setup_packdemo
 from tests.unit.protocols.conftest import (
@@ -11,6 +14,8 @@ from tests.unit.protocols.conftest import (
     write_toyone_dataset,
 )
 
+from dfwb.core import plugins
+from dfwb.core.errors import UnknownKeyError
 from dfwb.core.records import (
     BuilderRef,
     DatasetCard,
@@ -21,9 +26,11 @@ from dfwb.core.records import (
     SplitRow,
     VideoRecord,
     read_jsonl,
+    records_sha256,
     write_jsonl,
 )
 from dfwb.core.records.protocol import LabelMappingSpec, LicenseInfo
+from dfwb.preprocess.inventory.runner import get_builder
 from dfwb.protocols._yaml import read_card
 from dfwb.protocols.writer import scheme_card_for, write_dataset_files
 
@@ -106,6 +113,10 @@ def test_list_json(run, monkeypatch, tmp_path):
     _install_toyone(monkeypatch, tmp_path)
     data = json.loads(run("protocols", "list", "--json").out)
     rows = {(r["dataset_id"], r["scheme"]): r for r in data}
+    # toyone's card leaves its terms undecided, and its pack ships its lists.
+    assert rows[("toyone", "official")]["distribution"] == "undecided"
+    assert rows[("toyone", "official")]["materialized"] is None
+    assert "undecided" in run("protocols", "list").out
     assert rows[("toyone", "official")]["default"] is True
     assert rows[("toyone", "official")]["pack"] == "toyone-pack"
     assert rows[("toyone", "official")]["counts"] == {"train": 6, "val": 4, "test": 4}
@@ -552,6 +563,55 @@ def test_diff_cli_lists_relabelled_videos(run, tmp_path):
     assert data["required_bump"] == "major"
 
 
+def _publish_without_lists(pack: Path) -> None:
+    dataset = pack / "diffcli"
+    card = yaml.safe_load((dataset / "dataset.yaml").read_text("utf-8"))
+    card.update(
+        distribution="recipe",
+        videos_sha256=records_sha256(read_jsonl(dataset / "videos.jsonl.gz", VideoRecord)),
+        pairs_sha256=records_sha256([]),
+    )
+    (dataset / "dataset.yaml").write_text(yaml.safe_dump(card), "utf-8")
+    (dataset / "videos.jsonl.gz").unlink()
+    for split in (dataset / "splits").iterdir():
+        split.unlink()
+    (dataset / "splits").rmdir()
+
+
+def test_diff_cli_names_the_lists_of_a_recipe_that_changed_by_hash(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.0.1", _diff_rows())
+    videos = [
+        VideoRecord(v.key, v.compression, "DIFFCLI-REAL", v.method) if v.key == "FAKE/f1" else v
+        for v in read_jsonl(new / "diffcli" / "videos.jsonl.gz", VideoRecord)
+    ]
+    write_jsonl(new / "diffcli" / "videos.jsonl.gz", videos)
+    _publish_without_lists(old)
+    _publish_without_lists(new)
+
+    text = run("protocols", "diff", str(old), str(new))
+    data = json.loads(run("protocols", "diff", str(old), str(new), "--json").out)
+
+    assert "lists changed (compared by hash, no video named): diffcli/videos" in text.out
+    assert "required bump: major" in text.out
+    assert data["lists_changed"] == ["diffcli/videos"]
+    assert data["relabelled"] == []
+    assert data["required_bump"] == "major"
+
+
+def test_diff_cli_says_which_datasets_users_must_now_materialise(run, tmp_path):
+    old = _write_diff_pack(tmp_path / "old", "1.0.0", _diff_rows())
+    new = _write_diff_pack(tmp_path / "new", "1.1.0", _diff_rows())
+    _publish_without_lists(new)
+
+    text = run("protocols", "diff", str(old), str(new))
+    data = json.loads(run("protocols", "diff", str(old), str(new), "--json").out)
+
+    assert "diffcli now ships no key lists: users must materialise it" in text.out
+    assert "required bump: minor" in text.out
+    assert data["now_key_free"] == ["diffcli"]
+
+
 def test_diff_cli_expect_bump_exits_4_on_a_version_downgrade(run, tmp_path):
     old = _write_diff_pack(tmp_path / "old", "1.2.0", _diff_rows())
     new = _write_diff_pack(tmp_path / "new", "1.1.0", _diff_rows())
@@ -813,3 +873,172 @@ def test_materialize_cli_without_an_inventory_hints_inventory_build(run, monkeyp
 
     assert result.code == 2
     assert "hint: run: dfwb inventory build packdemo" in result.err
+
+
+def _decide_recipe(out: Path) -> None:
+    card = yaml.safe_load((out / "dataset.yaml").read_text("utf-8"))
+    card["distribution"] = "recipe"
+    (out / "dataset.yaml").write_text(yaml.safe_dump(card), "utf-8")
+
+
+def _take_out_the_key_lists(out: Path) -> None:
+    (out / "videos.jsonl.gz").unlink()
+    (out / "pairs.jsonl.gz").unlink()
+    for split in (out / "splits").iterdir():
+        split.unlink()
+    (out / "splits").rmdir()
+
+
+def _strip_to_recipe(out: Path) -> None:
+    _decide_recipe(out)
+    _take_out_the_key_lists(out)
+
+
+def _tree(folder: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(folder).as_posix(): p.read_bytes()
+        for p in sorted(folder.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_a_key_free_recipe_lints_materializes_and_loads_from_the_cli(run, monkeypatch, tmp_path):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    card = read_card(out)
+    _strip_to_recipe(out)
+    # The notice still says what the build wrote for an undecided dataset; a rebuild rewrites it.
+    stale = run("protocols", "lint", str(paths["pack"]), "--release")
+    assert stale.code == 4
+    assert "error: packdemo/NOTICE.md: the notice is the one written for a dataset that" in (
+        stale.out
+    )
+    shutil.rmtree(out)
+    assert run("protocols", "build", "packdemo", "--out", str(out)).code == 0
+    _decide_recipe(out)
+    assert run("protocols", "build", "packdemo", "--out", str(out)).code == 0
+    _take_out_the_key_lists(out)
+    linted = run("protocols", "lint", str(paths["pack"]), "--release")
+    assert linted.code == 0, linted.out
+
+    # Nothing materialized yet: the list says so, and loading names the command to run.
+    listed = run("protocols", "list")
+    assert "recipe: not materialised" in listed.out
+    rows = json.loads(run("protocols", "list", "--json").out)
+    assert {
+        (r["distribution"], r["materialized"]) for r in rows if r["dataset_id"] == "packdemo"
+    } == {("recipe", False)}
+    shown = json.loads(run("datasets", "info", "packdemo", "--json").out)
+    assert {(r["distribution"], r["materialized"]) for r in shown["schemes"]} == {("recipe", False)}
+    assert "recipe: not materialised" in run("datasets", "info", "packdemo").out
+    before = run("protocols", "info", "packdemo/official")
+    assert before.code == 4  # a recipe not materialised here
+    assert "hint: run: dfwb protocols materialize packdemo\n" in before.err
+    no_inventory = run("protocols", "materialize", "packdemo", "--inventory", str(tmp_path / "x"))
+    assert no_inventory.code == 2  # nothing to materialise from
+    assert "hint: run: dfwb inventory build packdemo" in no_inventory.err
+
+    result = run("protocols", "materialize", "packdemo/official", "--json")
+    assert result.code == 0, result.err
+    assert json.loads(result.out) == {
+        "dataset": "packdemo",
+        "path": str(paths["work"] / "packdemo" / "materialized"),
+        "videos_sha256": card.videos_sha256,
+        "pairs_sha256": card.pairs_sha256,
+        "schemes": {name: scheme.sha256 for name, scheme in card.schemes.items()},
+        "n_videos": 30,
+        "n_pairs": 20,
+        "matched": True,
+    }
+    human = run("protocols", "materialize", "packdemo")
+    assert human.code == 0, human.err
+    assert human.out.splitlines() == [
+        "packdemo: every published hash matches (30 videos, 20 pairs, 4 schemes)",
+        f"wrote {paths['work'] / 'packdemo' / 'materialized'}",
+    ]
+
+    assert run("protocols", "info", "packdemo/benchmark").code == 0
+    rows = json.loads(run("protocols", "list", "--json").out)
+    assert {
+        (r["distribution"], r["materialized"]) for r in rows if r["dataset_id"] == "packdemo"
+    } == {("recipe", True)}
+    assert "recipe: materialised" in run("protocols", "list").out
+    shown = json.loads(run("datasets", "info", "packdemo", "--json").out)
+    assert {(r["distribution"], r["materialized"]) for r in shown["schemes"]} == {("recipe", True)}
+    verified = run("protocols", "verify", "packdemo/official", "--json")
+    assert verified.code == 0, verified.err
+    assert json.loads(verified.out)["counts"]["have"] == 30
+
+
+def test_a_key_free_recipe_from_a_tampered_inventory_exits_4_and_writes_nothing(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    _strip_to_recipe(out)
+    rows = read_jsonl(paths["inventory"], InventoryRecord)
+    tampered = tmp_path / "tampered.jsonl"
+    write_jsonl(tampered, [dataclasses.replace(rows[0], label_key="PD-FS_B"), *rows[1:]])
+    before = _tree(paths["work"])
+
+    result = run("protocols", "materialize", "packdemo", "--inventory", str(tampered))
+
+    assert result.code == 4
+    assert "error: packdemo: 1 of 6 published hashes differ" in result.err
+    assert "hint: your inventory has the release's videos in the published numbers" in result.err
+    assert _tree(paths["work"]) == before
+
+
+def test_materialize_cli_leaves_the_local_copy_attrs_out_of_a_recipe_scheme(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    assert run("inventory", "build", "packdemo-local").code == 0
+    out = paths["pack"] / "packdemo-local"
+    built = run("protocols", "build", "packdemo-local", "--out", str(out), "--update-pack-yaml")
+    assert built.code == 0, built.err
+    (out / "splits" / "all-test.tsv.gz").unlink()
+
+    result = run("protocols", "materialize", "packdemo-local/all-test")
+
+    assert result.code == 0, result.err
+    materialized = paths["work"] / "packdemo-local" / "materialized" / "videos.jsonl.gz"
+    assert materialized.read_bytes() == (out / "videos.jsonl.gz").read_bytes()
+
+
+def test_materialize_help_gives_both_json_shapes(run):
+    result = run("protocols", "materialize", "--help")
+
+    assert result.code == 0
+    text = " ".join(result.out.split())
+    assert "{ref, path, sha256, matched}" in text
+    assert "{dataset, path, videos_sha256, pairs_sha256, schemes, n_videos, n_pairs, matched}" in (
+        text
+    )
+
+
+def test_materialize_cli_needs_no_builder_for_a_rule_that_reads_nothing_of_it(
+    run, monkeypatch, tmp_path
+):
+    paths = setup_packdemo(monkeypatch, tmp_path)
+    out = paths["pack"] / "packdemo"
+    assert run("protocols", "build", "packdemo", "--out", str(out), "--update-pack-yaml").code == 0
+    (out / "splits" / "ident-72-14-14.tsv.gz").unlink()
+    # The pack alone is installed now: no inventory builder is registered for packdemo.
+    register_packs(monkeypatch, {"packdemo-pack": paths["pack"]})
+    plugins.reset()
+    with pytest.raises(UnknownKeyError):
+        get_builder("packdemo")
+
+    result = run(
+        "protocols",
+        "materialize",
+        "packdemo/ident-72-14-14",
+        "--inventory",
+        str(paths["inventory"]),
+    )
+
+    assert result.code == 0, result.err
+    assert "matches the published hash" in result.out

@@ -373,6 +373,11 @@ class BaseBuilder:
         benchmark: The benchmark subset's spec (set exactly when a ``benchmark`` scheme exists).
         pairing_rule: The name recorded on each fake/real pair; ``None`` if nothing pairs.
         pairing_fanout: The most reals one fake pairs with through an identity (``None``: all).
+        local_attrs: The ``attrs`` that describe the local copy rather than the dataset: a path
+            or a prefix that depends on how the release was unpacked, or a value set only when
+            some file happens to be present. They stay in the inventory, where local tools read
+            them, and are never published in a protocol pack, so a pack's lists, and their
+            hashes, are the same whoever builds them.
         card_info: The dataset card's descriptive fields: name, aliases, release, homepage,
             paper, license, access, modalities, compressions and key_rule.
         layout_notes: Extra text appended to :meth:`describe_layout`.
@@ -391,6 +396,7 @@ class BaseBuilder:
     benchmark: ClassVar[BenchmarkSpec | None] = None
     pairing_rule: ClassVar[str | None] = None
     pairing_fanout: ClassVar[int | None] = None
+    local_attrs: ClassVar[frozenset[str]] = frozenset()
     card_info: ClassVar[Mapping[str, Any]]
     layout_notes: ClassVar[str] = ""
 

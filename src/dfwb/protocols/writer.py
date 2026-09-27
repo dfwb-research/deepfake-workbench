@@ -26,6 +26,7 @@ from dfwb.core.records import (
     SplitRow,
     VideoRecord,
     assert_no_absolute_paths,
+    records_sha256,
     split_sha256,
     write_jsonl,
     write_split_tsv,
@@ -93,6 +94,23 @@ def _check_schemes(schemes: Mapping[str, list[SplitRow]], card: DatasetCard) -> 
             )
 
 
+def _check_key_list_hashes(
+    videos: Sequence[VideoRecord], pairs: Sequence[PairRecord], card: DatasetCard
+) -> None:
+    """A card that records its video or pair list's hash must record the lists being written."""
+    for field, records in (("videos_sha256", videos), ("pairs_sha256", set(pairs))):
+        published = getattr(card, field)
+        if published is None:
+            continue
+        sha256 = records_sha256(records)
+        if sha256 != published:
+            raise ContractError(
+                f"{card.id}: the card's {field} is {published}, but the list being written "
+                f"hashes to {sha256}",
+                hint="build the card's hashes from the same lists (records_sha256)",
+            )
+
+
 def _check_unique(videos: Sequence[VideoRecord], dataset: str) -> None:
     seen: set[tuple[str, str | None]] = set()
     for video in videos:
@@ -129,13 +147,15 @@ def write_dataset_files(
     are no pairs, so ``out/`` always reflects exactly these inputs.
 
     Raises:
-        ContractError: a scheme's rows are not in the card or do not hash to its ``sha256``; a
-            ``(key, compression)`` repeats; or any value looks like an absolute path. All of these
-            are checked before any file is written, except absolute paths inside ``videos`` and
-            ``pairs``, which are checked as each of those files is written.
+        ContractError: a scheme's rows are not in the card or do not hash to its ``sha256``; the
+            card's ``videos_sha256`` or ``pairs_sha256``, when set, is not the hash of ``videos``
+            or ``pairs``; a ``(key, compression)`` repeats; or any value looks like an absolute
+            path. All of these are checked before any file is written, except absolute paths
+            inside ``videos`` and ``pairs``, which are checked as each of those files is written.
     """
     _check_schemes(schemes, card)
     _check_unique(videos, card.id)
+    _check_key_list_hashes(videos, pairs, card)
     card_data = card.model_dump(mode="json", by_alias=True)
     labels_data = labels.model_dump(mode="json", by_alias=True)
     provenance_data = provenance.model_dump(mode="json")

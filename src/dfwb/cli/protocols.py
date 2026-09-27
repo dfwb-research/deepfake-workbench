@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from dfwb.cli._output import emit_json, hint_line, json_option, table
+from dfwb.cli._output import distribution_text, emit_json, hint_line, json_option, table
 
 
 @click.group()
@@ -26,13 +26,19 @@ def _info_row(info: Any) -> dict[str, Any]:
         "default": info.default,
         "counts": info.counts,
         "broken": info.broken,
+        "distribution": info.distribution,
+        "materialized": info.materialized,
     }
 
 
 @protocols.command("list")
 @json_option
 def list_(as_json: bool) -> None:
-    """List every scheme of every dataset in every installed pack (``*`` marks the default)."""
+    """List every scheme of every dataset in every installed pack (``*`` marks the default).
+
+    DISTRIBUTION is the dataset's: list, undecided, or recipe, and for a recipe shipped without
+    its key lists whether it is materialised here (dfwb protocols materialize DATASET).
+    """
     from dfwb.protocols.protocol import list_protocols
 
     rows = list_protocols()
@@ -42,16 +48,17 @@ def list_(as_json: bool) -> None:
 
     healthy = [r for r in rows if r.broken is None]
     broken = [r for r in rows if r.broken is not None]
-    headers = ["PROTOCOL", "PACK", "VERSION", "KIND", "TRAIN", "VAL", "TEST"]
+    headers = ["PROTOCOL", "PACK", "VERSION", "KIND", "DISTRIBUTION", "TRAIN", "VAL", "TEST"]
     table_rows = []
     for r in healthy:
         name = f"{r.dataset_id}/{r.scheme}" + ("*" if r.default else "")
         counts = r.counts or {}
         train, val, test = (counts.get(s, "-") for s in ("train", "val", "test"))
-        table_rows.append([name, r.pack, r.version, r.kind, train, val, test])
+        distribution = distribution_text(r.distribution, r.materialized)
+        table_rows.append([name, r.pack, r.version, r.kind, distribution, train, val, test])
     for r in broken:
         name = r.dataset_id or f"({r.pack})"
-        table_rows.append([name, r.pack, r.version or "-", "BROKEN", "-", "-", "-"])
+        table_rows.append([name, r.pack, r.version or "-", "BROKEN", "-", "-", "-", "-"])
     if table_rows:
         click.echo(table(headers, table_rows))
     else:
@@ -278,37 +285,78 @@ def build(
 )
 @json_option
 def materialize(ref: str, inventory: Path | None, as_json: bool) -> None:
-    """Recompute a recipe scheme from the local inventory and check its published hash.
+    """Rebuild a recipe's lists from the local inventory and check their published hashes.
 
-    A pack may publish a scheme as a rule, its parameters and a hash, with no key list. This
-    rebuilds the split from your own inventory and, only if it hashes to the published value,
-    writes it to the dataset's materialized folder under the work root, where every command that
-    loads the protocol finds it. A mismatch exits 4 and writes nothing.
+    A pack may publish a scheme as a rule, its parameters and a hash, with no key list; a recipe
+    dataset may ship no key list at all (no videos, pairs or split rows), only the hashes of its
+    lists. This rebuilds the lists from your own inventory and, only if every one hashes to its
+    published value, writes them to the dataset's materialized/ folder under the work root, where
+    every command that loads the protocol finds them. For a dataset shipped without its key lists,
+    every list of the dataset is rebuilt, whichever scheme REF names. A mismatch exits 4 and writes
+    nothing.
+
+    With --json, one recipe scheme prints {ref, path, sha256, matched}, and a dataset shipped
+    without its key lists prints {dataset, path, videos_sha256, pairs_sha256, schemes, n_videos,
+    n_pairs, matched}, where schemes maps each scheme to its hash.
     """
+    import contextlib
+
+    from dfwb.core.errors import UnknownKeyError
     from dfwb.core.paths import require_root, resolve_roots
     from dfwb.core.records import InventoryRecord, read_jsonl
     from dfwb.preprocess.inventory.runner import get_builder, inventory_path
-    from dfwb.preprocess.packbuild import locate_metadata_root
+    from dfwb.preprocess.packbuild import locate_metadata_root, materialize_recipe
     from dfwb.protocols.materialization import materialize as run_materialize
-    from dfwb.protocols.materialization import needs_official
+    from dfwb.protocols.materialization import needs_official, ships_key_lists
     from dfwb.protocols.refs import parse_ref
 
     roots = resolve_roots()
     work_root = require_root("work", roots)
     parsed = parse_ref(ref)
+    if not ships_key_lists(parsed):
+        dataset = materialize_recipe(parsed, inventory=inventory, roots=roots)
+        if as_json:
+            emit_json(
+                {
+                    "dataset": dataset.dataset,
+                    "path": str(dataset.path),
+                    "videos_sha256": dataset.videos_sha256,
+                    "pairs_sha256": dataset.pairs_sha256,
+                    "schemes": dataset.schemes,
+                    "n_videos": dataset.n_videos,
+                    "n_pairs": dataset.n_pairs,
+                    "matched": True,
+                }
+            )
+            return
+        click.echo(
+            f"{dataset.dataset}: every published hash matches ({dataset.n_videos} videos, "
+            f"{dataset.n_pairs} pairs, {len(dataset.schemes)} schemes)"
+        )
+        click.echo(f"wrote {dataset.path}")
+        return
+
     source = inventory if inventory is not None else inventory_path(parsed.dataset, work_root)
+    # The publisher's split is dataset knowledge: the dataset's own builder reads it, so a rule
+    # that reads it needs the builder. Any other rule needs none, and a builder that is installed
+    # only says which attributes describe the local copy.
     official = None
+    local_attrs: frozenset[str] = frozenset()
     if needs_official(parsed) and source.is_file():
-        # The publisher's split is dataset knowledge: read it with the dataset's own builder.
         builder = get_builder(parsed.dataset)
         records = read_jsonl(source, InventoryRecord)
         official = builder.official_splits(locate_metadata_root(builder, roots), records)
+        local_attrs = builder.local_attrs
+    else:
+        with contextlib.suppress(UnknownKeyError):
+            local_attrs = get_builder(parsed.dataset).local_attrs
     result = run_materialize(
         parsed,
         inventory=source,
         official=official,
         work_root=work_root,
         datasets_roots=roots["datasets"].paths,
+        local_attrs=local_attrs,
     )
 
     if as_json:
@@ -338,9 +386,11 @@ def _lint_issue_row(issue: Any) -> dict[str, Any]:
 def lint(pack: Path, release: bool, as_json: bool) -> int:
     """Check a protocol pack directory for problems a pack author needs to fix.
 
-    Re-derives every fact a pack's cards claim about themselves (scheme hashes and counts, cross
-    references between videos, splits, pairs and labels) instead of trusting them. Exits 4 if any
-    check reports an error; warnings are printed but never fail the run.
+    Re-derives every fact a pack's cards claim about themselves (scheme hashes and counts, the
+    hashes of the video and pair lists, cross references between videos, splits, pairs and labels)
+    instead of trusting them. A recipe dataset may ship no key list at all, when its card holds
+    everything dfwb protocols materialize needs to rebuild and check them. Exits 4 if any check
+    reports an error; warnings are printed but never fail the run.
     """
     from dfwb.protocols.lint import lint_pack
 
@@ -419,6 +469,11 @@ def _report_bump_shortfall(error_line: str, required_bump: str) -> None:
 def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
     """Compare two protocol pack directories and report the SemVer bump the changes require.
 
+    A recipe dataset that either pack ships without its key lists is compared by the hashes of
+    its video and pair lists; a changed video list requires a major bump, since a relabel cannot
+    be told apart from any other change to it, and a dataset that now ships no key lists requires
+    at least a minor one, since its users must now materialise it.
+
     With ``--expect-bump``, the value is the bump the pack author claims for the release: the
     command exits 4, naming both, when that claim is smaller than the bump the changes require --
     the check a release pipeline runs before publishing. An unchanged pack requires ``none``,
@@ -453,6 +508,8 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
             "labels_added": result.labels_added,
             "relabelled": relabelled,
             "relabelled_count": len(result.relabelled),
+            "lists_changed": result.lists_changed,
+            "now_key_free": result.now_key_free,
             "required_bump": result.required_bump,
         }
         if expect_bump is not None:
@@ -474,6 +531,12 @@ def diff(old: Path, new: Path, expect_bump: str | None, as_json: bool) -> int:
         click.echo(f"videos relabelled: {len(result.relabelled)}{shown}")
         for key in relabelled:
             click.echo(f"  {key}")
+    if result.lists_changed:
+        click.echo(
+            "lists changed (compared by hash, no video named): " + ", ".join(result.lists_changed)
+        )
+    for dataset in result.now_key_free:
+        click.echo(f"{dataset} now ships no key lists: users must materialise it")
     click.echo(f"required bump: {result.required_bump}")
     if expect_bump is not None:
         click.echo(f"expected bump: {expect_bump}")

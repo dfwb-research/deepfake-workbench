@@ -268,6 +268,9 @@ class AVDeepfake1MPPBuilder(BaseBuilder):
     default_scheme = "official"
     benchmark = BenchmarkSpec(k_fake=100, strata=("task",))
     pairing_rule = "original-video"
+    # Where the audio sits locally: the video's own relpath, whose prefix depends on how the
+    # release was unpacked.
+    local_attrs = frozenset({"audio_relpath"})
     card_info = {
         "name": "AV-Deepfake1M++",
         "aliases": ["AVDF1MPP", "AV-Deepfake1M-PlusPlus"],

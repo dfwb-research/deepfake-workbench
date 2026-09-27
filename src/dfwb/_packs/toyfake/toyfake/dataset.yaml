@@ -16,6 +16,8 @@ license:
 modalities:
 - video
 name: toyfake
+pairing_rule: target-id
+pairs_sha256: ab0ca2330b9a2c7240c021e01860626e5e69b83a6cd4a3c2387b1e32ce201681
 paper: null
 release: 'synthetic: generated locally by dfwb from a seed; this pack lists the tree
   made with --videos 200 --seed 0 (80 reals, 60 fakes of each method)'
@@ -89,3 +91,4 @@ terms:
     with dfwb and may be redistributed.'
   reviewed: null
   source: dfwb
+videos_sha256: eeb2bde454baf85cc1bbe54ff25904a3afb1d3c0425bd6ec1919c46714622f50

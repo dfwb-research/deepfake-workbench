@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -73,8 +74,19 @@ class InventoryRecord:
             )
 
 
-def to_video_record(record: InventoryRecord) -> VideoRecord:
-    """The portable columns of ``record``: drops ``relpath``, ``builder``, ``probe``, ``folder``."""
+def to_video_record(record: InventoryRecord, *, local_attrs: Collection[str] = ()) -> VideoRecord:
+    """The portable columns of ``record``: drops ``relpath``, ``builder``, ``probe``, ``folder``.
+
+    ``local_attrs`` names the attributes that describe the local copy rather than the dataset
+    (a path, a prefix, whether a file happens to be present): a builder declares them, they stay
+    in the inventory, and they are left out here, so the published record is the same on every
+    machine.
+    """
+    attrs = (
+        {name: value for name, value in record.attrs.items() if name not in local_attrs}
+        if local_attrs
+        else record.attrs
+    )
     return VideoRecord(
         key=record.key,
         compression=record.compression,
@@ -84,7 +96,7 @@ def to_video_record(record: InventoryRecord) -> VideoRecord:
         source_id=record.source_id,
         target_id=record.target_id,
         pair_key=record.pair_key,
-        attrs=record.attrs,
+        attrs=attrs,
     )
 
 

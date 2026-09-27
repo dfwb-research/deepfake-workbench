@@ -96,7 +96,14 @@ def test_info_shows_the_card_layout_folder_and_schemes(run, monkeypatch, tmp_pat
         ],
     }
     assert data["schemes"] == [
-        {"pack": "demo-pack", "scheme": "official", "kind": "official", "default": True}
+        {
+            "pack": "demo-pack",
+            "scheme": "official",
+            "kind": "official",
+            "default": True,
+            "distribution": "undecided",
+            "materialized": None,
+        }
     ]
 
 
@@ -157,6 +164,10 @@ def test_info_works_for_a_dataset_known_only_from_a_pack(run, monkeypatch, tmp_p
     assert "demo-pack" in result.out
     assert "official" in result.out
     assert "no local inventory builder is registered" in result.out
+    # The scheme table shows each dataset's distribution, as it does for a dataset with a builder.
+    header = next(line for line in result.out.splitlines() if line.startswith("PACK"))
+    assert header.split() == ["PACK", "SCHEME", "KIND", "DISTRIBUTION"]
+    assert "undecided" in result.out
 
     data = json.loads(run("datasets", "info", "packonly", "--json").out)
     assert data["id"] == "packonly"
@@ -166,7 +177,14 @@ def test_info_works_for_a_dataset_known_only_from_a_pack(run, monkeypatch, tmp_p
     assert data["packs"] == ["demo-pack"]
     assert data["card"]["name"] == "packonly"
     assert data["schemes"] == [
-        {"pack": "demo-pack", "scheme": "official", "kind": "official", "default": True}
+        {
+            "pack": "demo-pack",
+            "scheme": "official",
+            "kind": "official",
+            "default": True,
+            "distribution": "undecided",
+            "materialized": None,
+        }
     ]
 
 

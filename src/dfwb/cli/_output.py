@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-__all__ = ["emit_json", "hint_line", "json_option", "table"]
+__all__ = ["distribution_text", "emit_json", "hint_line", "json_option", "table"]
 
 
 def json_option[F: Callable[..., Any]](function: F) -> F:
@@ -43,3 +43,11 @@ def table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
     return "\n".join(
         "  ".join(v.ljust(w) for v, w in zip(row, widths, strict=True)).rstrip() for row in cells
     )
+
+
+def distribution_text(distribution: str, materialized: bool | None) -> str:
+    """A dataset's distribution for a table: ``list``, ``undecided``, or ``recipe`` with whether
+    it is materialised here when its pack ships no key lists (``materialized`` is not None)."""
+    if materialized is None:
+        return distribution or "-"
+    return f"{distribution}: {'materialised' if materialized else 'not materialised'}"

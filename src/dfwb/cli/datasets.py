@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from dfwb.cli._output import emit_json, json_option, table
+from dfwb.cli._output import distribution_text, emit_json, json_option, table
 
 if TYPE_CHECKING:
     from dfwb.core.paths import ResolvedRoot, RootName
@@ -147,6 +147,7 @@ def _pack_schemes(dataset_id: str) -> tuple[list[dict[str, Any]], list[str]]:
     from dfwb.core.errors import DFWBError
     from dfwb.protocols._yaml import read_card
     from dfwb.protocols.packs import installed_packs
+    from dfwb.protocols.protocol import materialized_schemes
 
     rows: list[dict[str, Any]] = []
     problems: list[str] = []
@@ -162,12 +163,15 @@ def _pack_schemes(dataset_id: str) -> tuple[list[dict[str, Any]], list[str]]:
         except DFWBError as exc:
             problems.append(f"pack {pack.name!r}: {exc.message}")
             continue
+        here = materialized_schemes(pack.dataset_dir(dataset_id), dataset_id, card)
         rows.extend(
             {
                 "pack": pack.name,
                 "scheme": name,
                 "kind": scheme.kind,
                 "default": name == card.default_scheme,
+                "distribution": card.distribution,
+                "materialized": None if here is None else name in here,
             }
             for name, scheme in card.schemes.items()
         )
@@ -199,6 +203,20 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
         if value:
             lines.append(f"{label + ':':<14}{value}")
     return lines
+
+
+def _schemes_table(schemes: list[dict[str, Any]]) -> str:
+    """The plain-text table of :func:`_pack_schemes`' rows, the default scheme starred."""
+    rows = [
+        [
+            row["pack"],
+            row["scheme"] + ("*" if row["default"] else ""),
+            row["kind"],
+            distribution_text(row["distribution"], row["materialized"]),
+        ]
+        for row in schemes
+    ]
+    return table(["PACK", "SCHEME", "KIND", "DISTRIBUTION"], rows)
 
 
 def _pack_card(dataset_id: str) -> dict[str, Any] | None:
@@ -262,11 +280,7 @@ def _info_pack_only(dataset_id: str, pack_names: list[str], as_json: bool) -> No
     click.echo("")
     if schemes:
         click.echo("schemes in installed protocol packs:")
-        rows = [
-            [row["pack"], row["scheme"] + ("*" if row["default"] else ""), row["kind"]]
-            for row in schemes
-        ]
-        click.echo(table(["PACK", "SCHEME", "KIND"], rows))
+        click.echo(_schemes_table(schemes))
     for problem in problems:
         click.echo(f"warning: {problem}", err=True)
 
@@ -330,11 +344,7 @@ def info(dataset: str, as_json: bool) -> None:
     click.echo("")
     if schemes:
         click.echo("schemes in installed protocol packs:")
-        rows = [
-            [row["pack"], row["scheme"] + ("*" if row["default"] else ""), row["kind"]]
-            for row in schemes
-        ]
-        click.echo(table(["PACK", "SCHEME", "KIND"], rows))
+        click.echo(_schemes_table(schemes))
     else:
         requirement = catalogue_requirement("protocol_packs", dataset_id)
         suggestion = f" (pip install {requirement})" if requirement else ""
