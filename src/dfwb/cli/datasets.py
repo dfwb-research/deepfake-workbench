@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from dfwb.preprocess.inventory.runner import DatasetCopy, FolderStatus
 
 _MISSING = "—"
+# How many mismatched-label warnings `unpack` names outright (plain text and --json alike);
+# the rest are folded into the "and N more" count.
+_WARNINGS_SHOWN = 3
 
 
 @click.group()
@@ -442,10 +445,13 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
 
     Every archive member is checked before anything is written: an absolute path, a '..'
     segment, a symlink, a hard link, or a device or FIFO file refuses the whole archive, naming
-    the first offending member. Unpacking is resumable: a sequence already holding exactly its
-    expected frames is left alone, and any other sequence folder is removed and rewritten from
-    scratch, so re-running after an interrupted unpack is always safe and never duplicates
-    frames. Discovery is then run on the result and its counts are reported.
+    the first offending member. A frame filed under an inner label that disagrees with its
+    archive's own real_train/real_test/fake_train/fake_test category is not refused -- it is
+    unpacked under the category's label regardless, and reported as a warning. Unpacking is
+    resumable: a sequence already holding exactly its expected frames is left alone, and any
+    other sequence folder is removed and rewritten from scratch, so re-running after an
+    interrupted unpack is always safe and never duplicates frames. Discovery is then run on the
+    result and its counts are reported.
     """
     from dfwb.core.paths import absolute, require_root, resolve_roots
     from dfwb.preprocess.inventory.runner import get_builder
@@ -459,6 +465,7 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
         target = require_root("datasets", resolve_roots()) / builder.expected_folder
 
     result = unpack_wilddeepfake(builder, source, target)
+    shown = result.warnings[:_WARNINGS_SHOWN]
 
     if as_json:
         emit_json(
@@ -473,6 +480,7 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
                 "sequences_skipped": result.sequences_skipped,
                 "frames_written": result.frames_written,
                 "by_task": result.by_task,
+                "warnings": {"count": len(result.warnings), "first": list(shown)},
             }
         )
         return
@@ -484,3 +492,10 @@ def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None
     )
     counts = ", ".join(f"{task} {count}" for task, count in result.by_task.items())
     click.echo(f"discovery now finds {sum(result.by_task.values())} record(s) ({counts})")
+    if result.warnings:
+        more = len(result.warnings) - len(shown)
+        suffix = f"; and {more} more" if more else ""
+        click.echo(
+            f"warning: {len(result.warnings)} frame(s) filed under a label that disagrees with "
+            f"their category: {'; '.join(shown)}{suffix}"
+        )

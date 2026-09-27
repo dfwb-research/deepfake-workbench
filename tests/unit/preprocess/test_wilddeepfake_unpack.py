@@ -10,7 +10,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from tests.unit.preprocess._wdf_archives import write_raw_shard, write_shard
+from tests.unit.preprocess._wdf_archives import write_raw_shard, write_realistic_shard, write_shard
 
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.preprocess.inventory.builders.wilddeepfake import WildDeepfakeBuilder
@@ -94,6 +94,31 @@ def test_frame_names_are_normalised(tmp_path, builder):
         "notes.png": b"b",
         "000007.png": b"c",
     }
+
+
+def test_a_realistic_archive_with_dot_slash_paths_and_directory_entries(tmp_path, builder):
+    """Built the way a plain ``tar -cf`` of a real directory tree actually shapes it: every
+    member (files and directories alike) prefixed ``./``, with an explicit directory entry for
+    the shard, the label and each sequence -- not just the frame files."""
+    archives = tmp_path / "archives"
+    write_realistic_shard(
+        archives / "real_train" / "6.tar.gz",
+        "6",
+        "real",
+        [("54", "0.png", b"r0"), ("54", "1.png", b"r1"), ("7", "000005.png", b"r5")],
+    )
+    to = tmp_path / "WildDeepfake"
+
+    result = unpack_wilddeepfake(builder, archives, to)
+
+    assert result.warnings == ()
+    assert result.sequences_written == 2
+    assert result.frames_written == 3
+    assert _frame_files(to / REAL_DIR / "real_train_6_54") == {
+        "000000.png": b"r0",
+        "000001.png": b"r1",
+    }
+    assert _frame_files(to / REAL_DIR / "real_train_6_7") == {"000005.png": b"r5"}
 
 
 def test_only_present_categories_are_scanned(tmp_path, builder):
@@ -256,13 +281,34 @@ def test_refuses_colliding_normalised_frame_names(tmp_path, builder):
         unpack_wilddeepfake(builder, archives, to)
 
 
-def test_refuses_a_frame_filed_under_the_wrong_label(tmp_path, builder):
+def test_a_mismatched_inner_label_is_a_warning_not_a_refusal(tmp_path, builder):
+    """The maintainer's own build of the release keys every frame by its *category* folder's
+    label, regardless of what the shard's internal <label> folder says; an unpacker that refused
+    the archive here would refuse real, correctly-built releases."""
     archives = tmp_path / "archives"
     write_shard(archives / "real_train" / "6.tar.gz", "6", "fake", [("54", "0.png", b"x")])
     to = tmp_path / "WildDeepfake"
 
-    with pytest.raises(ContractError, match="real_train"):
-        unpack_wilddeepfake(builder, archives, to)
+    result = unpack_wilddeepfake(builder, archives, to)
+
+    # Unpacked under the category's label (real), not the shard's inner one (fake).
+    assert result.sequences_written == 1
+    assert _frame_files(to / REAL_DIR / "real_train_6_54") == {"000000.png": b"x"}
+    assert not (to / FAKE_DIR).exists()
+    assert len(result.warnings) == 1
+    assert "fake" in result.warnings[0]
+    assert "real" in result.warnings[0]
+    assert "6.tar.gz" in result.warnings[0]
+
+
+def test_no_warnings_on_a_consistent_archive(tmp_path, builder):
+    archives = tmp_path / "archives"
+    write_shard(archives / "real_train" / "6.tar.gz", "6", "real", [("54", "0.png", b"x")])
+    to = tmp_path / "WildDeepfake"
+
+    result = unpack_wilddeepfake(builder, archives, to)
+
+    assert result.warnings == ()
 
 
 def test_non_frame_members_are_ignored_not_refused(tmp_path, builder):
@@ -318,19 +364,24 @@ def test_no_category_folders_found(tmp_path, builder):
     archives = tmp_path / "archives"
     archives.mkdir()
     (archives / "something-else").mkdir()
+    to = tmp_path / "WildDeepfake"
 
     with pytest.raises(ConfigError, match="real_train") as excinfo:
-        unpack_wilddeepfake(builder, archives, tmp_path / "WildDeepfake")
+        unpack_wilddeepfake(builder, archives, to)
     assert excinfo.value.hint
+    assert not to.exists()
 
 
 def test_no_shard_files_found(tmp_path, builder):
     archives = tmp_path / "archives"
     (archives / "real_train").mkdir(parents=True)
+    to = tmp_path / "WildDeepfake"
 
     with pytest.raises(ConfigError, match=r"tar\.gz") as excinfo:
-        unpack_wilddeepfake(builder, archives, tmp_path / "WildDeepfake")
+        unpack_wilddeepfake(builder, archives, to)
     assert excinfo.value.hint
+    # Refused before writing anything: --to is never even created.
+    assert not to.exists()
 
 
 def test_to_must_not_be_an_existing_file(tmp_path, builder):

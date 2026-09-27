@@ -44,6 +44,7 @@ def test_unpack_writes_the_tree_and_reports_counts(run, tmp_path):
     assert data["sequences_skipped"] == 0
     assert data["frames_written"] == 3
     assert data["by_task"] == {"REAL": 1, "FAKE": 1}
+    assert data["warnings"] == {"count": 0, "first": []}
     assert (to / REAL_DIR / "real_train_6_54" / "000000.png").read_bytes() == b"r0"
     assert (to / FAKE_DIR / "fake_test_100_0" / "000000.png").read_bytes() == b"f0"
 
@@ -91,6 +92,41 @@ def test_unpack_defaults_to_is_the_first_datasets_root(run, tmp_path, monkeypatc
     data = json.loads(result.out)
     assert data["to"] == str(datasets_root / "WildDeepfake")
     assert (datasets_root / "WildDeepfake" / REAL_DIR / "real_train_6_54").is_dir()
+
+
+def test_unpack_reports_a_mismatched_inner_label_as_a_warning_not_a_failure(run, tmp_path):
+    archives = tmp_path / "archives"
+    write_shard(archives / "real_train" / "6.tar.gz", "6", "fake", [("54", "0.png", b"x")])
+    to = tmp_path / "out" / "WildDeepfake"
+
+    json_result = run(
+        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to), "--json"
+    )
+    assert json_result.code == 0, json_result.err
+    data = json.loads(json_result.out)
+    assert data["sequences_written"] == 1
+    assert data["warnings"]["count"] == 1
+    assert len(data["warnings"]["first"]) == 1
+    assert "fake" in data["warnings"]["first"][0]
+    assert (to / REAL_DIR / "real_train_6_54" / "000000.png").read_bytes() == b"x"
+
+    plain_result = run(
+        "datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to)
+    )
+    assert plain_result.code == 0, plain_result.err
+    assert "warning: 1 frame(s)" in plain_result.out
+    assert "fake" in plain_result.out
+
+
+def test_unpack_creates_nothing_when_there_are_no_shards(run, tmp_path):
+    archives = tmp_path / "archives"
+    (archives / "real_train").mkdir(parents=True)
+    to = tmp_path / "out" / "WildDeepfake"
+
+    result = run("datasets", "unpack", "wilddeepfake", "--from", str(archives), "--to", str(to))
+    assert result.code == 2
+    assert "hint: " in result.err
+    assert not to.exists()
 
 
 def test_unpack_from_a_missing_directory_fails_with_a_hint(run, tmp_path):

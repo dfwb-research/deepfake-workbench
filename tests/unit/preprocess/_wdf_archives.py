@@ -11,7 +11,7 @@ import io
 import tarfile
 from pathlib import Path
 
-__all__ = ["write_raw_shard", "write_shard"]
+__all__ = ["write_raw_shard", "write_realistic_shard", "write_shard"]
 
 # (sequence, frame filename, content) triples.
 Frame = tuple[str, str, bytes]
@@ -27,6 +27,30 @@ def write_shard(path: Path, shard_id: str, label: str, frames: list[Frame]) -> N
     with tarfile.open(path, mode="w") as tar:
         for sequence, frame_name, content in frames:
             info = tarfile.TarInfo(name=f"{shard_id}/{label}/{sequence}/{frame_name}")
+            info.size = len(content)
+            tar.addfile(info, fileobj=io.BytesIO(content))
+
+
+def write_realistic_shard(path: Path, shard_id: str, label: str, frames: list[Frame]) -> None:
+    """Write a shard the way a plain ``tar -cf`` of a real directory tree actually produces it:
+    an uncompressed tar (still named ``.tar.gz``), every member prefixed ``./``, and an explicit
+    directory entry for ``./``, ``./<shard_id>/``, ``./<shard_id>/<label>/`` and each sequence's
+    own folder -- not just the frame files themselves.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sequences = dict.fromkeys(sequence for sequence, _, _ in frames)
+    with tarfile.open(path, mode="w") as tar:
+        for dirname in (
+            "./",
+            f"./{shard_id}/",
+            f"./{shard_id}/{label}/",
+            *(f"./{shard_id}/{label}/{sequence}/" for sequence in sequences),
+        ):
+            info = tarfile.TarInfo(name=dirname)
+            info.type = tarfile.DIRTYPE
+            tar.addfile(info)
+        for sequence, frame_name, content in frames:
+            info = tarfile.TarInfo(name=f"./{shard_id}/{label}/{sequence}/{frame_name}")
             info.size = len(content)
             tar.addfile(info, fileobj=io.BytesIO(content))
 

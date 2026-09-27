@@ -16,6 +16,20 @@ A frame's destination path is never built from the archive's own member name -- 
 label, sequence and frame components validated out of it -- so even a member that slipped past
 those checks could not otherwise steer where its bytes land.
 
+A frame is always keyed by its *category's* label -- the ``real``/``fake`` named by the
+``real_train``/``real_test``/``fake_train``/``fake_test`` folder its shard sits in, per the
+maintainer's own build process for the release -- never by the ``<label>`` path component inside
+the shard. A member whose inner ``<label>`` disagrees with its category is not a safety problem
+(it changes nothing about where the frame ends up), so it is not refused; it is reported as a
+warning instead, both on :class:`UnpackResult` and, summarised, in the CLI output.
+
+Real shards' members are commonly named with a leading ``./`` (e.g. ``./6/real/54/0.png``) and
+carry an explicit entry for every directory they hold; both are handled the same as their
+without-prefix, without-directory-entries equivalents (``pathlib.PurePosixPath`` already discards
+a leading ``./`` and a trailing ``/``, and a directory entry never matches the four-part
+``<shard>/<label>/<sequence>/<frame>`` shape a frame needs, so it is skipped like any other
+non-frame member).
+
 Unpacking is resumable and idempotent, driven entirely by what is already on disk: a sequence
 whose target folder already holds exactly the frame files the archive says it should is left
 alone (an already-complete shard costs only a re-read of its tar index, no bytes rewritten); any
@@ -29,7 +43,7 @@ from __future__ import annotations
 import os
 import shutil
 import tarfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import IO, TYPE_CHECKING, Final
 
@@ -62,6 +76,7 @@ class UnpackResult:
     sequences_skipped: int  # already held exactly the expected frames
     frames_written: int
     by_task: dict[str, int]  # collect_records(builder, to) counts, by task abbr
+    warnings: tuple[str, ...]  # one per frame whose inner label disagreed with its category
 
 
 @dataclass
@@ -70,12 +85,14 @@ class _ShardStats:
     sequences_written: int = 0
     sequences_skipped: int = 0
     frames_written: int = 0
+    warnings: list[str] = field(default_factory=list)
 
     def add(self, other: _ShardStats) -> None:
         self.sequences_total += other.sequences_total
         self.sequences_written += other.sequences_written
         self.sequences_skipped += other.sequences_skipped
         self.frames_written += other.frames_written
+        self.warnings.extend(other.warnings)
 
 
 @dataclass
@@ -149,16 +166,23 @@ def _write_frame(source: IO[bytes], target_dir: Path, out_name: str) -> None:
 
 def _grouped_frames(
     tar: tarfile.TarFile, archive_path: Path, label: str, split: str
-) -> dict[tuple[str, str], list[tuple[tarfile.TarInfo, str]]]:
-    """Every safe member of ``tar``, grouped by ``(label, sequence)``, mapped to its output name.
+) -> tuple[dict[str, list[tuple[tarfile.TarInfo, str]]], list[str]]:
+    """Every safe member of ``tar``, grouped by sequence, mapped to its output name; and one
+    warning per member whose inner ``<label>`` path component disagreed with ``label``.
 
     Every member is checked before any is used: the first unsafe one (an absolute path, a ``..``
     segment, a symlink, a hard link, or a device or FIFO file) refuses the whole archive. A member
     that is safe but not shaped like a frame (``<shard>/<label>/<sequence>/<frame>``) is skipped,
-    not refused -- an archive may hold other files dfwb does not need.
+    not refused -- an archive may hold other files dfwb does not need, and a real shard commonly
+    holds an explicit entry for every directory it has, none of which is ever four parts deep.
+
+    A frame is always grouped (and later keyed) by ``label`` -- the category the shard itself sits
+    in -- never by its own inner ``<label>`` path component: the maintainer's own build of the
+    release keys every frame this way regardless of what that inner folder says, and a disagreement
+    there is reported as a warning, not treated as unsafe or refused.
 
     Raises:
-        ContractError: an unsafe member, or a frame filed under a label other than ``label``.
+        ContractError: an unsafe member (see :func:`_unsafe_reason`).
     """
     members = tar.getmembers()
     for member in members:
@@ -169,29 +193,29 @@ def _grouped_frames(
                 hint="the archive is untrusted or corrupt; verify its source and re-download it",
             )
 
-    frames: dict[tuple[str, str], list[tuple[tarfile.TarInfo, str]]] = {}
+    frames: dict[str, list[tuple[tarfile.TarInfo, str]]] = {}
+    warnings: list[str] = []
     for member in members:
         if not member.isfile():
             continue
         parsed = _parse_frame_member(member.name)
         if parsed is None:
             continue
-        seq_label, sequence, out_name = parsed
-        if seq_label != label:
-            raise ContractError(
-                f"{archive_path}: {member.name!r} is filed under {seq_label!r}, but this "
-                f"archive is under the {label!r} category ({label}_{split})",
-                hint="the archive may be in the wrong category folder",
+        inner_label, sequence, out_name = parsed
+        if inner_label != label:
+            warnings.append(
+                f"{archive_path.name}: {member.name!r} is filed under {inner_label!r} inside "
+                f"the {label!r} category ({label}_{split}); kept under {label!r}"
             )
-        frames.setdefault((seq_label, sequence), []).append((member, out_name))
-    return frames
+        frames.setdefault(sequence, []).append((member, out_name))
+    return frames, warnings
 
 
 def _unpack_sequence(
     tar: tarfile.TarFile,
     archive_path: Path,
     entries: list[tuple[tarfile.TarInfo, str]],
-    seq_label: str,
+    label: str,
     sequence: str,
     target_dir: Path,
 ) -> tuple[bool, int]:
@@ -206,7 +230,7 @@ def _unpack_sequence(
     if len(set(out_names)) != len(out_names):
         dupes = sorted({n for n in out_names if out_names.count(n) > 1})
         raise ContractError(
-            f"{archive_path}: sequence {seq_label}/{sequence}: two frames both normalise to "
+            f"{archive_path}: sequence {label}/{sequence}: two frames both normalise to "
             f"{dupes[0]!r}",
             hint="the archive's frame names collide after normalising; re-check the release",
         )
@@ -236,21 +260,21 @@ def _unpack_shard(
     Raises:
         ConfigError: never (a missing ``to`` is created by the caller).
         ContractError: the archive cannot be opened, holds an unsafe member (named in the
-            message), two frames of one sequence normalise to the same output name, or a frame
-            sits under a label folder other than ``label`` (see :func:`_grouped_frames` and
-            :func:`_unpack_sequence`).
+            message), or two frames of one sequence normalise to the same output name (see
+            :func:`_grouped_frames` and :func:`_unpack_sequence`).
     """
     shard_id = archive_path.name.partition(".")[0]
     stats = _ShardStats()
     try:
         with tarfile.open(archive_path, mode="r:*") as tar:
-            frames = _grouped_frames(tar, archive_path, label, split)
-            for (seq_label, sequence), entries in sorted(frames.items()):
+            frames, warnings = _grouped_frames(tar, archive_path, label, split)
+            stats.warnings.extend(warnings)
+            for sequence, entries in sorted(frames.items()):
                 key = f"{label}_{split}_{shard_id}_{sequence}"
                 target_dir = to / task_video_dir / key
                 stats.sequences_total += 1
                 written, n_frames = _unpack_sequence(
-                    tar, archive_path, entries, seq_label, sequence, target_dir
+                    tar, archive_path, entries, label, sequence, target_dir
                 )
                 if written:
                     stats.sequences_written += 1
@@ -295,22 +319,28 @@ def unpack_wilddeepfake(builder: BaseBuilder, from_dir: Path, to: Path) -> Unpac
     if to.exists() and not to.is_dir():
         raise ConfigError(f"{to}: not a directory", hint="point --to at a folder, or remove it")
 
-    to.mkdir(parents=True, exist_ok=True)
-    totals = _Totals()
+    shards: list[tuple[str, str, str, Path]] = []  # (label, split, task_video_dir, shard_path)
     for category in categories_present:
         label, _, split = category.partition("_")
         task = tasks_by_kind.get(label)
         if task is None:
             continue
         for shard_path in sorted((from_dir / category).glob("*.tar.gz")):
-            totals.shards_found += 1
-            totals.add(_unpack_shard(shard_path, label, split, task.video_dir, to))
+            shards.append((label, split, task.video_dir, shard_path))
 
-    if totals.shards_found == 0:
+    if not shards:
         raise ConfigError(
             f"{from_dir}: {', '.join(categories_present)} hold no *.tar.gz shard files",
             hint="check the release download completed",
         )
+
+    # Only created once there is at least one shard to unpack, so a refusal above never leaves an
+    # empty --to folder behind.
+    to.mkdir(parents=True, exist_ok=True)
+    totals = _Totals()
+    for label, split, task_video_dir, shard_path in shards:
+        totals.shards_found += 1
+        totals.add(_unpack_shard(shard_path, label, split, task_video_dir, to))
 
     records = collect_records(builder, to)
     by_task = {task.abbr: 0 for task in builder.tasks}
@@ -328,4 +358,5 @@ def unpack_wilddeepfake(builder: BaseBuilder, from_dir: Path, to: Path) -> Unpac
         sequences_skipped=totals.sequences_skipped,
         frames_written=totals.frames_written,
         by_task=by_task,
+        warnings=tuple(totals.warnings),
     )
