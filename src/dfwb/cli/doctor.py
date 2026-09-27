@@ -102,6 +102,26 @@ def _datasets(roots: Mapping[RootName, ResolvedRoot]) -> list[dict[str, Any]]:
     return rows
 
 
+def _licenses() -> tuple[dict[str, dict[str, str]], dict[str, str] | None]:
+    """Every licence acknowledgement recorded on this machine, keyed by name, and the problem
+    that stopped the store being read (``{"message", "hint"}``), if any.
+
+    A store that cannot be read is reported, not raised: the doctor is where to find out about it,
+    so it must still report everything else.
+    """
+    from dfwb.core import licenses
+    from dfwb.core.errors import ContractError
+
+    try:
+        accepted = licenses.all_accepted()
+    except ContractError as exc:
+        return {}, {"message": exc.message, "hint": exc.hint}
+    return {
+        name: {"license": entry.license, "accepted_at": entry.accepted_at}
+        for name, entry in sorted(accepted.items())
+    }, None
+
+
 def collect() -> dict[str, Any]:
     """Everything ``dfwb doctor`` reports, as plain data."""
     from dfwb import __version__
@@ -112,6 +132,7 @@ def collect() -> dict[str, Any]:
     roots = resolve_roots()
     report = load_plugins()
     env_file = last_applied()
+    accepted, licenses_error = _licenses()
     return {
         "dfwb": __version__,
         "python": platform.python_version(),
@@ -146,6 +167,8 @@ def collect() -> dict[str, Any]:
             for r in report.records
         ],
         "datasets": _datasets(roots),
+        "licenses": accepted,
+        "licenses_error": licenses_error,
     }
 
 
@@ -193,11 +216,24 @@ def doctor(as_json: bool) -> None:
     click.echo("")
     if not data["datasets"]:
         click.echo("datasets: no inventory builders are registered")
-        return
-    dataset_rows = [
-        [d["id"], d["folder"] or "-", d["source"], d["path"] or ""] for d in data["datasets"]
-    ]
-    click.echo(table(["DATASET", "FOLDER", "RESOLVED", "PATH"], dataset_rows))
-    for dataset in data["datasets"]:
-        if dataset["warning"]:
-            click.echo(f"warning: {dataset['warning']}", err=True)
+    else:
+        dataset_rows = [
+            [d["id"], d["folder"] or "-", d["source"], d["path"] or ""] for d in data["datasets"]
+        ]
+        click.echo(table(["DATASET", "FOLDER", "RESOLVED", "PATH"], dataset_rows))
+        for dataset in data["datasets"]:
+            if dataset["warning"]:
+                click.echo(f"warning: {dataset['warning']}", err=True)
+    click.echo("")
+    click.echo("LICENCES")
+    if data["licenses_error"] is not None:
+        click.echo(data["licenses_error"]["message"])
+        click.echo(f"hint: {data['licenses_error']['hint']}")
+    elif not data["licenses"]:
+        click.echo("no licences acknowledged yet")
+    else:
+        licence_rows = [
+            [name, entry["license"], entry["accepted_at"]]
+            for name, entry in data["licenses"].items()
+        ]
+        click.echo(table(["NAME", "LICENSE", "ACCEPTED"], licence_rows))

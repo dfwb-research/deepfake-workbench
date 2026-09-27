@@ -28,6 +28,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "doctor": ("dfwb.cli.doctor:doctor", "Check Python, roots, extras and plugins."),
     "inventory": ("dfwb.cli.inventory:inventory", "Build and summarise dataset inventories."),
     "plugins": ("dfwb.cli.plugins:plugins", "List and inspect plugins and their components."),
+    "preprocess": (
+        "dfwb.cli.preprocess:preprocess",
+        "Run the face pipeline, check its progress, and merge sharded runs.",
+    ),
     "protocols": ("dfwb.cli.protocols:protocols", "List and inspect installed protocol packs."),
     "schema": ("dfwb.cli.schema:schema", "Export the contract JSON Schemas."),
 }

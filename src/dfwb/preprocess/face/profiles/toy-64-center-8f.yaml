@@ -1,0 +1,9 @@
+# A tiny profile for smoke tests and pre-cropped datasets: no detector and no model to download,
+# just a centred square crop. Like every profile, it needs the preprocess extra (PyAV and OpenCV).
+id: toy-64-center-8f
+backend: {name: center}
+track: {iou: 0.5, strategy: largest-then-iou}
+crop: {scale: 1.0, size: 64, square: true, align: none}
+sampling: {mode: uniform, frames: 8}
+decode: {library: pyav, color: rgb}
+extras: {landmarks: false, mesh: false, masks: false}

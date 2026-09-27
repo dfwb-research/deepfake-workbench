@@ -6,6 +6,44 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0a3] - 2026-09-25
+
+### Added
+
+- The face pipeline (contract C3c): processing profiles (a named, hashed recipe for detection,
+  tracking, cropping, sampling and decoding), five shipped profiles including the setting that
+  reproduces the author's earlier FaceForensics++ stores, and a lossless PNG frame store with one
+  `clip.json` per video (per-frame boxes, scores and landmarks; dropped frames and why; the
+  tracking strategy and whether it may have switched identity partway through a clip).
+- Three face-detection backends: `center` (no detector, a centred crop, for pre-cropped data and
+  smoke tests), `insightface` (a dependency-free, line-for-line port of insightface 0.7.3's SCRFD
+  detection and ArcFace embedding, run with onnxruntime against the original `buffalo_l` ONNX
+  weights) and `mediapipe` (Google's Apache-2.0 BlazeFace detector).
+- Exact crop and tracking, ported unchanged from the earlier pipeline: replicate-padded, scaled
+  square crops; largest-face-then-IoU tracking with optional EMA smoothing of the reported box;
+  and identity-guided subject selection for clips whose backend estimates face embeddings.
+- `dfwb preprocess`: `run` (process a dataset with a profile, scoped to a protocol split or a
+  `where` filter, with `--workers`, `--device`, `--shard`, `--redo` and `--limit`), `status`
+  (outcome counts by task and, with a protocol, split), `merge` (combine a sharded run's index
+  files) and `profiles` (list the shipped profiles). A run resumes automatically: a video with any
+  row in the index is skipped unless its outcome is named in `--redo`, and no half-written output
+  ever survives an interrupted or crashed run.
+- Sharded runs (`--shard I/N`) for splitting one dataset's processing across several machines,
+  each writing its own shard index file and a `.running` marker for as long as it may still append
+  to it; `preprocess merge` folds every shard back into one index, and `preprocess status` reports
+  a still-sharded store accurately even before it is merged.
+- A licence-acknowledgement gate (`dfwb.core.licenses`) for model weights under stricter terms
+  than dfwb's own code, recorded once per machine and checked again before every use; insightface's
+  `buffalo_l` weights (non-commercial research use only) are gated this way, acknowledged with
+  `dfwb preprocess run --accept-license`. `dfwb doctor` lists every acknowledgement recorded.
+- Verified asset fetching (`dfwb.core.fetch`): an atomic, sha256-checked download for model
+  weights, refused under `DFWB_OFFLINE`; used by the `insightface` and `mediapipe` backends to
+  find or fetch their models under the cache root.
+- User docs: processing profiles (the shipped profiles, the store layout and `clip.json`, resuming
+  and redoing a run, sharding and merge, and the licence gate) and an extras-installation guide
+  covering the face backends, the mediapipe/OpenCV package conflict and its fix, and GPU
+  onnxruntime.
+
 ## [0.1.0a2] - 2026-09-25
 
 ### Added

@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+import dfwb
 from dfwb.cli import main as main_module
 
 
@@ -35,7 +36,7 @@ def test_no_arguments_shows_the_help(run):
 def test_version(run):
     result = run("--version")
     assert result.code == 0
-    assert result.out.startswith("dfwb 0.1.0a2\n")
+    assert result.out.startswith(f"dfwb {dfwb.__version__}\n")
 
 
 def test_usage_error_prints_hint_and_exits_2(run):

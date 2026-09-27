@@ -5,7 +5,7 @@ inventory → face clips → trained detector → score file → evaluation repo
 pluggable and every result traceable to a protocol version, a processing profile and a config
 fingerprint.
 
-> **Status:** pre-release (`0.1.0a2`). Linux is the only supported and tested OS. Python ≥ 3.12.
+> **Status:** pre-release (`0.1.0a3`). Linux is the only supported and tested OS. Python ≥ 3.12.
 
 ## Run from a clone
 
@@ -27,13 +27,22 @@ export DFWB_WORK_ROOT=~/dfwb-work
 uv run dfwb datasets synth toyfake --out "$DFWB_DATASETS_ROOT"
 uv run dfwb inventory build toyfake
 uv run dfwb protocols verify toyfake
+
+uv run dfwb preprocess run toyfake --profile toy-64-center-8f
+uv run dfwb preprocess status toyfake --profile toy-64-center-8f
 ```
 
 `datasets synth` writes a small set of synthetic real and blended-fake videos to
 `$DFWB_DATASETS_ROOT/toyfake`. `inventory build` scans that folder and writes
 `$DFWB_WORK_ROOT/toyfake/inventory.jsonl`. `protocols verify` joins that inventory against dfwb's
 built-in toyfake protocol pack and writes a coverage report; with the defaults above it reports
-full coverage. See `docs/concepts/protocols.md` for what `verify` checks and its exit codes, and
+full coverage. `preprocess run` crops and tracks a face through every video with the
+`toy-64-center-8f` profile, which has no detector and no model to download (like every profile, it
+needs the `preprocess` extra, which a clone's `uv sync` already installs), writing a lossless frame
+store under `$DFWB_WORK_ROOT/toyfake/processed/`; `preprocess status` then counts it by outcome. See
+`docs/concepts/protocols.md` for what `verify` checks and its exit codes,
+`docs/concepts/processing-profiles.md` for the shipped face-processing profiles and the processed
+store's layout, `docs/install.md` for installing the face-detection backends, and
 `docs/guides/add-a-dataset.md` for wiring up a real dataset of your own.
 
 ## Data policy

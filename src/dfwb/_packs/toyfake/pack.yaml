@@ -1,5 +1,5 @@
 schema_version: 1
 name: toyfake
-version: 0.1.0a2
+version: 0.1.0a3
 datasets:
 - toyfake

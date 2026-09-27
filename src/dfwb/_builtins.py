@@ -67,6 +67,34 @@ PROTOCOL_PACKS: tuple[tuple[str, str, str], ...] = (
     ("toyfake", "dfwb:_packs/toyfake", "Built-in synthetic toyfake protocol pack"),
 )
 
+# The package every built-in face backend lives in.
+_FACE_BACKENDS_PACKAGE: Final = "dfwb.preprocess.face.backends"
+
+# Built-in face backends, one row each:
+#   (key, "<module>:<Class>" inside dfwb.preprocess.face.backends, summary,
+#    the modules it needs, which name the extra to install when one is missing)
+FACE_BACKENDS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    (
+        "center",
+        "center:CenterBackend",
+        "No detection: the centred square of each frame (pre-cropped data, smoke tests)",
+        (),
+    ),
+    (
+        "insightface",
+        "insightface:InsightFaceBackend",
+        "insightface buffalo_l detection and embeddings via onnxruntime "
+        "(weights: non-commercial research only)",
+        ("onnxruntime", "cv2"),
+    ),
+    (
+        "mediapipe",
+        "mediapipe:MediaPipeBackend",
+        "MediaPipe BlazeFace detection (Apache-2.0)",
+        ("mediapipe",),
+    ),
+)
+
 
 def register(api: PluginAPI) -> None:
     """Register built-in components.
@@ -77,6 +105,10 @@ def register(api: PluginAPI) -> None:
     for dataset_id, target, name, folder in INVENTORY_BUILDERS:
         api.inventory_builders.add(
             dataset_id, target=f"{_BUILDERS_PACKAGE}.{target}", summary=name, folder=folder
+        )
+    for key, target, summary, requires in FACE_BACKENDS:
+        api.face_backends.add(
+            key, target=f"{_FACE_BACKENDS_PACKAGE}.{target}", summary=summary, requires=requires
         )
     for pack, target, summary in PROTOCOL_PACKS:
         api.protocol_packs.add(pack, target=target, summary=summary)
