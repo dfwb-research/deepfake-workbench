@@ -22,6 +22,7 @@ from dfwb.core.errors import ContractError
 from dfwb.data._images import CorruptFrameError
 from dfwb.data.clips import ClipSpec, ClipsPerVideo
 from dfwb.data.collate import collate_clips
+from dfwb.data.dataset import SkippedVideo
 from dfwb.data.index import SourceSpec, VideoIndex, VideoItem
 from dfwb.data.paired import PairedClipDataset
 from dfwb.protocols.protocol import load
@@ -232,10 +233,25 @@ def test_repaired_frames_are_reported_per_sample_on_both_sides(tmp_path):
         index, [("REAL/0", "FAKE/0")], spec, train=True, seed=0, repair_corrupt_frames=True
     )
 
-    total = sum(dataset[i].extras["dfwb/repaired_frames"] for i in range(len(dataset)))
+    repaired = [(dataset[i].key, dataset[i].extras["dfwb/repaired_frames"]) for i in (0, 1)]
 
-    assert total == 2  # one per side
-    assert not hasattr(dataset, "corrupt_frames_skipped")  # the racy shared counter is gone
+    assert repaired == [("REAL/0", [0]), ("FAKE/0", [0])]  # frame 0 on each side
+    assert not hasattr(dataset, "corrupt_frames_skipped")  # no shared counter on the dataset
+
+
+def test_a_side_with_no_readable_frame_is_skipped_not_raised(tmp_path):
+    real = _item(tmp_path, key="REAL/0", label=0, n_frames=4)
+    fake = _item(tmp_path, key="FAKE/0", label=1, n_frames=4)
+    data = (real.video_dir / "frame_000000.png").read_bytes()
+    for number in range(4):
+        (real.video_dir / f"frame_{number:06d}.png").write_bytes(data[: len(data) // 2])
+    index = VideoIndex(items=[real, fake], excluded=[], _summaries=[])
+    dataset = PairedClipDataset(
+        index, [("REAL/0", "FAKE/0")], _spec(), train=True, seed=0, repair_corrupt_frames=True
+    )
+
+    assert dataset[0] == SkippedVideo("toy", "REAL/0", None)
+    assert dataset[len(dataset) - 1].extras["dfwb/pair_id"] == 0  # its partner is untouched
 
 
 def test_by_default_repair_is_off_and_a_corrupt_frame_propagates_through_pairs(tmp_path):

@@ -15,7 +15,7 @@ import torch
 from torch import Tensor
 
 from dfwb.core.detector import ClipBatch
-from dfwb.data.dataset import ClipSample
+from dfwb.data.dataset import ClipSample, SkippedVideo
 
 __all__ = ["collate_clips"]
 
@@ -44,29 +44,48 @@ def _collate_extras(extras: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def collate_clips(samples: Sequence[ClipSample | None]) -> ClipBatch:
+def _skipped_videos(samples: Sequence[ClipSample | SkippedVideo]) -> list[SkippedVideo]:
+    """The distinct videos ``samples`` skipped, in the order first seen."""
+    return list(dict.fromkeys(sample for sample in samples if isinstance(sample, SkippedVideo)))
+
+
+def collate_clips(samples: Sequence[ClipSample | SkippedVideo]) -> ClipBatch:
     """Stacks ``samples`` (one video's clip each) into one :class:`ClipBatch`, dropping any
-    ``None`` first -- :class:`~dfwb.data.dataset.ClipDataset` returns one for a sample whose every
-    stored frame is corrupt and cannot be repeated from a neighbour (only when it tolerates a
-    corrupt frame at all: a validation source, never training or scoring).
+    :class:`~dfwb.data.dataset.SkippedVideo` first -- :class:`~dfwb.data.dataset.ClipDataset`
+    returns one for a sample of a video none of whose stored frames can be read (only when it
+    repairs corrupt frames at all: training and validation, never scoring).
 
     ``clips`` stacks to ``[B, T, C, H, W]`` and ``frame_indices`` to ``[B, T]``; every other
     per-sample field becomes a plain ``[B]``-length list or tensor, in ``samples`` order.
     ``labels`` is a ``[B]`` tensor only when every sample's ``label`` is not ``None`` -- a batch
     with even one unlabelled sample (e.g. scoring, where the true label may be unknown) gets
     ``labels=None`` rather than a tensor with a hole in it. ``extras`` is collated per key by
-    :func:`_collate_value`; a batch that dropped one or more ``None`` samples also gets
-    ``extras["dfwb/videos_skipped"]``, the count dropped (never present, rather than ``0``, when
-    nothing was).
+    :func:`_collate_value`; a batch that dropped a skipped video also gets
+    ``extras["dfwb/videos_skipped"]``, the distinct ``SkippedVideo`` entries it dropped (never
+    present, rather than empty, when nothing was).
+
+    When every sample was skipped, the result is an empty batch that still carries
+    ``extras["dfwb/videos_skipped"]``: no clip, no key, ``clips`` of shape ``[0]`` and
+    ``frame_indices`` of shape ``[0, 0]``, so a caller counts the skips and moves on.
 
     Raises:
-        ValueError: ``samples`` holds no usable sample -- either it was empty, or every one of
-            them was ``None`` -- so there is no batch shape to infer ``clips`` from.
+        ValueError: ``samples`` is empty, so there is no batch at all.
     """
-    kept = [sample for sample in samples if sample is not None]
-    if not kept:
+    if not samples:
         raise ValueError("collate_clips: samples must not be empty")
-    skipped = len(samples) - len(kept)
+    kept = [sample for sample in samples if isinstance(sample, ClipSample)]
+    skipped = _skipped_videos(samples)
+    if not kept:
+        return ClipBatch(
+            clips=torch.empty(0),
+            keys=[],
+            dataset_ids=[],
+            compressions=[],
+            clip_index=torch.empty(0, dtype=torch.long),
+            frame_indices=torch.empty((0, 0), dtype=torch.long),
+            labels=None,
+            extras={"dfwb/videos_skipped": skipped},
+        )
 
     clips = torch.stack([sample.clip for sample in kept])
     keys = [sample.key for sample in kept]

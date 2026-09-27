@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
 from torch import Tensor
 
 from dfwb.core.errors import ContractError
@@ -25,16 +25,35 @@ __all__ = ["CorruptFrameError", "jpeg_round_trip", "read_frame"]
 _MODES = {1: "L", 3: "RGB"}
 
 
+# Pillow modes, and raw modes a decoder reads, that hold more than 8 bits a channel.
+_WIDE_MODES = frozenset({"I", "I;16", "I;16B", "I;16L", "I;16N", "F"})
+
+
 class CorruptFrameError(ContractError):
-    """A stored frame Pillow could not decode: a truncated file, or one that is not a recognised
-    image at all (Pillow raises ``OSError`` for either).
+    """A stored frame that cannot be read: a missing file, a truncated one, or one that is not a
+    recognised image at all (Pillow raises ``OSError`` for the last two).
 
     Kept distinct from an ordinary :class:`~dfwb.core.errors.ContractError` -- such as a stored
-    frame whose *size* does not match a processing profile's ``crop.size`` -- so a caller that
-    tolerates a corrupt frame and keeps going (:class:`~dfwb.data.dataset.ClipDataset`, in
-    training) catches only a genuine decode failure, never a size mismatch: a wrongly sized store
-    is the wrong store, and that must never be silently patched over.
+    frame whose *size* does not match a processing profile's ``crop.size``, or one stored with
+    more than 8 bits a channel -- so a caller that tolerates a corrupt frame and keeps going
+    (:class:`~dfwb.data.dataset.ClipDataset`, in training and validation) catches only a frame
+    that is gone or cannot be decoded, never a store of the wrong shape: a wrongly sized or
+    16-bit store is the wrong store, and that must never be silently patched over.
     """
+
+
+def _more_than_8_bits(image: ImageFile.ImageFile) -> bool:
+    """Whether ``image`` stores more than 8 bits a channel, read from its mode and, before any
+    pixel is decoded, the raw mode of its tiles (a 16-bit colour PNG opens as mode ``RGB``, with
+    raw mode ``RGB;16B``)."""
+    if image.mode in _WIDE_MODES:
+        return True
+    for tile in image.tile:
+        args = tile[3]
+        rawmode = args if isinstance(args, str) else (args[0] if args else "")
+        if isinstance(rawmode, str) and (rawmode in _WIDE_MODES or ";16" in rawmode):
+            return True
+    return False
 
 
 def read_frame(path: Path, *, expected_size: int | None = None) -> Tensor:
@@ -46,13 +65,28 @@ def read_frame(path: Path, *, expected_size: int | None = None) -> Tensor:
             unless it is exactly ``expected_size`` on each side.
 
     Raises:
-        CorruptFrameError: the file cannot be decoded.
-        ContractError: ``expected_size`` is given and the frame is not that size.
+        CorruptFrameError: the file is missing, or cannot be decoded.
+        ContractError: the frame holds more than 8 bits a channel (dfwb writes every stored frame
+            with 8, so converting it would silently clip or truncate its values), or
+            ``expected_size`` is given and the frame is not that size.
     """
     try:
         with Image.open(path) as image:
+            if _more_than_8_bits(image):
+                raise ContractError(
+                    f"{path}: stored frame is a 16-bit (or wider) image, Pillow mode "
+                    f"{image.mode}, but a dfwb frame store holds 8 bits a channel; converting it "
+                    "would clip or truncate its values",
+                    hint="point at a store dfwb's preprocessing wrote, or write this one again "
+                    "with 8 bits a channel",
+                )
             rgb = image if image.mode == "RGB" else image.convert("RGB")
             array = np.array(rgb, dtype=np.uint8)  # [H, W, 3]; a copy, so writable
+    except FileNotFoundError as exc:
+        raise CorruptFrameError(
+            f"{path}: missing stored frame",
+            hint="reprocess this video; a frame its store index lists is not on disk",
+        ) from exc
     except OSError as exc:
         raise CorruptFrameError(
             f"{path}: cannot decode this stored frame: {exc}",

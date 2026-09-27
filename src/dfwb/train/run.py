@@ -448,7 +448,8 @@ def _report(plan: _Plan, run_dir: Path, metrics: Mapping[str, Any], data: Mappin
     if metrics["repaired_frames"] or metrics["videos_skipped"]:
         lines.append(
             f"- Repaired {metrics['repaired_frames']} corrupt stored frame(s); skipped "
-            f"{metrics['videos_skipped']} validation video(s) whose stored frames were all corrupt"
+            f"{metrics['videos_skipped']} video(s) none of whose stored frames could be read "
+            "(each frame and video counted once, training and validation together)"
         )
     lines += [
         "",
@@ -663,8 +664,8 @@ def _fit(plan: _Plan, seed: int, *, run_dir: Path | None, restore: SavedState | 
     shutil.rmtree(run_dir / rundir.RESUME_DIR, ignore_errors=True)
     if module.total_repaired_frames or module.total_videos_skipped:
         _log.info(
-            "%s: repaired %d corrupt stored frame(s); skipped %d validation video(s) whose "
-            "stored frames were all corrupt",
+            "%s: repaired %d corrupt stored frame(s); skipped %d video(s) none of whose "
+            "stored frames could be read",
             run_dir,
             module.total_repaired_frames,
             module.total_videos_skipped,

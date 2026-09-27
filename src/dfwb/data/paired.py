@@ -22,7 +22,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from dfwb.data.clips import ClipSpec
-from dfwb.data.dataset import ClipDataset, ClipSample, ClipTransform
+from dfwb.data.dataset import ClipDataset, ClipSample, ClipTransform, SkippedVideo
 from dfwb.data.index import VideoIndex, VideoItem
 
 __all__ = ["PairedClipDataset"]
@@ -48,9 +48,11 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
     one :class:`~dfwb.data.dataset.ClipDataset` would for either video alone -- ``transform``,
     ``adapt_chain``, ``seed``, ``expected_frame_size`` and ``repair_corrupt_frames`` are all passed
     straight through to the two internal datasets, so a pair's clips are seeded, sampled, adapted
-    and checked identically to a non-paired clip of the same video would be. Pairs are training
-    data only (``train=True``), so a clip with every frame corrupt always raises here, exactly as
-    it would for an unpaired ``ClipDataset(train=True)``; ``__getitem__`` never returns ``None``.
+    and checked identically to a non-paired clip of the same video would be. With repair on, a
+    side none of whose stored frames can be read gives a
+    :class:`~dfwb.data.dataset.SkippedVideo`, exactly as an unpaired ``ClipDataset`` would:
+    :func:`~dfwb.data.collate.collate_clips` drops it, so its partner's rows reach the batch
+    without it.
     """
 
     def __init__(
@@ -130,7 +132,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             for p in range(self.pair_count)
         ]
 
-    def __getitem__(self, i: int) -> ClipSample:
+    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override]
         if not 0 <= i < len(self):
             raise IndexError(i)
         if i < len(self._real):
@@ -140,7 +142,6 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             local = i - len(self._real)
             sample = self._fake[local]
             pair_id = local // self._clips_per_pair
-        # Pairs are training data only (train=True), whose ClipDataset.__getitem__ never returns
-        # None (a validation-only signal -- see ClipDataset's own docstring).
-        assert sample is not None
+        if isinstance(sample, SkippedVideo):
+            return sample
         return replace(sample, extras={**sample.extras, "dfwb/pair_id": pair_id})

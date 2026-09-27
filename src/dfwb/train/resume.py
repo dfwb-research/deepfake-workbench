@@ -9,8 +9,9 @@ all (it is built beside its final place and swapped in):
   stopping had already ended the run; the optimiser's
   parameter groups and non-tensor state; the learning-rate schedule's state; every callback's
   state (the best monitored value, the early-stop wait, the non-finite loss count, ...); the
-  module's monitor and last validation values; the data's epoch; the precision plugin's state;
-  and the Python, NumPy and torch random states.
+  module's monitor, last validation values, and the stored frames repaired and videos skipped so
+  far; the data's epoch; the precision plugin's state; and the Python, NumPy and torch random
+  states.
 
 :class:`ResumeCheckpoint` writes it, and, given a saved state, puts all of it back when fitting
 starts: the trainer then starts at the next epoch, with the optimiser, schedule, callbacks and
@@ -363,6 +364,7 @@ class ResumeCheckpoint(Callback):  # type: ignore[misc, unused-ignore]  # Any w/
                     "fallback": module.monitor.fallback,
                 },
                 "val_metrics": encode(module.val_metrics, tensors, "val_metrics"),
+                "repairs": module.repair_state(),
             },
             "data": {"epoch": datamodule.epoch if datamodule is not None else None},
             "rng": capture_rng(),
@@ -401,6 +403,7 @@ class ResumeCheckpoint(Callback):  # type: ignore[misc, unused-ignore]  # Any w/
                 callback.load_state_dict(decode(states[callback.state_key], tensors))
         pl_module.monitor = Monitor(**payload["module"]["monitor"])
         pl_module.val_metrics = decode(payload["module"]["val_metrics"], tensors)
+        pl_module.load_repair_state(payload["module"].get("repairs"))
 
         _set_epochs_done(trainer, payload["epoch"])
         trainer.should_stop = bool(payload["should_stop"])

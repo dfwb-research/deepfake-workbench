@@ -120,14 +120,28 @@ the biases and normalisation weights inside the blocks cannot be exempted on the
   warning. `report.md` says when that happened, and lists every configured metric that was
   undefined on a source in the last validation; `metrics.json` records `"fallback": true`.
 - A run without validation sources keeps `checkpoints/best` as a copy of `checkpoints/last`.
-- **A corrupt stored frame never aborts training or validation.** Training and validation both
-  repeat the clip's nearest still-good frame in a corrupt one's place, logging a warning and
-  counting it (`train/repaired_frames`/`val/repaired_frames`, logged each epoch); a validation
-  video whose every stored frame is corrupt is skipped instead (`val/videos_skipped`). `metrics.json`
-  records the run's totals (`repaired_frames`, `videos_skipped`), and a one-line summary at the end
-  of the run reports both when either is non-zero. A stored frame the wrong size for its
-  processing profile is never tolerated this way: it is always a hard error, since it means the
-  wrong store was chosen.
+- **A corrupt or missing stored frame never aborts training or validation.** Training and
+  validation both repair it, with a warning naming the file: the clip repeats its own nearest
+  good frame in the bad one's place, or, when the clip has no good frame of its own (always the
+  case for a one-frame clip, such as the `toy-cpu` template's), the nearest good stored frame of
+  the same video, searching outwards from the bad one. Only a video none of whose stored frames
+  can be read is skipped, again with a warning, in training and validation alike. What is logged:
+
+    | metric | logged | counts |
+    |---|---|---|
+    | `train/repaired_frames` | at the end of each training epoch | distinct stored frames, one per (dataset, key, compression, frame number), that epoch's training clips repaired; a frame repaired in several clips counts once |
+    | `train/videos_skipped` | at the end of each training epoch | distinct videos, one per (dataset, key, compression), that epoch's training skipped |
+    | `val/repaired_frames` | at the end of each validation | distinct stored frames that validation pass repaired |
+    | `val/videos_skipped` | at the end of each validation | distinct videos that validation pass skipped; a video with four eval clips counts once, not four times |
+
+    `metrics.json` records the run's totals, `repaired_frames` and `videos_skipped`: the same
+    distinct counts across the whole run, training and validation together, so a frame or video
+    that is bad in every epoch still counts once (the sanity-check pass before training is left
+    out). The totals are saved with the resume state, so `dfwb train --resume` carries on
+    counting where the run stopped. A one-line summary at the end of the run, and `report.md`,
+    report both totals when either is non-zero. A stored frame the wrong size for its processing
+    profile, or one with more than 8 bits a channel (a 16-bit PNG), is never tolerated this way:
+    it is always a hard error, since it means the wrong store was chosen.
 
 ## Plugins in training
 

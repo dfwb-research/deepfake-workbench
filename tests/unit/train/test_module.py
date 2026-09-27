@@ -28,6 +28,7 @@ from tests.unit.train._toy import (
     write_toy_store,
 )
 
+from dfwb.core.config.loader import compose
 from dfwb.core.config.schema import TrainConfig
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.records import read_scores
@@ -529,9 +530,9 @@ def test_a_partly_corrupt_validation_video_is_repaired_and_logged(tmp_path, toy_
 
     run = fit_toy(tmp_path / "run", _wide_clip_config(), work_root=toy_work_root)
 
-    assert run.module.total_repaired_frames >= 1
+    assert run.module.total_repaired_frames == 1
     assert run.module.total_videos_skipped == 0
-    assert run.module.val_metrics["val/repaired_frames"] >= 1
+    assert run.module.val_metrics["val/repaired_frames"] == 1
     assert run.module.val_metrics["val/videos_skipped"] == 0
 
 
@@ -540,8 +541,8 @@ def test_a_wholly_corrupt_validation_video_is_skipped_and_counted(tmp_path, toy_
 
     run = fit_toy(tmp_path / "run", toy_config(), work_root=toy_work_root)
 
-    assert run.module.total_videos_skipped >= 1
-    assert run.module.val_metrics["val/videos_skipped"] >= 1
+    assert run.module.total_videos_skipped == 1
+    assert run.module.val_metrics["val/videos_skipped"] == 1
     scored_keys = {video.key for result in run.module.val_results for video in result.videos}
     assert "REAL/r08" not in scored_keys
 
@@ -564,7 +565,113 @@ def test_repaired_and_skipped_totals_agree_with_0_and_2_workers(tmp_path, toy_wo
     run_0 = fit_toy(tmp_path / "a", config_0, work_root=toy_work_root)
     run_2 = fit_toy(tmp_path / "b", config_2, work_root=toy_work_root)
 
-    assert run_0.module.total_repaired_frames == run_2.module.total_repaired_frames
-    assert run_0.module.total_videos_skipped == run_2.module.total_videos_skipped
-    assert run_0.module.total_repaired_frames >= 1
-    assert run_0.module.total_videos_skipped >= 1
+    assert run_0.module.total_repaired_frames == run_2.module.total_repaired_frames == 1
+    assert run_0.module.total_videos_skipped == run_2.module.total_videos_skipped == 1
+
+
+# ------------------------------------ corrupt frames with the shipped toyfake-cpu clip settings
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+def _toyfake_cpu_config() -> TrainConfig:
+    """The toy config with the clip and loader settings of the shipped
+    ``configs/toyfake-cpu.yaml`` (one-frame clips, one train clip and four eval clips a video,
+    batches of 16 balanced by video label), for two epochs."""
+    shipped, _ = compose(REPO / "configs" / "toyfake-cpu.yaml")
+    assert shipped["data"]["clip"]["frames"] == 1  # the case these tests are about
+    return toy_config(
+        data={"clip": shipped["data"]["clip"], "loader": shipped["data"]["loader"]},
+        train={"max_epochs": 2},
+    )
+
+
+def _per_epoch(run, name: str) -> list[float]:
+    return column(read_metrics_csv(run.run_dir), name)
+
+
+def test_one_frame_clips_repair_from_the_videos_other_stored_frames(tmp_path, toy_work_root):
+    _corrupt_one_frame(toy_work_root, "REAL/r08", index=0)  # validation
+    for index in range(4):  # a training video: every frame but the last
+        if index != 3:
+            _corrupt_one_frame(toy_work_root, "REAL/r00", index=index)
+
+    run = fit_toy(tmp_path / "run", _toyfake_cpu_config(), work_root=toy_work_root)
+
+    assert run.trainer.current_epoch == 2  # finished, never aborted
+    # Each epoch's four one-frame eval clips of REAL/r08 read frame 0 once: one repair an epoch,
+    # and the same (video, frame) both times, so one in the run.
+    assert _per_epoch(run, "val/repaired_frames") == [1.0, 1.0]
+    assert _per_epoch(run, "train/videos_skipped") == [0.0, 0.0]
+    assert _per_epoch(run, "val/videos_skipped") == [0.0, 0.0]
+    assert run.module.total_videos_skipped == 0
+    # REAL/r00's one training clip a epoch lands on a corrupt frame 3 times in 4, repaired from
+    # frame 3 each time: at most 3 distinct frames of it, plus REAL/r08's frame 0.
+    assert 1 <= run.module.total_repaired_frames <= 4
+
+
+def test_a_training_video_with_no_readable_frame_is_skipped_counted_and_warned(
+    tmp_path, toy_work_root, caplog
+):
+    _corrupt_every_frame(toy_work_root, "REAL/r00")  # a training video
+
+    with caplog.at_level(logging.WARNING, logger="dfwb"):
+        run = fit_toy(tmp_path / "run", _toyfake_cpu_config(), work_root=toy_work_root)
+
+    assert run.trainer.current_epoch == 2
+    assert _per_epoch(run, "train/videos_skipped") == [1.0, 1.0]
+    assert run.module.total_videos_skipped == 1
+    assert any("no stored frame of this video can be read" in m for m in caplog.messages)
+
+
+def test_an_unreadable_validation_video_alone_in_its_batch_is_skipped(
+    tmp_path, toy_pack, deterministic_torch
+):
+    # Five validation videos, four eval clips each, batches of 16 clips: the fifth video is
+    # alone in the last batch, and none of its frames can be read, so the whole batch is empty.
+    work_root = tmp_path / "work"
+    write_toy_store(work_root, skip=["REAL/r11", "FAKE/f10", "FAKE/f11"])
+    config = _toyfake_cpu_config()
+    _, datamodule, _ = make_parts(config, work_root=work_root)
+    datamodule.setup("fit")
+    (source,) = datamodule.val_sources
+    items = source.dataset.index.items
+    assert len(items) == 5
+    _corrupt_every_frame(work_root, items[-1].key)
+
+    run = fit_toy(tmp_path / "run", config, work_root=work_root)
+
+    assert run.trainer.current_epoch == 2
+    assert _per_epoch(run, "val/videos_skipped") == [1.0, 1.0]
+    assert run.module.total_videos_skipped == 1
+    scored_keys = {video.key for result in run.module.val_results for video in result.videos}
+    assert items[-1].key not in scored_keys
+    assert len(scored_keys) == 4
+
+
+def test_one_bad_video_over_two_epochs_counts_once_an_epoch_and_once_in_the_run(
+    tmp_path, toy_work_root
+):
+    # Four eval clips of the same unreadable video: one video skipped an epoch, not four clips,
+    # and the same video both epochs: one in the run's total, not two.
+    _corrupt_every_frame(toy_work_root, "FAKE/f09")
+
+    run = fit_toy(tmp_path / "run", _toyfake_cpu_config(), work_root=toy_work_root)
+
+    assert _per_epoch(run, "val/videos_skipped") == [1.0, 1.0]
+    assert run.module.total_videos_skipped == 1
+
+
+def test_a_frame_repaired_in_several_clips_counts_once_an_epoch_and_once_in_the_run(
+    tmp_path, toy_work_root
+):
+    # Two training clips of REAL/r00 an epoch, each all four of its frames: frame 1 is repaired
+    # twice an epoch, four times in the run, but it is one (video, frame).
+    _corrupt_one_frame(toy_work_root, "REAL/r00", index=1)
+    config = _wide_clip_config()
+    config = config.model_copy(update={"train": config.train.model_copy(update={"max_epochs": 2})})
+
+    run = fit_toy(tmp_path / "run", config, work_root=toy_work_root)
+
+    assert _per_epoch(run, "train/repaired_frames") == [1.0, 1.0]
+    assert run.module.total_repaired_frames == 1
