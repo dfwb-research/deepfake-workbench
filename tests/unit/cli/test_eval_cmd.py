@@ -56,6 +56,45 @@ def test_eval_bare_bootstrap_zero_plain_table_shows_the_value_only(run, score_fi
     assert "auc" in result.out.lower()
 
 
+def _headers(out: str) -> list[list[str]]:
+    """The header row of every table in plain output: the lines written in capitals."""
+    return [line.split() for line in out.splitlines() if line.strip() and line.upper() == line]
+
+
+def test_eval_plain_output_prints_the_breakdown_table(run, score_file):
+    result = run(
+        "eval", str(score_file), "--metrics", "auc", "--bootstrap", "10", "--by", "label_key"
+    )
+    assert result.code == 0, result.err
+    assert _headers(result.out) == [
+        ["FILE", "N", "COVERAGE", "AUC"],
+        ["FILE", "GROUP", "N", "COVERAGE", "AUC"],
+    ]
+    groups = {line.split()[1] for line in result.out.splitlines() if "TOYONE-" in line}
+    assert groups == {"TOYONE-REAL", "TOYONE-FAKE_A"}
+
+
+def test_eval_plain_output_prints_the_seeds_table(run, tmp_path):
+    coverage = {"expected": 40, "ok": 40, "missing": 0, "error": 0}
+    seed_0 = _write(
+        tmp_path, "s0.scores.csv", make_rows(20, 20), make_meta(seed=0, coverage=coverage)
+    )
+    seed_1 = _write(
+        tmp_path,
+        "s1.scores.csv",
+        make_rows(20, 20, fake_score=0.9),
+        make_meta(seed=1, coverage=coverage),
+    )
+    result = run("eval", str(seed_0), str(seed_1), "--metrics", "auc", "--bootstrap", "10")
+    assert result.code == 0, result.err
+    assert _headers(result.out) == [
+        ["FILE", "N", "COVERAGE", "AUC"],
+        ["DETECTOR", "PROTOCOL", "SPLIT", "METRIC", "SEEDS", "MEAN", "SD"],
+    ]
+    (seeds_row,) = [line.split() for line in result.out.splitlines() if " 0,1 " in line]
+    assert seeds_row[3:5] == ["auc", "0,1"]
+
+
 def test_eval_bare_bootstrap_zero_latex_has_no_pm_term(run, score_file):
     result = run(
         "eval", str(score_file), "--metrics", "auc", "--bootstrap", "0", "--format", "latex"
