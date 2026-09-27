@@ -125,9 +125,10 @@ and comparing two detectors with `dfwb eval compare`.
 
 The framework knows the folder layout of 21 public datasets and ships protocols for toyfake
 only. The protocols of the public datasets, and the evaluation suites that span them, come from
-[dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols): install it into the clone's
-environment first, as [With dfwb-protocols and dfwb-torch](#with-dfwb-protocols-and-dfwb-torch)
-shows. Then point `DFWB_DATASETS_ROOT` at the folder that holds your copies:
+dfwb-protocols, which is in preparation and not public yet. Once it is, install it into the
+clone's environment first, as [With dfwb-protocols and dfwb-torch](#with-dfwb-protocols-and-dfwb-torch)
+shows; until then, the commands below run on toyfake. Then point `DFWB_DATASETS_ROOT` at the
+folder that holds your copies:
 
 ```bash
 export DFWB_DATASETS_ROOT=/data/datasets    # holds FaceForensics++/, Celeb-DF-v2/, ...
@@ -286,7 +287,8 @@ pages, made from the code at build time: every `dfwb` command and option, every 
 key, the JSON Schemas of the five contracts, the Python API, and one page per dataset from its
 dataset card. None of this needs any extra installed -- every subcommand module and every
 inventory builder imports its heavy dependencies only inside functions, so the `docs` group alone
-is enough. The site is not published yet; build and browse it locally:
+is enough. The site is published at https://dfwb-research.github.io/deepfake-workbench/ from
+`main`; to build and browse it locally:
 
 ```bash
 uv run --group docs mkdocs serve          # http://127.0.0.1:8000, reloads as you edit
@@ -329,7 +331,8 @@ kodf = "/fast/KoDF-mirror"
 ## With dfwb-protocols and dfwb-torch
 
 Both install into the framework's environment from a clone, and register themselves through the
-`dfwb.plugins` entry point; `dfwb plugins list` then shows what each one added. From inside the
+`dfwb.plugins` entry point; `dfwb plugins list` then shows what each one added. dfwb-protocols is
+in preparation and not public yet, so the first block applies once it is. From inside the
 framework's clone:
 
 ```bash
@@ -371,7 +374,7 @@ profile also lists the datasets in preparation.
 | Repository | What it holds |
 |---|---|
 | [deepfake-workbench](https://github.com/dfwb-research/deepfake-workbench) | The framework: verified dataset inventories, face preprocessing, training, scoring any detector, and evaluation with uncertainty. One `dfwb` command. |
-| [dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols) | Versioned train, validation and test splits for public deepfake datasets, CC BY 4.0. Installed next to the framework, it adds its protocols and evaluation suites. |
+| dfwb-protocols (in preparation, not public yet) | Versioned train, validation and test splits for public deepfake datasets, CC BY 4.0. Installed next to the framework, it adds its protocols and evaluation suites. |
 | [dfwb-torch](https://github.com/dfwb-research/dfwb-torch) | Small, standalone PyTorch utilities for media forensics, starting with `dfwb-torch-srm`. Installed next to the framework, a package registers its layers as plugins. |
 
 ## Licence

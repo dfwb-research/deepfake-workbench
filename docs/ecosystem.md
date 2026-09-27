@@ -6,9 +6,9 @@ its base install pulls in no PyTorch at all. Two related, separately-installable
 datasets and PyTorch building blocks; a plugin can add anything else.
 
 !!! note "In preparation"
-    `dfwb-protocols` and `dfwb-torch` are in preparation: neither is published on PyPI yet, and
-    neither has a public documentation site to link to here. This page will grow real links once
-    that changes.
+    Neither is published on PyPI yet. `dfwb-torch` is public
+    ([github.com/dfwb-research/dfwb-torch](https://github.com/dfwb-research/dfwb-torch)) and
+    installs from its repository; `dfwb-protocols` is in preparation and not public yet.
 
 ## `dfwb-protocols`
 

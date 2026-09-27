@@ -1,4 +1,5 @@
 site_name: Deepfake Workbench
+site_url: https://dfwb-research.github.io/deepfake-workbench/
 site_description: >-
   A uniform, plugin-driven workbench for deepfake detection research: datasets, protocols,
   training, scoring and evaluation.

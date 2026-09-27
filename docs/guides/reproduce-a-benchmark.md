@@ -69,7 +69,7 @@ Place each dataset in its own folder named the way dfwb expects (`dfwb datasets 
 in the README for a root that spans more than one location or machine).
 
 Split schemes for real datasets are not shipped with dfwb itself: install
-[dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols) (in preparation) into the
+dfwb-protocols (in preparation, not public yet) into the
 clone's environment, the same way [With dfwb-protocols and dfwb-torch](https://github.com/dfwb-research/deepfake-workbench#with-dfwb-protocols-and-dfwb-torch)
 in the README shows, before `protocols verify` below.
 
@@ -158,7 +158,7 @@ final cross-dataset numbers -- those come from scoring and evaluating a suite, s
 
 ### 6. Score the suite
 
-[dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols) registers a cross-dataset suite,
+dfwb-protocols (in preparation, not public yet) registers a cross-dataset suite,
 `cross-dataset-v1` (see [Ecosystem](../ecosystem.md)): seventeen test splits, FaceForensics++'s
 own held-out FaceShifter subset and sixteen other datasets, all in one group, `cross-dataset`.
 Score a trained run against it in one command, exactly as the toyfake walkthrough above scores

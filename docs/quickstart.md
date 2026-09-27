@@ -77,7 +77,7 @@ Celeb-DF v2 under `~/datasets/Celeb-DF-v2` (dfwb's own folder names for each, sh
 
 Split schemes for real datasets are not shipped with dfwb itself; `dfwb inventory build` needs
 only the dataset's own folder, but `dfwb protocols verify` needs a separately installed protocol
-pack that publishes it, such as `dfwb-protocols` (in preparation -- see
+pack that publishes it, such as `dfwb-protocols` (in preparation and not public yet -- see
 [Ecosystem](ecosystem.md)), installed in the same environment as dfwb:
 
 ```bash
