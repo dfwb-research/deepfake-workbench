@@ -158,6 +158,13 @@ def _load_env_file(env_file: Path | None, no_env_file: bool) -> None:
         return
 
     from dfwb.core.errors import ConfigError
+    from dfwb.core.paths import absolute
+
+    # A relative --env-file/DFWB_ENV_FILE must become absolute here, before it is recorded as
+    # the AppliedEnv this run applied: a relative root *inside* the file resolves against this
+    # file's own directory (see resolve_roots), which only works if that directory is itself
+    # absolute -- absolute()'s own contract, and the reason it takes an already-absolute base.
+    path = absolute(path)
 
     try:
         applied = envfile.apply_env_file(path, os.environ)
