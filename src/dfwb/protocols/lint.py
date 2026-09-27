@@ -60,6 +60,11 @@ _LOCAL_ROOTS = ("home", "mnt", "media", "Users", "scratch", "data")
 _LEAK_RE = re.compile(
     "|".join(f"/{root}/" for root in _LOCAL_ROOTS) + "|" + re.escape("C:\\") + "|" + re.escape("~/")
 )
+# A web address is not a local path, whatever its path segments are called (a dataset's download
+# page may well have a segment named like one of the roots above): each http(s) address is taken
+# out before that check. It ends at whitespace, a quote, a bracket or an angle bracket, so a
+# markdown link's closing ``)`` and a JSON string's closing quote end it too.
+_URL_RE = re.compile(r"https?://[^\s\"'<>()\[\]]+")
 
 
 def _leak_issue(value: Any, where: str) -> LintIssue | None:
@@ -68,7 +73,7 @@ def _leak_issue(value: Any, where: str) -> LintIssue | None:
     except ContractError as exc:
         return LintIssue("error", where, exc.message)
     text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
-    match = _LEAK_RE.search(text)
+    match = _LEAK_RE.search(_URL_RE.sub(" ", text))
     if match is not None:
         return LintIssue(
             "error",

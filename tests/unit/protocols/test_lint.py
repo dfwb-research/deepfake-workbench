@@ -645,6 +645,41 @@ def test_a_tilde_home_shorthand_leak_is_caught(tmp_path):
     assert "~/" in issues[0].message
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Download it from https://www.kaggle.com/datasets/someone/release/data/files.\n",
+        f"Mirrored at [the archive](http://archive.example.org{_SLASH_MEDIA}release.zip).\n",
+    ],
+    ids=["data-in-https", "media-in-http"],
+)
+def test_a_path_shape_inside_a_url_is_not_a_leak(tmp_path, text):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(text)
+
+    assert lint_pack(root) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "copied from /data/x before release\n",
+        "copied from drive/data/x before release\n",
+        "see https://example.org/terms, then drive/data/x\n",  # a URL elsewhere on the line
+    ],
+    ids=["bare", "mid-word", "after-a-url"],
+)
+def test_a_bare_data_path_is_still_a_leak(tmp_path, text):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(text)
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert "/data/x" in issues[0].message or "'/data/'" in issues[0].message
+
+
 def test_a_valid_pack_with_none_of_these_patterns_still_lints_clean(tmp_path):
     # A regression guard for the widened set: ordinary NOTICE prose that happens to share a word
     # with a flagged root (e.g. "metadata", "database") must not be flagged.

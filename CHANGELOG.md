@@ -147,7 +147,9 @@ All notable changes to this project are documented here. The format follows
 - `dfwb protocols lint`'s leak check now also catches a media, Users, scratch or data mount path,
   and a bare `~` home-directory shorthand, alongside the two local-machine roots and the Windows
   drive path it already caught -- a pack whose NOTICE, card, or video/pair rows mention one of
-  these newly-caught shapes now fails lint where it previously passed.
+  these newly-caught shapes now fails lint where it previously passed. A path segment inside an
+  `http://` or `https://` address (a download page with a `data` segment, say) is not a local
+  path, and is not reported.
 
 ## [0.1.0b2] - 2026-09-26
 
