@@ -137,10 +137,16 @@ def test_help_flag_prints_usage_and_exits_zero(tmp_path):
     assert "--dry-run" in result.stdout
 
 
-def test_shellcheck_is_clean_if_available():
-    if shutil.which("shellcheck") is None:
-        pytest.skip("shellcheck is not installed")
-    result = subprocess.run(
-        ["shellcheck", str(SETUP_SH)], capture_output=True, text=True, check=False
-    )
+def test_shellcheck_is_clean():
+    # `shellcheck-py` bundles the real shellcheck binary as a PyPI wheel, so `uv tool run` gets a
+    # working shellcheck without a system package; a system `shellcheck` is used instead if that
+    # is what is on PATH (both are exercised in different environments, never neither).
+    if shutil.which("shellcheck") is not None:
+        command = ["shellcheck", str(SETUP_SH)]
+    else:
+        command = ["uv", "tool", "run", "--from", "shellcheck-py", "shellcheck", str(SETUP_SH)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
+    except FileNotFoundError:
+        pytest.skip("neither shellcheck nor uv is available")
     assert result.returncode == 0, result.stdout + result.stderr

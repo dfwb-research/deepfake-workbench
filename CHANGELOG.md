@@ -47,6 +47,11 @@ All notable changes to this project are documented here. The format follows
   directory -- so a `.env` loaded from elsewhere (`--env-file`/`DFWB_ENV_FILE`) with a value such
   as `./data/datasets` behaves the same wherever `dfwb` is run from. A root already set in the
   real environment (not by `.env`) still resolves against the current directory, as before.
+- A *relative* `--env-file`/`DFWB_ENV_FILE` itself (not just a relative root inside it) is now
+  resolved to an absolute path before it is applied, so a relative root inside that file in turn
+  resolves against the right directory instead of staying relative.
+- `dfwb eval --suite`'s plain terminal output (no `--json`/`--out`/`--format`) now prints the
+  suite's aggregate rows beneath the usual per-file table, matching every other output form.
 - A directory named in `extends`, and a config file that is not valid UTF-8 (an experiment config
   or an `extends` parent), are now a `ConfigError` (exit 2) naming the file, instead of an
   unhandled exception (exit 1). An error while reading an `extends` parent now also names the file

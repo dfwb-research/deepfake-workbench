@@ -17,7 +17,7 @@ accept. From a fresh clone:
 ```bash
 ./scripts/setup.sh
 
-uv run dfwb datasets synth toyfake --out "$DFWB_DATASETS_ROOT"
+uv run dfwb datasets synth toyfake --out data/datasets
 uv run dfwb inventory build toyfake
 uv run dfwb protocols verify toyfake
 
@@ -32,11 +32,14 @@ uv run dfwb eval data/runs/scores/tiny-cnn-mean-linear/toyfake-*/*.scores.csv --
 `scripts/setup.sh` (see the [README](https://github.com/dfwb-research/deepfake-workbench#run-it-from-a-clone))
 installs the `train` and `preprocess` extras, copies `.env.example` to `.env` so
 `DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT` and `DFWB_CACHE_ROOT` all default to
-`./data/{datasets,work,runs,cache}` inside the clone, and creates those directories -- so every
-command above reads them from `.env` rather than needing them exported by hand. `dfwb score
---suite toyfake` scores the trained run against the framework's own two-entry suite (an in-domain
-split and an identity-disjoint, cross-dataset one); `dfwb eval --suite` adds the suite's aggregate
-rows (mean AUC per group) to the usual per-file metrics. See
+`./data/{datasets,work,runs,cache}` inside the clone, and creates those directories -- `dfwb`
+itself loads `.env` and reads them from there, so every command above needs nothing exported by
+hand, **except** `datasets synth --out`: a plain file-write flag with no environment default, so
+it names the same path (`data/datasets`) directly, run from the clone's own root the way the whole
+block assumes. `dfwb score --suite toyfake` scores the trained run against the framework's own
+two-entry suite (an in-domain split and an identity-disjoint, cross-dataset one); `dfwb eval
+--suite` prints the suite's aggregate rows (mean AUC per group) beneath the usual per-file table,
+in every output form including the plain terminal one. See
 [Cross-dataset evaluation](cross-dataset-eval.md) for what a suite is and how the coverage policy
 and comparisons work, and the [quickstart](../quickstart.md) for a slower walk through each step.
 
@@ -123,13 +126,17 @@ soon as the `train` extra is installed, before pointing anything at the data pre
 configs' headers name exactly the steps above, so a config file is self-contained: everything it
 needs to run is either in the file or in its own header comment.
 
-`configs/cross-dataset-ffpp-celebdf.yaml` trains on FaceForensics++ while validating on both
-FaceForensics++ and Celeb-DF v2 every epoch, once both datasets above are processed:
+`configs/cross-dataset-ffpp-celebdf.yaml` trains on FaceForensics++ c23, validating both
+in-domain (FaceForensics++'s own val split) and cross-dataset (Celeb-DF v2's val split) every
+epoch, once both datasets above are processed:
 
 ```bash
 uv run dfwb config validate -c configs/cross-dataset-ffpp-celebdf.yaml
 uv run dfwb train -c configs/cross-dataset-ffpp-celebdf.yaml
 ```
+
+That training-time validation is for watching generalisation as training goes; it is not the
+final cross-dataset numbers -- those come from scoring and evaluating a suite, step 6 below.
 
 ### 6. Score the suite
 
@@ -151,12 +158,19 @@ uv run dfwb score --detector "run:data/runs/ffpp-c23-vit-b16/latest#best" --prot
 ### 7. Eval
 
 ```bash
+uv run dfwb eval data/runs/scores/*/cross-dataset-v1-*/*.scores.csv --suite cross-dataset-v1 --bootstrap 2000
+```
+
+`dfwb eval --suite` reports the usual per-file, coverage-aware metrics with confidence intervals,
+plus the suite's aggregate rows (mean per group, e.g. `in-domain` and `cross`) beneath them, in
+every output form including the plain terminal one. Without a real suite yet, evaluate the
+one-split file from step 6 directly instead:
+
+```bash
 uv run dfwb eval data/runs/scores/*/celebdf-v2-*/*.scores.csv --bootstrap 2000
 ```
 
-`dfwb eval` reports coverage-aware metrics with confidence intervals; add `--suite <name>` once
-scoring a real suite in step 6 to also see its aggregate rows, and see
-[Cross-dataset evaluation](cross-dataset-eval.md) for `--by`, the coverage policy
+See [Cross-dataset evaluation](cross-dataset-eval.md) for `--by`, the coverage policy
 (`--missing`/`--min-coverage`) and comparing two detectors with `dfwb eval compare`.
 
 ## See also
