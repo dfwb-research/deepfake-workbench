@@ -99,10 +99,11 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - A relative root (`DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT`, `DFWB_CACHE_ROOT`)
-  set by a `.env` file now resolves against that file's own directory, not against the current
-  directory -- so a `.env` loaded from elsewhere (`--env-file`/`DFWB_ENV_FILE`) with a value such
-  as `./data/datasets` behaves the same wherever `dfwb` is run from. A root already set in the
-  real environment (not by `.env`) still resolves against the current directory, as before.
+  or per-dataset folder override (`DFWB_DATASET_<ID>`) set by a `.env` file now resolves against
+  that file's own directory, not against the current directory -- so a `.env` loaded from
+  elsewhere (`--env-file`/`DFWB_ENV_FILE`) with a value such as `./data/datasets` behaves the same
+  wherever `dfwb` is run from. A value already set in the real environment (not by `.env`) still
+  resolves against the current directory, as before.
 - A *relative* `--env-file`/`DFWB_ENV_FILE` itself (not just a relative root inside it) is now
   resolved to an absolute path before it is applied, so a relative root inside that file in turn
   resolves against the right directory instead of staying relative.

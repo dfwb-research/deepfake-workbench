@@ -350,8 +350,14 @@ def dataset_overrides(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     user_config: Path | None = None,
+    env_file: AppliedEnv | None = None,
 ) -> dict[str, tuple[Path, str]]:
     """Every dataset folder override: dataset id -> (folder, where it came from).
+
+    A relative ``DFWB_DATASET_<ID>`` value that the ``.env`` file ``env_file`` set resolves
+    against that file's own directory, like a root (see :func:`resolve_roots`, whose default for
+    ``env_file`` this shares); one already present in the real environment resolves against
+    ``cwd``.
 
     Sources, highest precedence first: ``DFWB_DATASET_<ID>`` environment variables, the project
     host table, the project ``[datasets]`` table, the user host table, the user ``[datasets]``
@@ -361,13 +367,24 @@ def dataset_overrides(
     everywhere in DFWB, so this is exact for every id the framework defines; an id that itself
     contains ``_`` cannot be set this way and must instead go in a ``[datasets]`` table.
     """
-    env = os.environ if env is None else env
+    if env is None:
+        env = os.environ
+        if env_file is None:
+            from dfwb.core.envfile import last_applied
+
+            env_file = last_applied()
     cwd = Path.cwd() if cwd is None else cwd
     host = current_host(env)
     project_file = cwd / PROJECT_CONFIG
     user_file = user_config_path() if user_config is None else user_config
     project = _read_file(project_file, host)
     user = _read_file(user_file, host)
+
+    def _from_env(variable: str) -> Path:
+        base = cwd
+        if env_file is not None and variable in env_file.applied:
+            base = env_file.file.parent
+        return absolute(env[variable], base)
 
     found: dict[str, tuple[Path, str]] = {}
     for dataset_id, value in user.datasets.items():
@@ -388,12 +405,12 @@ def dataset_overrides(
     for dataset_id in list(found):
         variable = _dataset_env_var(dataset_id)
         if env.get(variable):
-            found[dataset_id] = (absolute(env[variable], cwd), f"env: {variable}")
+            found[dataset_id] = (_from_env(variable), f"env: {variable}")
     for key, value in env.items():
         if key.startswith(DATASET_ENV_PREFIX) and value:
             dataset_id = key[len(DATASET_ENV_PREFIX) :].lower().replace("_", "-")
             if dataset_id not in found:
-                found[dataset_id] = (absolute(value, cwd), f"env: {key}")
+                found[dataset_id] = (_from_env(key), f"env: {key}")
     return found
 
 
