@@ -162,6 +162,17 @@ dfwb inventory build my-dataset --root /path/to/raw/MyDataset
 dfwb inventory show my-dataset
 ```
 
+### Datasets whose release ships archives
+
+Some releases are not distributed pre-unpacked. WildDeepfake, for instance, ships as tar shards
+that need to become the frame-directory tree its builder reads before `dfwb inventory build` can
+see anything; `dfwb datasets unpack wilddeepfake --from <dir of archives>` does that safely (an
+unsafe archive member refuses the whole archive; an interrupted unpack is resumed, never
+duplicated) and verifies the result by running the builder's own discovery on it afterwards. A
+builder for another dataset whose release ships archived can follow the same approach: a small,
+dataset-specific unpack command that reads the expected layout from the builder itself -- never a
+second, hard-coded copy of it -- and turns the release's own archive shape into that layout.
+
 ## 2. Publish a protocol pack
 
 An inventory builder alone is enough to build a local inventory, but training and evaluation
