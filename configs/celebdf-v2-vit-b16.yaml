@@ -1,0 +1,22 @@
+# ViT-B/16 on Celeb-DF v2. Needs the Celeb-DF v2 raw dataset under a datasets root, obtained from
+# its owners under their own terms (dfwb never distributes media), and the dfwb-protocols pack
+# installed for the celebdf-v2/official+ident-80-20 split scheme. Build and process the data
+# first, then train:
+#   dfwb inventory build celebdf-v2
+#   dfwb protocols verify celebdf-v2
+#   dfwb preprocess run celebdf-v2 --profile face-256-1.3x-64f
+#   dfwb train -c configs/celebdf-v2-vit-b16.yaml
+# See docs/guides/reproduce-a-benchmark.md for the full walkthrough.
+schema: dfwb.train/1
+extends: [dfwb://templates/binary-frame.yaml]
+
+run:
+  name: celebdf-v2-vit-b16
+
+data:
+  processing: face-256-1.3x-64f
+  train: [{protocol: celebdf-v2/official+ident-80-20, split: train}]
+  val:   [{protocol: celebdf-v2/official+ident-80-20, split: val}]
+
+model:
+  backbone: {name: timm, model: vit_base_patch16_224.augreg_in21k, pretrained: true}

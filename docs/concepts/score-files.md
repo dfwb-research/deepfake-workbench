@@ -33,7 +33,10 @@ Every video the split names gets exactly one row, whatever happened to it:
 - **`ok`** — scored; `score` is a number in `[0, 1]`.
 - **`missing`** — no usable processed clip for this video (nothing was there to score); `score`
   is empty.
-- **`error`** — scoring raised, or the detector's output failed validation; `score` is empty.
+- **`error`** — scoring raised, the detector's output failed validation, or one of the video's
+  stored frames could not be read (corrupt, or not the size its processing profile declares);
+  `score` is empty. Only that video is marked `error`, even when it shares a batch with others
+  that scored fine.
 
 A row is never silently left out of the file, so a score file's own row count next to its meta's
 `coverage.expected` is always the true size of the split under the label mapping used — and a
@@ -130,8 +133,9 @@ you pass `--force`.
   a stale or hand-placed file — is recomputed rather than served. The precision and the store's
   index hash have no field of their own in the meta, so they are recorded in `env` (as
   `precision` and `store_index_sha256`) and checked there.
-- **A cached file with any `error` row is never reused.** A detector failure is usually transient
-  (an out-of-memory error, a flaky device fault), so the reuse rule is about an identical
+- **A cached file with any `error` row is never reused.** Some such failures are transient (an
+  out-of-memory error, a flaky device fault); others are not (a corrupt or mis-sized stored frame
+  keeps failing until the store is fixed). Either way, the reuse rule is about an identical
   *successful* result: an errored cache entry is retried, not served as if it were complete.
 - **`--force`** recomputes regardless of what is already there, and overwrites it.
 - **`--frames` has its own reuse rule.** A cache hit is only returned as satisfying `--frames`

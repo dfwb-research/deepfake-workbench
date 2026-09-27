@@ -1,9 +1,11 @@
+import gzip
 import json
 import time
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
+from tests._cpu_budget import assert_cpu_budget
 
 from dfwb.core.errors import ContractError
 from dfwb.core.records import (
@@ -72,6 +74,53 @@ def test_inventory_relpath_must_be_relative():
         InventoryRecord("k", None, "X", "m", "/abs/k.mp4", BuilderRef("b", "1"))
 
 
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        "..",
+        "../escape.mp4",
+        "a/../../escape.mp4",
+        "a/b/../../../escape.mp4",
+    ],
+)
+def test_inventory_relpath_rejects_a_dotdot_that_escapes_the_dataset_root(relpath):
+    with pytest.raises(ContractError, match="relpath"):
+        InventoryRecord("k", None, "X", "m", relpath, BuilderRef("b", "1"))
+
+
+@pytest.mark.parametrize("relpath", ["/abs/k.mp4", "..", "a/../../escape.mp4"])
+def test_an_escaping_relpath_is_rejected_when_read_back_from_a_file(tmp_path, relpath):
+    """Both of ``read_jsonl``'s paths -- the fast, direct-construction one (the default) and the
+    ``strict=True`` pydantic one -- go through ``InventoryRecord.__post_init__``, so a record
+    written (by hand, as if by a corrupt or malicious inventory file) with an escaping relpath is
+    rejected on read, not just when a builder constructs one directly."""
+    line = json.dumps(
+        {
+            "key": "k",
+            "compression": None,
+            "label_key": "X",
+            "method": "m",
+            "relpath": relpath,
+            "builder": {"id": "b", "version": "1"},
+            "identity": None,
+            "source_id": None,
+            "target_id": None,
+            "pair_key": None,
+            "attrs": {},
+            "probe": None,
+            "folder": None,
+        }
+    )
+    path = tmp_path / "inventory.jsonl"
+    path.write_text(line + "\n", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="relpath"):
+        read_jsonl(path, InventoryRecord)
+
+    with pytest.raises(ContractError, match="relpath"):
+        TypeAdapter(InventoryRecord).validate_python(json.loads(line))
+
+
 def test_processed_records_round_trip(tmp_path):
     rows = [
         ProcessedRecord(
@@ -85,9 +134,8 @@ def test_processed_records_round_trip(tmp_path):
     assert read_jsonl(tmp_path / "index.jsonl", ProcessedRecord, strict=True) == rows
 
 
-@pytest.mark.slow
-def test_reading_250k_video_records_takes_under_a_second(tmp_path):
-    line = json.dumps(
+def _video_record_line() -> str:
+    return json.dumps(
         {
             "key": "Deepfakes/000_003",
             "compression": "c23",
@@ -101,13 +149,38 @@ def test_reading_250k_video_records_takes_under_a_second(tmp_path):
         },
         sort_keys=True,
     )
+
+
+@pytest.mark.slow
+def test_reading_250k_video_records_takes_under_a_second(tmp_path):
+    # Process CPU time (time.process_time()), not wall-clock: the budget is the code's own cost,
+    # not how much of another process's work this machine interleaves with it while it runs. It
+    # is asserted only when the load average is below the CPU count (see tests._cpu_budget).
     path = tmp_path / "videos.jsonl"
-    path.write_text((line + "\n") * 250_000)
-    start = time.perf_counter()
+    path.write_text((_video_record_line() + "\n") * 250_000)
+    start = time.process_time()
     rows = read_jsonl(path, VideoRecord)
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
     assert len(rows) == 250_000
-    assert elapsed < 1.0, f"read took {elapsed:.2f}s"
+    assert_cpu_budget(elapsed, 1.0, "reading 250k video records")
+
+
+@pytest.mark.slow
+def test_reading_250k_video_records_from_gz_takes_under_a_second(tmp_path):
+    """The ``.gz`` form of the same 250k-row budget: decompression is extra work on top of the
+    plain form's JSON parsing and object construction, so it is benchmarked (and gated) on its
+    own rather than assumed to inherit the plain form's headroom. CPU time, not wall-clock, and
+    asserted only on a machine that is not oversubscribed -- see the comment on the plain-form
+    test above."""
+    path = tmp_path / "videos.jsonl.gz"
+    text = (_video_record_line() + "\n") * 250_000
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        handle.write(text)
+    start = time.process_time()
+    rows = read_jsonl(path, VideoRecord)
+    elapsed = time.process_time() - start
+    assert len(rows) == 250_000
+    assert_cpu_budget(elapsed, 1.0, "reading 250k video records from .gz")
 
 
 def test_processing_profile_round_trips_through_yaml():

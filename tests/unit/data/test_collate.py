@@ -10,7 +10,7 @@ pytest.importorskip("torch")
 import torch
 
 from dfwb.data.collate import collate_clips
-from dfwb.data.dataset import ClipSample
+from dfwb.data.dataset import ClipSample, SkippedVideo
 
 
 def _sample(
@@ -81,6 +81,40 @@ def test_compressions_pass_through_including_none():
 def test_empty_samples_raises_value_error():
     with pytest.raises(ValueError, match="empty"):
         collate_clips([])
+
+
+# ------------------------------------------------------------------------------ skipped videos
+
+
+def test_a_skipped_video_is_dropped_and_listed_once():
+    bad = SkippedVideo("toy", "bad", None)
+    samples = [_sample(key="a"), bad, bad, _sample(key="b")]  # two clips of the same bad video
+
+    batch = collate_clips(samples)
+
+    assert batch.keys == ["a", "b"]
+    assert batch.clips.shape[0] == 2
+    assert batch.extras["dfwb/videos_skipped"] == [bad]
+
+
+def test_a_batch_that_skipped_nothing_has_no_skip_entry():
+    assert "dfwb/videos_skipped" not in collate_clips([_sample()]).extras
+
+
+def test_a_batch_of_only_skipped_videos_is_an_empty_batch_that_still_counts_them():
+    # e.g. a validation video, alone in its batch, none of whose stored frames can be read
+    bad = SkippedVideo("toy", "bad", "c23")
+
+    batch = collate_clips([bad, bad, bad, bad])
+
+    assert batch.keys == []
+    assert batch.dataset_ids == []
+    assert batch.compressions == []
+    assert batch.labels is None
+    assert batch.clips.shape == (0,)
+    assert batch.clip_index.shape == (0,)
+    assert batch.frame_indices.shape == (0, 0)
+    assert batch.extras == {"dfwb/videos_skipped": [bad]}
 
 
 # ------------------------------------------------------------------------------------- extras

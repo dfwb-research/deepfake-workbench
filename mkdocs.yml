@@ -90,6 +90,7 @@ nav:
       - guides/write-a-plugin.md
       - guides/cross-dataset-eval.md
       - guides/reproduce-a-run.md
+      - guides/reproduce-a-benchmark.md
   - Reference:
       - reference/cli.md
       - reference/config.md

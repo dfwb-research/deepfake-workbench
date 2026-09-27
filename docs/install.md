@@ -29,12 +29,23 @@ uv sync --extra train --extra hf --extra peft
 pip install -e ".[train,hf,peft]"
 ```
 
+<!-- release-status:start -->
 !!! note "Not on PyPI yet"
     dfwb is not published on PyPI: install from a clone, as above
     (`git clone https://github.com/dfwb-research/deepfake-workbench && cd deepfake-workbench`
-    first). Once a release is published, `pip install "deepfake-workbench[train,hf,peft]"` will
-    install the same combination directly, with no clone needed -- the same form the CLI's own
-    `InstallationError` hints already use.
+    first). Once a release is published, install the torch build you need before the framework
+    itself, not after:
+
+    - CPU: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`
+    - CUDA: the selector at https://pytorch.org/get-started/locally/
+
+    Only then `pip install "deepfake-workbench[train,hf,peft]"` -- the same two steps the CLI's
+    own `InstallationError` hint for a missing `train` extra gives. Installing the extra on its
+    own, or in the other order, resolves PyPI's default torch wheel instead, which is the CUDA
+    build: about 6 GB of `nvidia-*` packages and `triton`, even on a machine with no GPU, because
+    the CPU pin in this repository's own `uv.lock` never travels into the published wheel's
+    metadata.
+<!-- release-status:end -->
 
 ## Training: a CUDA build, with `uv`
 

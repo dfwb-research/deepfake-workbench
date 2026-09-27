@@ -92,6 +92,15 @@ def _read(source: _Source) -> dict[str, Any]:
         raise ConfigError(
             f"config file not found: {source.display}", hint="check the path"
         ) from None
+    except IsADirectoryError:
+        raise ConfigError(
+            f"{source.display}: is a directory, not a file",
+            hint="point it at a config file",
+        ) from None
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"{source.display}: not valid UTF-8: {exc}", hint="save the file as UTF-8"
+        ) from None
     try:
         document = load_yaml(text)
     except yaml.YAMLError as exc:
@@ -135,7 +144,12 @@ def _linearise(
                 f"extends cycle: {chain}", hint="remove one of the extends references"
             )
         if parent.key not in seen:
-            _linearise(parent, (*stack, parent.key), order, seen)
+            try:
+                _linearise(parent, (*stack, parent.key), order, seen)
+            except ConfigError as exc:
+                # Name both ends of the reference: which file has the `extends` entry, and which
+                # file it points at (already named by the wrapped error, but not by whom uses it).
+                raise exc.with_prefix(f"{source.display}: extends {parent.display!r}: ") from None
     if source.key not in seen:
         seen.add(source.key)
         order.append((source, document))

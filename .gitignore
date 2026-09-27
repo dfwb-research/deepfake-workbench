@@ -14,7 +14,8 @@ htmlcov/
 .ruff_cache/
 .import_linter_cache/
 .hypothesis/
-runs/
+/runs/
+/data/
 .env
 site/
 dfwb-example-*/

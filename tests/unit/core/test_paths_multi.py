@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from dfwb.core.envfile import AppliedEnv
 from dfwb.core.errors import ConfigError
 from dfwb.core.paths import current_host, dataset_overrides, locate_dataset, resolve_roots
 
@@ -167,6 +168,27 @@ def test_dataset_overrides_discovers_env_only_ids(places, tmp_path):
     found = dataset_overrides(env=env, cwd=cwd, user_config=user)
     assert found["celebdf-v2"] == (tmp_path / "cdf2", "env: DFWB_DATASET_CELEBDF_V2")
     assert found["kodf"] == (tmp_path / "kodf", "env: DFWB_DATASET_KODF")
+
+
+def test_a_relative_override_set_by_dotenv_resolves_against_the_dotenv_directory(places, tmp_path):
+    # Like the roots: a relative DFWB_DATASET_<ID> the .env file set is relative to that file's
+    # own directory; one already in the real environment keeps resolving against cwd.
+    cwd, user = places
+    (cwd / "dfwb.toml").write_text('[datasets]\nkodf = "/shared/KoDF"\n')
+    env_dir = tmp_path / "elsewhere"
+    env_dir.mkdir()
+    env_file = AppliedEnv(env_dir / ".env", ("DFWB_DATASET_KODF", "DFWB_DATASET_CELEBDF_V2"), ())
+    env = {
+        "DFWB_DATASET_KODF": "./kodf",  # replaces a [datasets] entry
+        "DFWB_DATASET_CELEBDF_V2": "./cdf2",  # an id no table names
+        "DFWB_DATASET_UADFV": "./uadfv",  # from the real environment, not the .env file
+    }
+
+    found = dataset_overrides(env=env, cwd=cwd, user_config=user, env_file=env_file)
+
+    assert found["kodf"] == (env_dir / "kodf", "env: DFWB_DATASET_KODF")
+    assert found["celebdf-v2"] == (env_dir / "cdf2", "env: DFWB_DATASET_CELEBDF_V2")
+    assert found["uadfv"] == (cwd / "uadfv", "env: DFWB_DATASET_UADFV")
 
 
 def test_an_override_wins_over_root_search(places, tmp_path):

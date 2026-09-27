@@ -1,0 +1,35 @@
+# Cross-dataset evaluation example: trains on FaceForensics++ c23, validating both in-domain
+# (FaceForensics++'s own val split) and cross-dataset (Celeb-DF v2's val split) every epoch, so
+# generalisation is visible during training, not only after it. Needs both raw datasets under a
+# datasets root, obtained from their owners under their own terms (dfwb never distributes media),
+# and the dfwb-protocols pack installed for both split schemes. Build and process both datasets
+# first, then train:
+#   dfwb inventory build ffpp && dfwb protocols verify ffpp
+#   dfwb inventory build celebdf-v2 && dfwb protocols verify celebdf-v2
+#   dfwb preprocess run ffpp --profile face-256-1.3x-64f
+#   dfwb preprocess run celebdf-v2 --profile face-256-1.3x-64f
+#   dfwb train -c configs/cross-dataset-ffpp-celebdf.yaml
+#
+# The per-epoch validation above is for watching generalisation as training goes, not the final
+# cross-dataset numbers: those come from scoring and evaluating a suite spanning several datasets
+# at once, after training --
+#   dfwb score --detector run:... --suite <name>
+#   dfwb eval  <the score files> --suite <name>
+# (see docs/guides/reproduce-a-benchmark.md and docs/guides/cross-dataset-eval.md); a pack such as
+# dfwb-protocols registers real cross-dataset suites the same way the framework's own toyfake
+# suite works.
+schema: dfwb.train/1
+extends: [dfwb://templates/binary-frame.yaml]
+
+run:
+  name: cross-dataset-ffpp-celebdf
+
+data:
+  processing: face-256-1.3x-64f
+  train: [{protocol: ffpp/official, split: train, where: {compression: c23}}]
+  val:
+    - {protocol: ffpp/official, split: val, where: {compression: c23}}
+    - {protocol: celebdf-v2/official+ident-80-20, split: val}
+
+model:
+  backbone: {name: timm, model: vit_base_patch16_224.augreg_in21k, pretrained: true}

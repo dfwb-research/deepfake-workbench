@@ -325,6 +325,8 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
                 transform=transform,
                 adapt_chain=adaptation.chain,
                 seed=self.seed,
+                expected_frame_size=profile.crop.size,
+                repair_corrupt_frames=True,
             )
             if dataset.dropped:
                 _log.info(
@@ -340,6 +342,8 @@ class ProtocolDataModule(L.LightningDataModule):  # type: ignore[misc, unused-ig
                 transform=transform,
                 adapt_chain=adaptation.chain,
                 seed=self.seed,
+                expected_frame_size=profile.crop.size,
+                repair_corrupt_frames=True,
             )
         return SourceData(
             _base_name(protocol, entry), entry, protocol, index, profile, adaptation, dataset

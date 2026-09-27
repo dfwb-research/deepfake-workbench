@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests._cpu_budget import assert_cpu_budget
 from tests.unit.protocols.conftest import _dump, make_pack, register_packs
 
 from dfwb.core.records import (
@@ -63,11 +64,14 @@ def test_records_on_250k_rows_is_fast(tmp_path, monkeypatch):
     root = make_pack(tmp_path, "big-pack", {"big": {}}, builders={"big": _write_big_dataset})
     register_packs(monkeypatch, {"big-pack": root})
 
-    start = time.perf_counter()
+    # Process CPU time (time.process_time()), not wall-clock: the budget is the code's own cost,
+    # not how much of another process's work this machine interleaves with it while it runs. It
+    # is asserted only when the load average is below the CPU count (see tests._cpu_budget).
+    start = time.process_time()
     protocol = load("big")
     records = protocol.records(split="test", where={"compression": None})
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
 
     expected = sum(1 for i in range(N) if _SPLITS[i % 3] == "test")
     assert len(records) == expected
-    assert elapsed < 1.0, f"load()+records() took {elapsed:.3f}s for {N} rows (budget: 1.0s)"
+    assert_cpu_budget(elapsed, 1.0, f"load()+records() for {N} rows")

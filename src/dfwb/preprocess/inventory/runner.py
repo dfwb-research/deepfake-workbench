@@ -165,6 +165,44 @@ def _root_source(path: Path, expected_folder: str, roots: Mapping[RootName, Reso
     return "a datasets root"
 
 
+def _located_copies(
+    builder: BaseBuilder, roots: Mapping[RootName, ResolvedRoot]
+) -> tuple[DatasetCopy, ...]:
+    """Every copy of ``builder``'s dataset folder that :func:`build_inventory` reads when it is
+    given no ``root``: located through the datasets roots in ``roots`` and the dataset overrides.
+
+    Raises:
+        ConfigError: no datasets root holds the folder, and no override names it (or an override
+            names something that is not a directory).
+    """
+    location = locate_dataset(
+        builder.dataset_id, builder.expected_folder, roots, overrides=dataset_overrides()
+    )
+    return dataset_copies(builder, location, roots)
+
+
+def _discover_located(
+    builder: BaseBuilder, roots: Mapping[RootName, ResolvedRoot] | None = None
+) -> tuple[Path, list[InventoryRecord]]:
+    """What ``dfwb inventory build`` would find for ``builder``'s dataset, without writing
+    anything: the folder :func:`build_inventory` reads (located exactly as it locates it, the
+    copies chosen and bound the same way) and the records discovery yields there.
+
+    Args:
+        roots: Resolved roots (default: :func:`~dfwb.core.paths.resolve_roots`).
+
+    Raises:
+        ConfigError: the dataset folder is not found (see :func:`_located_copies`).
+        ContractError: the builder yields a bad or duplicate key.
+    """
+    resolved = resolve_roots() if roots is None else roots
+    copies = _located_copies(builder, resolved)
+    paths = tuple(copy.path for copy in copies)
+    builder.bind_copies(paths, builder.choose_copies(paths, compressions=None))
+    folder = metadata_copy(builder, copies).path
+    return folder, collect_records(builder, folder)
+
+
 def dataset_copies(
     builder: BaseBuilder, location: DatasetLocation, roots: Mapping[RootName, ResolvedRoot]
 ) -> tuple[DatasetCopy, ...]:
@@ -571,10 +609,7 @@ def build_inventory(
             ),
         )
     else:
-        location = locate_dataset(
-            dataset_id, builder.expected_folder, resolved, overrides=dataset_overrides()
-        )
-        copies = dataset_copies(builder, location, resolved)
+        copies = _located_copies(builder, resolved)
     _warn_if_no_videos_anywhere(builder, copies)
 
     paths = tuple(copy.path for copy in copies)

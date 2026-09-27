@@ -152,6 +152,70 @@ def test_info_of_an_unknown_dataset_suggests_close_matches(run, monkeypatch):
     assert "did you mean 'demo'" in result.err
 
 
+def test_info_works_for_a_dataset_known_only_from_a_pack(run, monkeypatch, tmp_path):
+    # "packonly" has no inventory builder, only a protocol pack: `datasets list` already shows
+    # such an id (see test_list_shows_the_folder_and_the_packs); `info` must work for it too.
+    pack = make_pack(tmp_path, "demo-pack", {"demo": {}, "packonly": {}})
+    install(monkeypatch, {"demo": (DEMO_TARGET, "Demo", "Demo")}, packs={"demo-pack": pack})
+
+    result = run("datasets", "info", "packonly")
+    assert result.code == 0, result.err
+    assert "packonly" in result.out
+    assert "demo-pack" in result.out
+    assert "official" in result.out
+    assert "no local inventory builder is registered" in result.out
+    # The scheme table shows each dataset's distribution, as it does for a dataset with a builder.
+    header = next(line for line in result.out.splitlines() if line.startswith("PACK"))
+    assert header.split() == ["PACK", "SCHEME", "KIND", "DISTRIBUTION"]
+    assert "undecided" in result.out
+
+    data = json.loads(run("datasets", "info", "packonly", "--json").out)
+    assert data["id"] == "packonly"
+    assert data["builder"] is None
+    assert data["layout"] is None
+    assert data["location"] is None
+    assert data["packs"] == ["demo-pack"]
+    assert data["card"]["name"] == "packonly"
+    assert data["schemes"] == [
+        {
+            "pack": "demo-pack",
+            "scheme": "official",
+            "kind": "official",
+            "default": True,
+            "distribution": "undecided",
+            "materialized": None,
+        }
+    ]
+
+
+def test_info_of_a_pack_only_dataset_degrades_when_the_pack_listing_later_fails(
+    run, monkeypatch, tmp_path
+):
+    # `info` reads the pack listing more than once (to name the packs, then their schemes, then
+    # the card); if it starts failing partway through, the command must still report what it
+    # already knows instead of crashing with an unhandled exception.
+    from dfwb.core.errors import ContractError
+    from dfwb.protocols import packs as packs_module
+
+    pack = make_pack(tmp_path, "demo-pack", {"demo": {}, "packonly": {}})
+    install(monkeypatch, {"demo": (DEMO_TARGET, "Demo", "Demo")}, packs={"demo-pack": pack})
+
+    real_installed_packs = packs_module.installed_packs
+    calls = {"n": 0}
+
+    def flaky_after_two_calls():
+        calls["n"] += 1
+        if calls["n"] >= 3:
+            raise ContractError("protocol pack registry went away", hint="reinstall the pack")
+        return real_installed_packs()
+
+    monkeypatch.setattr(packs_module, "installed_packs", flaky_after_two_calls)
+
+    result = run("datasets", "info", "packonly")
+    assert result.code == 0, result.err
+    assert "packonly" in result.out
+
+
 # ------------------------------------------------------------------------------ synth
 
 

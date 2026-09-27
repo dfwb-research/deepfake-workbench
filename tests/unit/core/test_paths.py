@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from dfwb.core.envfile import AppliedEnv
 from dfwb.core.errors import ConfigError, ContractError
 from dfwb.core.paths import RelPath, relativize, require_root, resolve_roots
 
@@ -59,6 +60,31 @@ def test_relative_values_resolve_against_cwd_or_file(places):
     assert roots["work"].path == cwd / "work"
 
 
+def test_a_relative_env_value_set_by_dotenv_resolves_against_the_dotenv_directory(places):
+    # DFWB_DATASETS_ROOT came from a .env file that lives outside cwd, with a relative value
+    # (e.g. ./data/datasets): it must resolve against that file's own directory, not cwd.
+    cwd, user = places
+    env_dir = cwd.parent / "elsewhere"
+    env_dir.mkdir()
+    env_file = AppliedEnv(env_dir / ".env", ("DFWB_DATASETS_ROOT",), ())
+    env = {"DFWB_DATASETS_ROOT": "./data/datasets", "DFWB_WORK_ROOT": "./data/work"}
+    roots = resolve_roots(env=env, cwd=cwd, user_config=user, env_file=env_file)
+    assert roots["datasets"].path == env_dir / "data" / "datasets"
+    # DFWB_WORK_ROOT is a real environment variable here (not one the .env file set): it keeps
+    # resolving against cwd, exactly as before.
+    assert roots["work"].path == cwd / "data" / "work"
+
+
+def test_a_relative_datasets_list_from_dotenv_resolves_every_entry_against_it(places):
+    cwd, user = places
+    env_dir = cwd.parent / "elsewhere"
+    env_dir.mkdir()
+    env_file = AppliedEnv(env_dir / ".env", ("DFWB_DATASETS_ROOT",), ())
+    env = {"DFWB_DATASETS_ROOT": "./a:./b"}
+    roots = resolve_roots(env=env, cwd=cwd, user_config=user, env_file=env_file)
+    assert roots["datasets"].paths == (env_dir / "a", env_dir / "b")
+
+
 def test_bad_config_files(places):
     cwd, user = places
     (cwd / "dfwb.toml").write_text("[roots\n")
@@ -67,6 +93,16 @@ def test_bad_config_files(places):
     (cwd / "dfwb.toml").write_text('[roots]\ndataset = "/x"\n')
     with pytest.raises(ConfigError, match="did you mean 'datasets'"):
         resolve_roots(env={}, cwd=cwd, user_config=user)
+
+
+def test_a_non_utf8_project_config_is_a_config_error(places):
+    cwd, user = places
+    # Latin-1 bytes that are not valid UTF-8 (e.g. "café" saved with the wrong encoding).
+    (cwd / "dfwb.toml").write_bytes('[roots]\ndatasets = "/x"  # caf\xe9\n'.encode("latin-1"))
+    with pytest.raises(ConfigError, match="not valid UTF-8") as info:
+        resolve_roots(env={}, cwd=cwd, user_config=user)
+    assert str(cwd / "dfwb.toml") in info.value.message
+    assert info.value.hint
 
 
 def test_require_root_explains_how_to_set_it(places):

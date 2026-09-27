@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from dfwb.preprocess.inventory.runner import DatasetCopy, FolderStatus
 
 _MISSING = "—"
+# How many mismatched-label warnings `unpack` names outright (plain text and --json alike);
+# the rest are folded into the "and N more" count.
+_WARNINGS_SHOWN = 3
 
 
 @click.group()
@@ -202,15 +205,106 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _schemes_table(schemes: list[dict[str, Any]]) -> str:
+    """The plain-text table of :func:`_pack_schemes`' rows, the default scheme starred."""
+    rows = [
+        [
+            row["pack"],
+            row["scheme"] + ("*" if row["default"] else ""),
+            row["kind"],
+            distribution_text(row["distribution"], row["materialized"]),
+        ]
+        for row in schemes
+    ]
+    return table(["PACK", "SCHEME", "KIND", "DISTRIBUTION"], rows)
+
+
+def _pack_card(dataset_id: str) -> dict[str, Any] | None:
+    """The card fields of the first installed, healthy pack that publishes ``dataset_id``.
+
+    Never raises: a pack listing that cannot be read degrades to no card, exactly like
+    :func:`_pack_names` and :func:`_pack_schemes`.
+    """
+    from dfwb.core.errors import DFWBError
+    from dfwb.protocols._yaml import read_card
+    from dfwb.protocols.packs import installed_packs
+
+    try:
+        packs = installed_packs()
+    except DFWBError:
+        return None
+    for pack in packs:
+        if pack.card is not None and dataset_id in pack.card.datasets:
+            try:
+                card = read_card(pack.dataset_dir(dataset_id))
+            except DFWBError:
+                continue
+            return card.model_dump(mode="json", by_alias=True)
+    return None
+
+
+def _info_pack_only(dataset_id: str, pack_names: list[str], as_json: bool) -> None:
+    """``info`` for a dataset with no local inventory builder: only what an installed pack knows.
+
+    ``pack_names`` are the healthy installed packs that publish ``dataset_id`` (as ``datasets
+    list`` already shows for such an id); the caller has already checked this is non-empty.
+    """
+    schemes, problems = _pack_schemes(dataset_id)
+    card = _pack_card(dataset_id) or {}
+    note = "no local inventory builder is registered for it: the folder and layout can't be shown"
+
+    if as_json:
+        emit_json(
+            {
+                "id": dataset_id,
+                "builder": None,
+                "card": card,
+                "layout": None,
+                "location": None,
+                "schemes": schemes,
+                "problems": problems,
+                "packs": pack_names,
+                "note": note,
+            }
+        )
+        return
+
+    release = card.get("release")
+    title = f"{card.get('name', dataset_id)} ({dataset_id})"
+    click.echo(title + (f"  release {release}" if release else ""))
+    for line in _card_lines(card):
+        click.echo(line)
+    click.echo("")
+    click.echo(f"known from: {', '.join(pack_names)}")
+    click.echo(f"note: {note}")
+    click.echo("")
+    if schemes:
+        click.echo("schemes in installed protocol packs:")
+        click.echo(_schemes_table(schemes))
+    for problem in problems:
+        click.echo(f"warning: {problem}", err=True)
+
+
 @datasets.command("info")
 @click.argument("dataset")
 @json_option
 def info(dataset: str, as_json: bool) -> None:
     """Show DATASET's details, its expected layout, its local folder and its schemes."""
+    from dfwb.core.errors import UnknownKeyError
     from dfwb.core.registry import catalogue_requirement
     from dfwb.preprocess.inventory.runner import dataset_copies, folder_status, get_builder
 
-    builder = get_builder(dataset)
+    try:
+        builder = get_builder(dataset)
+    except UnknownKeyError:
+        # Not registered locally: maybe it is only known from an installed protocol pack, the way
+        # `datasets list` already shows it. A dataset in neither is genuinely unknown -- re-raise
+        # the original error, with its did-you-mean over the registered builders.
+        pack_names = _pack_names().get(dataset)
+        if not pack_names:
+            raise
+        _info_pack_only(dataset, pack_names, as_json)
+        return
     dataset_id = builder.dataset_id
     roots, overrides = _locate_context()
     status = folder_status(dataset_id, builder.expected_folder, roots, overrides)
@@ -250,16 +344,7 @@ def info(dataset: str, as_json: bool) -> None:
     click.echo("")
     if schemes:
         click.echo("schemes in installed protocol packs:")
-        rows = [
-            [
-                row["pack"],
-                row["scheme"] + ("*" if row["default"] else ""),
-                row["kind"],
-                distribution_text(row["distribution"], row["materialized"]),
-            ]
-            for row in schemes
-        ]
-        click.echo(table(["PACK", "SCHEME", "KIND", "DISTRIBUTION"], rows))
+        click.echo(_schemes_table(schemes))
     else:
         requirement = catalogue_requirement("protocol_packs", dataset_id)
         suggestion = f" (pip install {requirement})" if requirement else ""
@@ -345,3 +430,107 @@ def synth(dataset: str, out: Path, videos: int, seed: int, no_media: bool, as_js
         click.echo(f"  {command}")
     if note is not None:
         click.echo(f"note: {note}")
+
+
+@datasets.command("unpack")
+@click.argument("dataset", type=click.Choice(["wilddeepfake"]))
+@click.option(
+    "--from",
+    "from_dir",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Directory holding the release's real_train/real_test/fake_train/fake_test tar shards.",
+)
+@click.option(
+    "--to",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="The datasets root to unpack into: the dataset lands in <to>/WildDeepfake (DATASET's "
+    "expected folder), where `dfwb inventory build` looks for it under a datasets root "
+    "(default: the first configured datasets root -- see DFWB_DATASETS_ROOT and `dfwb doctor`).",
+)
+@json_option
+def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None:
+    """Safely unpack DATASET's release tar shards into the layout its inventory builder reads.
+
+    Every archive member is checked before anything is written: an absolute path, a '..'
+    segment, a symlink, a hard link, or a device or FIFO file refuses the whole archive, naming
+    the first offending member, and two archives with the same shard id in one category are
+    refused, both named. The label comes from the real_train/real_test/fake_train/fake_test
+    category folder: a frame filed under an inner label that disagrees is unpacked under the
+    category's label regardless, and reported as a warning, as are a folder that is not a
+    category and an archive below a category folder (neither is unpacked). Unpacking is
+    resumable: a sequence already holding exactly its expected frames is left alone, and any
+    other sequence folder is removed and rewritten from scratch, so re-running after an
+    interrupted unpack is always safe and never duplicates frames. Discovery then runs where
+    `dfwb inventory build` will look, and its counts are reported, with a warning when that is
+    not the folder just written.
+    """
+    from dfwb.core.paths import absolute, require_root, resolve_roots
+    from dfwb.preprocess.inventory.runner import get_builder
+    from dfwb.preprocess.wilddeepfake_unpack import unpack_wilddeepfake
+
+    builder = get_builder(dataset)
+    source = absolute(from_dir)
+    datasets_root = absolute(to) if to is not None else require_root("datasets", resolve_roots())
+
+    result = unpack_wilddeepfake(builder, source, datasets_root)
+    shown = result.warnings[:_WARNINGS_SHOWN]
+    inventory_folder = None if result.inventory_folder is None else str(result.inventory_folder)
+
+    if as_json:
+        emit_json(
+            {
+                "dataset_id": result.dataset_id,
+                "from": str(result.from_dir),
+                "datasets_root": str(result.datasets_root),
+                "to": str(result.to),
+                "categories": list(result.categories),
+                "shards_found": result.shards_found,
+                "sequences_total": result.sequences_total,
+                "sequences_written": result.sequences_written,
+                "sequences_skipped": result.sequences_skipped,
+                "frames_written": result.frames_written,
+                "inventory_folder": inventory_folder,
+                "by_task": result.by_task,
+                "warnings": {"count": len(result.warnings), "first": list(shown)},
+                "layout_warnings": list(result.layout_warnings),
+            }
+        )
+        return
+
+    click.echo(
+        f"unpacked {result.sequences_written} sequence(s) ({result.sequences_skipped} already "
+        f"complete) from {result.shards_found} shard(s) in {', '.join(result.categories)} into "
+        f"{result.to}"
+    )
+    command = f"`dfwb inventory build {result.dataset_id}`"
+    if result.by_task is not None:
+        counts = ", ".join(f"{task} {count}" for task, count in result.by_task.items())
+        where = "there" if result.inventory_folder == result.to else f"in {inventory_folder}"
+        click.echo(f"discovery {where} finds {sum(result.by_task.values())} record(s) ({counts})")
+    fix = (
+        f"set DFWB_DATASETS_ROOT={result.datasets_root} (or DFWB_DATASET_"
+        f"{result.dataset_id.upper().replace('-', '_')}={result.to}) where you run it"
+    )
+    if result.inventory_folder is None:
+        click.echo(
+            f"warning: {command} will not find {result.to}: no datasets root or override "
+            f"points at it; {fix}",
+            err=True,
+        )
+    elif result.inventory_folder != result.to:
+        click.echo(
+            f"warning: {command} will read {inventory_folder}, not {result.to}; {fix}",
+            err=True,
+        )
+    for warning in result.layout_warnings:
+        click.echo(f"warning: {warning}", err=True)
+    if result.warnings:
+        more = len(result.warnings) - len(shown)
+        suffix = f"; and {more} more" if more else ""
+        click.echo(
+            f"warning: {len(result.warnings)} frame(s) filed under a label that disagrees with "
+            f"their category: {'; '.join(shown)}{suffix}",
+            err=True,
+        )

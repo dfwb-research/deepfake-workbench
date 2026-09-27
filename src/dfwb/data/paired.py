@@ -22,7 +22,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from dfwb.data.clips import ClipSpec
-from dfwb.data.dataset import ClipDataset, ClipSample, ClipTransform
+from dfwb.data.dataset import ClipDataset, ClipSample, ClipTransform, SkippedVideo
 from dfwb.data.index import VideoIndex, VideoItem
 
 __all__ = ["PairedClipDataset"]
@@ -46,9 +46,13 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
     A pair whose real or fake key is not in ``index`` is dropped; :attr:`dropped` counts how many.
     Every surviving pair contributes ``spec.clips_per_mode(train=train)`` clips a side, exactly as
     one :class:`~dfwb.data.dataset.ClipDataset` would for either video alone -- ``transform``,
-    ``adapt_chain`` and ``seed`` are passed straight through to the two internal datasets, so a
-    pair's clips are seeded, sampled and adapted identically to a non-paired clip of the same
-    video would be.
+    ``adapt_chain``, ``seed``, ``expected_frame_size`` and ``repair_corrupt_frames`` are all passed
+    straight through to the two internal datasets, so a pair's clips are seeded, sampled, adapted
+    and checked identically to a non-paired clip of the same video would be. With repair on, a
+    side none of whose stored frames can be read gives a
+    :class:`~dfwb.data.dataset.SkippedVideo`, exactly as an unpaired ``ClipDataset`` would:
+    :func:`~dfwb.data.collate.collate_clips` drops it, so its partner's rows reach the batch
+    without it.
     """
 
     def __init__(
@@ -61,6 +65,8 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
         transform: ClipTransform | None = None,
         adapt_chain: Callable[[Tensor], Tensor] | None = None,
         seed: int,
+        expected_frame_size: int | None = None,
+        repair_corrupt_frames: bool = False,
     ) -> None:
         by_key = _by_key(index)
         real_items: list[VideoItem] = []
@@ -88,6 +94,8 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             transform=transform,
             adapt_chain=adapt_chain,
             seed=seed,
+            expected_frame_size=expected_frame_size,
+            repair_corrupt_frames=repair_corrupt_frames,
         )
         self._fake = ClipDataset(
             _sub_index(fake_items),
@@ -96,6 +104,8 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             transform=transform,
             adapt_chain=adapt_chain,
             seed=seed,
+            expected_frame_size=expected_frame_size,
+            repair_corrupt_frames=repair_corrupt_frames,
         )
 
     def set_epoch(self, epoch: int) -> None:
@@ -122,7 +132,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             for p in range(self.pair_count)
         ]
 
-    def __getitem__(self, i: int) -> ClipSample:
+    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override, unused-ignore]
         if not 0 <= i < len(self):
             raise IndexError(i)
         if i < len(self._real):
@@ -132,4 +142,6 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             local = i - len(self._real)
             sample = self._fake[local]
             pair_id = local // self._clips_per_pair
+        if isinstance(sample, SkippedVideo):
+            return sample
         return replace(sample, extras={**sample.extras, "dfwb/pair_id": pair_id})

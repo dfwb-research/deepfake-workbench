@@ -306,18 +306,14 @@ def run(
     if effective_fmt == "json":
         click.echo(json.dumps(payload, indent=2))
     elif effective_fmt == "md":
-        # a quick, aligned table for the terminal; the same data as report.md, plainer syntax.
-        headers = ["FILE", "N", "COVERAGE", *[m.upper() for m in result.metrics]]
-        rows = [
-            [
-                r["file"],
-                r["n"],
-                f"{r['coverage']:.4f}",
-                *_metric_cells(r, result.metrics, latex=False),
-            ]
-            for r in result.tables["files"]
-        ]
-        click.echo(table(headers, rows))
+        # Quick, aligned tables for the terminal: every table report.md holds (files, then the
+        # breakdown, seeds and suite tables when present), plainer syntax, a blank line apart.
+        blocks = _blocks(result.tables, result.metrics, latex=False)
+        click.echo(
+            "\n\n".join(
+                table([header.upper() for header in headers], rows) for _, headers, rows in blocks
+            )
+        )
     else:
         click.echo(_render(effective_fmt, result.tables, result.metrics))
     if result.exit_code:

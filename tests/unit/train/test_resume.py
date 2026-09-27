@@ -224,6 +224,29 @@ def test_resume_after_the_last_epoch_only_finishes_the_run(tmp_path, toy_work_ro
     assert not (run_dir / "resume").exists()
 
 
+def test_a_resumed_run_carries_on_its_repair_and_skip_totals(tmp_path, toy_work_root, monkeypatch):
+    # FAKE/f09 (validation) cannot be read during the first epoch; the store is put right before
+    # the resume. The run's total still counts it, from the saved state, and only once.
+    frame_dir = next((toy_work_root / "toytrain" / "processed").iterdir()) / "FAKE/f09" / "_"
+    originals = {path: path.read_bytes() for path in frame_dir.glob("frame_*.png")}
+    for path, data in originals.items():
+        path.write_bytes(data[: len(data) // 2])
+    config = toy_config(train={"max_epochs": 2})
+    run_dir = _interrupted(tmp_path, toy_work_root, config, monkeypatch, _CrashAtEpochStart(1))
+    state = json.loads((run_dir / "resume" / "state.json").read_text("utf-8"))
+    assert state["module"]["repairs"] == {
+        "repaired_frames": [],
+        "videos_skipped": [["toytrain", "FAKE/f09", None]],
+    }
+    for path, data in originals.items():
+        path.write_bytes(data)
+
+    resumed = resume_run(run_dir, work_root=toy_work_root, progress=False)
+
+    assert resumed.metrics["videos_skipped"] == 1
+    assert resumed.metrics["val"]["val/videos_skipped"] == 0  # the second epoch read it fine
+
+
 def test_a_run_early_stopping_had_ended_stays_ended(tmp_path, toy_work_root, monkeypatch):
     config = toy_config(train={"max_epochs": 5, "early_stop": {"patience": 1, "min_delta": 10.0}})
     run_dir = _interrupted(tmp_path, toy_work_root, config, monkeypatch, _CrashAtTrainEnd())

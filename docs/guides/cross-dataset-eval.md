@@ -58,9 +58,10 @@ with no interval — useful for a quick, small-sample sanity check where a CI wo
 noise). `--suite toyfake` additionally matches each file to the suite entry whose protocol, split
 and `where` it was scored on and computes its aggregate rows — here, the mean AUC of the
 `in-domain` group and of the `cross` group (one file each, in this small example; a real panel's
-cross-dataset group averages several) — but the plain terminal table only ever shows the per-file
-rows; add `--out DIR` (writes `DIR/report.md` and `DIR/metrics.json`, with a `## suite` section)
-or `--json` to see the aggregate itself:
+cross-dataset group averages several). The terminal prints them as a second table beneath the
+per-file rows (with `--by`, a breakdown table comes between the two, and files that are seeds of
+one run add a seeds table), and every other output form holds the same tables: `--json`, and
+`--out DIR`, which writes `DIR/metrics.json` and `DIR/report.md`, whose `## suite` section reads:
 
 ```
 ## suite

@@ -176,7 +176,9 @@ class WildDeepfakeBuilder(BaseBuilder):
             "url": None,
         },
         "access": "request access from the authors (the download is gated); dfwb never "
-        "distributes media",
+        "distributes media; once downloaded, unpack the release's tar shards with `dfwb datasets "
+        "unpack wilddeepfake --from <directory of real_train/real_test/fake_train/fake_test "
+        "shards>`",
         "modalities": ["video"],
         "compressions": None,
         "key_rule": "<task>/<label>_<split>_<shard>_<sequence>: the sequence folder's name, "

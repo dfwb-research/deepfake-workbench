@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 
 pytest.importorskip("torch")
@@ -145,6 +148,108 @@ def test_a_failing_batch_holding_several_videos_marks_exactly_those(score_roots,
     others = {key: status for key, status in by_key.items() if key not in ("FAKE/f00", "FAKE/f01")}
     assert set(others.values()) == {"ok"}
     assert result.coverage == {"expected": 8, "ok": 6, "missing": 0, "error": 2}
+
+
+def _frame_path(store_dir: Path, key: str, index: int = 0) -> Path:
+    return store_dir / key / "_" / f"frame_{index:06d}.png"
+
+
+def test_a_corrupt_stored_frame_marks_its_video_error_and_scoring_continues(score_roots, tmp_path):
+    # The simple case: batch_size == clips_per_video, so each video is scored in its own batch
+    # already, without needing the per-video fallback at all. See the tests below for the
+    # realistic case, several videos sharing one batch.
+    store_dir = write_toy_store(score_roots, toy_profile("toy-face"))
+    path = _frame_path(store_dir, "FAKE/f00")
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])  # truncated: no longer a decodable PNG
+
+    result = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row for row in scored.rows}
+    assert by_key["FAKE/f00"].status == "error"
+    assert by_key["FAKE/f00"].score is None
+    ok_statuses = {key: row.status for key, row in by_key.items() if key != "FAKE/f00"}
+    assert set(ok_statuses.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
+
+
+def test_a_mis_sized_stored_frame_marks_its_video_error(score_roots, tmp_path):
+    # The simple case: batch_size == clips_per_video (see the comment above). The realistic,
+    # several-videos-share-a-batch case is test_a_mis_sized_frame_in_a_shared_batch_is_isolated
+    # below.
+    profile = toy_profile("toy-face")  # crop.size == 32
+    store_dir = write_toy_store(score_roots, profile)
+    path = _frame_path(store_dir, "FAKE/f00")
+    cv2.imwrite(str(path), np.zeros((16, 16, 3), dtype=np.uint8))
+
+    result = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=4)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row for row in scored.rows}
+    assert by_key["FAKE/f00"].status == "error"
+    ok_statuses = {key: row.status for key, row in by_key.items() if key != "FAKE/f00"}
+    assert set(ok_statuses.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
+
+
+def test_a_corrupt_frame_in_a_shared_batch_is_isolated_to_its_own_video(score_roots, tmp_path):
+    # batch_size=8 (2 videos' worth of clips at clips_per_video=4): VideoGrouped packs greedily
+    # in index order (FAKE/* sorts before REAL/*), so FAKE/f00 and FAKE/f01 share the first
+    # batch, exactly as test_a_failing_batch_holding_several_videos_marks_exactly_those's
+    # detector failure does -- but a corrupt frame is only ever one video's problem, so unlike
+    # that test, FAKE/f01 (healthy, sharing the batch) must still score ok.
+    store_dir = write_toy_store(score_roots, toy_profile("toy-face"))
+    path = _frame_path(store_dir, "FAKE/f00")
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+    result = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=8)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row for row in scored.rows}
+    assert by_key["FAKE/f00"].status == "error"
+    assert by_key["FAKE/f01"].status == "ok"
+    assert 0.0 <= by_key["FAKE/f01"].score <= 1.0
+    others = {key: row.status for key, row in by_key.items() if key != "FAKE/f00"}
+    assert set(others.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
+
+
+def test_a_mis_sized_frame_in_a_shared_batch_is_isolated_to_its_own_video(score_roots, tmp_path):
+    profile = toy_profile("toy-face")  # crop.size == 32
+    store_dir = write_toy_store(score_roots, profile)
+    path = _frame_path(store_dir, "FAKE/f00")
+    cv2.imwrite(str(path), np.zeros((16, 16, 3), dtype=np.uint8))
+
+    result = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=8)
+
+    scored = read_scores(result.csv_path)
+    by_key = {row.key: row for row in scored.rows}
+    assert by_key["FAKE/f00"].status == "error"
+    assert by_key["FAKE/f01"].status == "ok"
+    others = {key: row.status for key, row in by_key.items() if key != "FAKE/f00"}
+    assert set(others.values()) == {"ok"}
+    assert result.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
+
+
+def test_a_re_run_retries_only_the_corrupt_video(score_roots, tmp_path):
+    store_dir = write_toy_store(score_roots, toy_profile("toy-face"))
+    path = _frame_path(store_dir, "FAKE/f00")
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+    first = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=8)
+    # An error row is never cached (dfwb.score.cache.look_up): the second call recomputes, not
+    # reuses, the first's file.
+    second = score("fake:", protocol=PROTOCOL, split="test", out=tmp_path / "out", batch_size=8)
+
+    assert first.coverage == second.coverage == {"expected": 8, "ok": 7, "missing": 0, "error": 1}
+    for result in (first, second):
+        by_key = {row.key: row.status for row in read_scores(result.csv_path).rows}
+        assert by_key["FAKE/f00"] == "error"
+        others = {key: status for key, status in by_key.items() if key != "FAKE/f00"}
+        assert set(others.values()) == {"ok"}
 
 
 # ------------------------------------------------------------------------------ output validation

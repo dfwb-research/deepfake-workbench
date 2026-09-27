@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from tests._dfwb_cli import run_dfwb
 
@@ -13,6 +14,81 @@ def test_cli_applies_dotenv_before_the_command(tmp_path, monkeypatch, capsys):
     data = json.loads(result.out)
     assert data["roots"]["datasets"]["paths"] == [f"{tmp_path}/a", f"{tmp_path}/b"]
     assert data["env_file"]["applied"] == ["DFWB_DATASETS_ROOT"]
+
+
+def test_relative_root_in_a_dotenv_elsewhere_resolves_against_that_file(
+    tmp_path, monkeypatch, capsys
+):
+    # A .env outside cwd (via --env-file) with a relative root: the root is relative to the
+    # .env file's own directory, not to the directory the command happens to run from.
+    monkeypatch.delenv("DFWB_DATASETS_ROOT", raising=False)
+    monkeypatch.delenv("DFWB_ENV_FILE", raising=False)
+    env_dir = tmp_path / "elsewhere"
+    env_dir.mkdir()
+    (env_dir / ".env").write_text("DFWB_DATASETS_ROOT=./data/datasets\n")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    result = run_dfwb(capsys, "--env-file", str(env_dir / ".env"), "doctor", "--json")
+    assert result.code == 0
+    data = json.loads(result.out)
+    assert data["roots"]["datasets"]["paths"] == [str(env_dir / "data" / "datasets")]
+
+
+def test_a_relative_dataset_override_in_a_dotenv_elsewhere_resolves_against_that_file(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("DFWB_DATASET_TOYFAKE", raising=False)
+    monkeypatch.delenv("DFWB_ENV_FILE", raising=False)
+    env_dir = tmp_path / "elsewhere"
+    (env_dir / "my-toyfake").mkdir(parents=True)
+    (env_dir / ".env").write_text("DFWB_DATASET_TOYFAKE=./my-toyfake\n")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    result = run_dfwb(capsys, "--env-file", str(env_dir / ".env"), "doctor", "--json")
+    assert result.code == 0
+    (row,) = [row for row in json.loads(result.out)["datasets"] if row["id"] == "toyfake"]
+    assert row["path"] == str(env_dir / "my-toyfake")
+
+
+def test_a_relative_env_file_flag_is_resolved_to_an_absolute_path(tmp_path, monkeypatch, capsys):
+    # A *relative* --env-file (not just a relative root inside it): the .env file itself must be
+    # found relative to cwd and end up absolute, so a relative root inside it resolves correctly
+    # in turn (an AppliedEnv.file that is itself relative would break absolute()'s contract).
+    monkeypatch.delenv("DFWB_DATASETS_ROOT", raising=False)
+    monkeypatch.delenv("DFWB_ENV_FILE", raising=False)
+    env_dir = tmp_path / "elsewhere"
+    env_dir.mkdir()
+    (env_dir / ".env").write_text("DFWB_DATASETS_ROOT=./data/datasets\n")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    result = run_dfwb(capsys, "--env-file", "../elsewhere/.env", "doctor", "--json")
+    assert result.code == 0
+    data = json.loads(result.out)
+    assert data["roots"]["datasets"]["paths"] == [str(env_dir / "data" / "datasets")]
+    assert Path(data["env_file"]["path"]).is_absolute()
+    assert Path(data["env_file"]["path"]) == env_dir / ".env"
+
+
+def test_a_relative_dfwb_env_file_variable_is_resolved_to_an_absolute_path(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("DFWB_DATASETS_ROOT", raising=False)
+    env_dir = tmp_path / "elsewhere"
+    env_dir.mkdir()
+    (env_dir / ".env").write_text("DFWB_DATASETS_ROOT=./data/datasets\n")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("DFWB_ENV_FILE", "../elsewhere/.env")
+    result = run_dfwb(capsys, "doctor", "--json")
+    assert result.code == 0
+    data = json.loads(result.out)
+    assert data["roots"]["datasets"]["paths"] == [str(env_dir / "data" / "datasets")]
+    assert Path(data["env_file"]["path"]).is_absolute()
+    assert Path(data["env_file"]["path"]) == env_dir / ".env"
 
 
 def test_no_env_file_flag_skips_it(tmp_path, monkeypatch, capsys):

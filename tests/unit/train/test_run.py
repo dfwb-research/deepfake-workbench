@@ -648,3 +648,76 @@ def test_a_report_with_everything_defined_mentions_neither(tmp_path, toy_work_ro
     report = (result.run_dir / "report.md").read_text("utf-8")
     assert "fell back" not in report
     assert "Undefined" not in report
+
+
+# --------------------------------------------------- repaired / skipped corrupt frames: the run
+
+
+def _corrupt_frame(toy_work_root: Path, key: str, index: int = 0) -> None:
+    profile = toy_profile()
+    path = (
+        toy_work_root
+        / "toytrain"
+        / "processed"
+        / profile.profile_id()
+        / key
+        / "_"
+        / f"frame_{index:06d}.png"
+    )
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+
+def test_metrics_json_and_the_summary_line_record_a_repaired_frame(tmp_path, toy_work_root, caplog):
+    _corrupt_frame(toy_work_root, "REAL/r08")  # validation-only (N_TRAIN=8 in the toy fixture)
+    # A wide (all 4 stored frames), single eval clip: unlike the toy default (clip.frames: 1,
+    # where any corrupt frame is necessarily the clip's only one and so can only be skipped), this
+    # leaves other frames in the same clip to repair the corrupt one from.
+    config = toy_config(
+        data={
+            "clip": {
+                "frames": 4,
+                "sampling": "consecutive",
+                "clips_per_video": {"train": 2, "eval": 1},
+            },
+            "loader": {"batch_size": 8, "num_workers": 0},
+        }
+    )
+
+    with caplog.at_level(logging.INFO, logger="dfwb"):
+        (result,) = train(tmp_path, toy_work_root, config)
+
+    assert result.metrics["repaired_frames"] == 1  # one (video, frame), however many epochs
+    assert result.metrics["videos_skipped"] == 0
+    on_disk = json.loads((result.run_dir / "metrics.json").read_text("utf-8"))
+    assert on_disk["repaired_frames"] == result.metrics["repaired_frames"]
+
+    report = (result.run_dir / "report.md").read_text("utf-8")
+    assert f"Repaired {result.metrics['repaired_frames']} corrupt stored frame(s)" in report
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    (summary,) = [m for m in messages if "repaired" in m and "stored frame" in m]
+    assert f"repaired {result.metrics['repaired_frames']} corrupt stored frame(s)" in summary
+    assert "skipped 0 video(s) none of whose stored frames could be read" in summary
+
+
+def test_the_report_counts_a_skipped_training_video(tmp_path, toy_work_root):
+    for index in range(4):
+        _corrupt_frame(toy_work_root, "REAL/r00", index)  # a training video, every frame
+
+    (result,) = train(tmp_path, toy_work_root)
+
+    assert result.metrics["videos_skipped"] == 1
+    report = (result.run_dir / "report.md").read_text("utf-8")
+    assert "skipped 1 video(s) none of whose stored frames could be read" in report
+
+
+def test_the_summary_line_is_silent_on_a_healthy_store(tmp_path, toy_work_root, caplog):
+    with caplog.at_level(logging.INFO, logger="dfwb"):
+        (result,) = train(tmp_path, toy_work_root)
+
+    assert result.metrics["repaired_frames"] == 0
+    assert result.metrics["videos_skipped"] == 0
+    assert not [r for r in caplog.records if "corrupt stored frame" in r.getMessage()]
+    report = (result.run_dir / "report.md").read_text("utf-8")
+    assert "Repaired" not in report

@@ -20,6 +20,20 @@ What gets logged at the end of each validation epoch:
 - ``val/video_<metric>``: the mean of ``val/<source>/<metric>`` over the sources where it is
   defined.
 - ``val/loss``: the mean loss over every validation clip.
+- ``val/repaired_frames`` (at the end of each validation) and ``train/repaired_frames`` (at the
+  end of each training epoch): how many distinct stored frames, one per ``(dataset, key,
+  compression, frame number)``, that pass had to repair because they were corrupt or missing
+  (see :class:`~dfwb.data.dataset.ClipDataset`) -- a frame repaired in several clips of the same
+  pass counts once. ``val/videos_skipped``/``train/videos_skipped``: how many distinct videos,
+  one per ``(dataset, key, compression)``, that pass skipped because none of their stored frames
+  could be read -- a video skipped in all of its clips counts once. All four are ``0`` on a run
+  whose store has nothing wrong with it. They are collected in this process from what each
+  batch carries (``extras["dfwb/repaired_frames"]``/``["dfwb/videos_skipped"]``), never a counter
+  on the dataset, which several ``DataLoader`` workers could only update racily.
+  :attr:`total_repaired_frames`/:attr:`total_videos_skipped` count the same things across the
+  whole run (training and validation together, each frame or video once, the sanity-check pass
+  left out); they are saved in the resume state, so a resumed run carries on counting where it
+  left off, and :mod:`dfwb.train.run` reads them once fitting finishes.
 
 The checkpoint monitor is ``train.monitor``/``train.mode``, checked against the validation
 sources' names when fitting starts, before any training. When it names a metric that no source
@@ -37,7 +51,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Hashable, Iterable, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -74,6 +88,7 @@ _MEAN_PREFIX = "val/video_"
 _LOSS_KEY = "val/loss"
 
 VideoKey = tuple[str, str, str | None]  # (dataset, key, compression): one score-file row
+FrameKey = tuple[str, str, str | None, int]  # a video's key, then the source frame number
 
 
 def _video_order(key: VideoKey) -> tuple[str, str, str]:
@@ -168,6 +183,35 @@ def _build_loss(spec: ComponentSpec) -> torch.nn.Module:
     return loss
 
 
+def _repaired_in(batch: ClipBatch) -> set[FrameKey]:
+    """The stored frames ``batch``'s clips repaired, each as ``(dataset, key, compression,
+    frame number)`` -- from ``extras["dfwb/repaired_frames"]``, the source frame numbers each
+    training/validation sample lists (see :class:`~dfwb.data.dataset.ClipDataset`). Empty when
+    the key is absent (a batch built without repair, e.g. a plugin's own dataset)."""
+    values = batch.extras.get("dfwb/repaired_frames")
+    if values is None:
+        return set()
+    return {
+        (batch.dataset_ids[row], batch.keys[row], batch.compressions[row], int(frame))
+        for row, frames in enumerate(values)
+        for frame in frames
+    }
+
+
+def _skipped_in(batch: ClipBatch) -> set[VideoKey]:
+    """The videos :func:`~dfwb.data.collate.collate_clips` dropped from ``batch`` because none of
+    their stored frames could be read -- ``extras["dfwb/videos_skipped"]``, present only when at
+    least one was."""
+    return {
+        (dataset, key, compression)
+        for dataset, key, compression in batch.extras.get("dfwb/videos_skipped", ())
+    }
+
+
+def _frame_order(key: FrameKey) -> tuple[str, str, str, int]:
+    return key[0], key[1], key[2] or "", key[3]
+
+
 class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  # Any w/o torch
     """The Lightning module of one training run.
 
@@ -215,6 +259,47 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
         self._loss_sum = 0.0
         self._loss_count = 0
         self._warned: set[str] = set()
+        # The frames repaired and the videos skipped: this training epoch, this validation pass,
+        # and the whole run (see the module docstring).
+        self._train_repaired: set[FrameKey] = set()
+        self._train_skipped: set[VideoKey] = set()
+        self._val_repaired: set[FrameKey] = set()
+        self._val_skipped: set[VideoKey] = set()
+        self._run_repaired: set[FrameKey] = set()
+        self._run_skipped: set[VideoKey] = set()
+
+    @property
+    def total_repaired_frames(self) -> int:
+        """How many distinct stored frames the run has repaired so far, in training and
+        validation together (the sanity-check pass left out)."""
+        return len(self._run_repaired)
+
+    @property
+    def total_videos_skipped(self) -> int:
+        """How many distinct videos the run has skipped so far because none of their stored
+        frames could be read, in training and validation together."""
+        return len(self._run_skipped)
+
+    def repair_state(self) -> dict[str, list[list[Any]]]:
+        """The run's repaired frames and skipped videos, as JSON-ready lists, for the resume
+        state; :meth:`load_repair_state` puts them back."""
+        return {
+            "repaired_frames": [list(key) for key in sorted(self._run_repaired, key=_frame_order)],
+            "videos_skipped": [list(key) for key in sorted(self._run_skipped, key=_video_order)],
+        }
+
+    def load_repair_state(self, state: Mapping[str, Any] | None) -> None:
+        """Carry on from :meth:`repair_state`'s output (``None``, from a resume state that
+        predates it, starts from nothing)."""
+        state = state or {}
+        self._run_repaired = {
+            (str(dataset), str(key), compression, int(frame))
+            for dataset, key, compression, frame in state.get("repaired_frames", ())
+        }
+        self._run_skipped = {
+            (str(dataset), str(key), compression)
+            for dataset, key, compression in state.get("videos_skipped", ())
+        }
 
     def setup(self, stage: str) -> None:
         """Refuse more than one process, and check the monitor against the validation sources'
@@ -251,22 +336,35 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
         return out
 
     def training_step(self, batch: ClipBatch, batch_idx: int) -> Tensor | None:
+        repaired, skipped = _repaired_in(batch), _skipped_in(batch)
+        self._train_repaired |= repaired
+        self._train_skipped |= skipped
+        self._run_repaired |= repaired
+        self._run_skipped |= skipped
+        batch_size = len(batch.keys)
+        if batch_size == 0:
+            return None  # every video of this batch was skipped: nothing to train on
         out: DetectorOutput = self(batch)
         result: LossOutput = self.loss(out, batch)
         total = result.total
         self.last_loss = total.detach()
         if not bool(torch.isfinite(self.last_loss).all()):
             return None  # skip this update; NonFiniteGuard decides when to stop
-        batch_size = len(batch.keys)
         self.log("train/loss", total, on_step=True, on_epoch=True, batch_size=batch_size)
         for name, value in result.parts.items():
             self.log(f"train/{name}", value, on_step=True, on_epoch=True, batch_size=batch_size)
         return total
 
     def on_train_epoch_start(self) -> None:
+        self._train_repaired = set()
+        self._train_skipped = set()
         datamodule = ProtocolDataModule.attached_to(self.trainer)
         if datamodule is not None:
             datamodule.set_epoch(self.current_epoch)
+
+    def on_train_epoch_end(self) -> None:
+        self.log("train/repaired_frames", float(len(self._train_repaired)))
+        self.log("train/videos_skipped", float(len(self._train_skipped)))
 
     def configure_optimizers(self) -> Any:
         """The optimiser, and its schedule stepped once per optimiser step.
@@ -303,11 +401,25 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
         self._labels = {}
         self._loss_sum = 0.0
         self._loss_count = 0
+        self._val_repaired = set()
+        self._val_skipped = set()
 
     def validation_step(self, batch: ClipBatch, batch_idx: int, dataloader_idx: int = 0) -> None:
+        # Collected by hand and logged once, in on_validation_epoch_end, exactly like val/loss
+        # below.
+        repaired, skipped = _repaired_in(batch), _skipped_in(batch)
+        self._val_repaired |= repaired
+        self._val_skipped |= skipped
+        if not self.trainer.sanity_checking:  # matches on_validation_epoch_end's own exclusion
+            self._run_repaired |= repaired
+            self._run_skipped |= skipped
+        size = len(batch.keys)
+        if size == 0:
+            # Every video of this batch was skipped (for one, a video alone in its batch none of
+            # whose stored frames can be read): nothing is left to score or lose.
+            return
         out: DetectorOutput = self(batch)
         result: LossOutput = self.loss(out, batch)
-        size = len(batch.keys)
         self._loss_sum += float(result.total) * size
         self._loss_count += size
         if self.detector.head.num_classes != 1:
@@ -385,6 +497,8 @@ class DetectorModule(L.LightningModule):  # type: ignore[misc, unused-ignore]  #
             if defined:
                 logged[f"{_MEAN_PREFIX}{metric}"] = sum(defined) / len(defined)
         logged[_LOSS_KEY] = self._loss_sum / self._loss_count if self._loss_count else math.nan
+        logged["val/repaired_frames"] = float(len(self._val_repaired))
+        logged["val/videos_skipped"] = float(len(self._val_skipped))
 
         self._resolve_monitor(logged)
         for key, value in logged.items():

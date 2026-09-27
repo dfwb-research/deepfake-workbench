@@ -14,11 +14,14 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Final, Literal, get_args
+from typing import TYPE_CHECKING, Final, Literal, get_args
 
 import platformdirs
 
 from dfwb.core.errors import ConfigError, ContractError, did_you_mean
+
+if TYPE_CHECKING:
+    from dfwb.core.envfile import AppliedEnv
 
 __all__ = [
     "PROJECT_CONFIG",
@@ -175,7 +178,13 @@ def _read_file(path: Path, host: str) -> _FileSettings:
     if not path.is_file():
         return _FileSettings({}, {}, {}, {}, path)
     try:
-        data = tomllib.loads(path.read_text("utf-8"))
+        text = path.read_text("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"{path}: not valid UTF-8: {exc}", hint="save the file as UTF-8"
+        ) from None
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(
             f"{path}: invalid TOML: {exc}", hint="fix the file or remove it"
@@ -217,6 +226,7 @@ def resolve_roots(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     user_config: Path | None = None,
+    env_file: AppliedEnv | None = None,
 ) -> dict[RootName, ResolvedRoot]:
     """Resolve all four roots. Nothing is created on disk.
 
@@ -228,9 +238,19 @@ def resolve_roots(
         env: Environment to read (defaults to ``os.environ``).
         cwd: Directory holding the project ``dfwb.toml`` (defaults to the current directory).
         user_config: User config file (defaults to :func:`user_config_path`).
+        env_file: The ``.env`` file the CLI applied before this call, if any (defaults to
+            :func:`dfwb.core.envfile.last_applied` when ``env`` is not given). A relative root
+            value that came from this file resolves against the file's own directory; a root
+            value already present in the real environment (not set by ``.env``) still resolves
+            against ``cwd``, as it always has.
     """
     flags = flags or {}
-    env = os.environ if env is None else env
+    if env is None:
+        env = os.environ
+        if env_file is None:
+            from dfwb.core.envfile import last_applied
+
+            env_file = last_applied()
     cwd = Path.cwd() if cwd is None else cwd
     host = current_host(env)
     project_file = cwd / PROJECT_CONFIG
@@ -240,7 +260,9 @@ def resolve_roots(
 
     resolved: dict[RootName, ResolvedRoot] = {}
     for name in ROOT_NAMES:
-        resolved[name] = _resolve_one(name, flags, env, cwd, host, project, user, resolved)
+        resolved[name] = _resolve_one(
+            name, flags, env, cwd, host, project, user, resolved, env_file
+        )
     return resolved
 
 
@@ -264,6 +286,7 @@ def _resolve_one(
     project: _FileSettings,
     user: _FileSettings,
     resolved: Mapping[RootName, ResolvedRoot],
+    env_file: AppliedEnv | None,
 ) -> ResolvedRoot:
     variable = ROOT_ENV[name]
     # A value of only empty or blank entries (``":"``) is no value: the next source decides.
@@ -275,7 +298,12 @@ def _resolve_one(
     env_value = env.get(variable)
     values = _given(name, env_value) if env_value else []
     if values:
-        paths = tuple(absolute(v, cwd) for v in values)
+        # A value the .env file itself set is relative to that file, not to cwd; a value already
+        # present in the real environment (env_file did not set it) keeps resolving against cwd.
+        base = cwd
+        if env_file is not None and variable in env_file.applied:
+            base = env_file.file.parent
+        paths = tuple(absolute(v, base) for v in values)
         return ResolvedRoot(name, paths[0], "env", variable, paths=paths)
     if name in project.host_roots:
         values = _values_of(name, project.host_roots[name])
@@ -322,8 +350,14 @@ def dataset_overrides(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     user_config: Path | None = None,
+    env_file: AppliedEnv | None = None,
 ) -> dict[str, tuple[Path, str]]:
     """Every dataset folder override: dataset id -> (folder, where it came from).
+
+    A relative ``DFWB_DATASET_<ID>`` value that the ``.env`` file ``env_file`` set resolves
+    against that file's own directory, like a root (see :func:`resolve_roots`, whose default for
+    ``env_file`` this shares); one already present in the real environment resolves against
+    ``cwd``.
 
     Sources, highest precedence first: ``DFWB_DATASET_<ID>`` environment variables, the project
     host table, the project ``[datasets]`` table, the user host table, the user ``[datasets]``
@@ -333,13 +367,24 @@ def dataset_overrides(
     everywhere in DFWB, so this is exact for every id the framework defines; an id that itself
     contains ``_`` cannot be set this way and must instead go in a ``[datasets]`` table.
     """
-    env = os.environ if env is None else env
+    if env is None:
+        env = os.environ
+        if env_file is None:
+            from dfwb.core.envfile import last_applied
+
+            env_file = last_applied()
     cwd = Path.cwd() if cwd is None else cwd
     host = current_host(env)
     project_file = cwd / PROJECT_CONFIG
     user_file = user_config_path() if user_config is None else user_config
     project = _read_file(project_file, host)
     user = _read_file(user_file, host)
+
+    def _from_env(variable: str) -> Path:
+        base = cwd
+        if env_file is not None and variable in env_file.applied:
+            base = env_file.file.parent
+        return absolute(env[variable], base)
 
     found: dict[str, tuple[Path, str]] = {}
     for dataset_id, value in user.datasets.items():
@@ -360,12 +405,12 @@ def dataset_overrides(
     for dataset_id in list(found):
         variable = _dataset_env_var(dataset_id)
         if env.get(variable):
-            found[dataset_id] = (absolute(env[variable], cwd), f"env: {variable}")
+            found[dataset_id] = (_from_env(variable), f"env: {variable}")
     for key, value in env.items():
         if key.startswith(DATASET_ENV_PREFIX) and value:
             dataset_id = key[len(DATASET_ENV_PREFIX) :].lower().replace("_", "-")
             if dataset_id not in found:
-                found[dataset_id] = (absolute(value, cwd), f"env: {key}")
+                found[dataset_id] = (_from_env(key), f"env: {key}")
     return found
 
 

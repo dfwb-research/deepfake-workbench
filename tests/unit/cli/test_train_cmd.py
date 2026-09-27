@@ -212,6 +212,10 @@ def test_train_without_torch_names_the_extra(run, monkeypatch):
     assert result.code == 5
     assert "needs 'torch'" in result.err
     assert 'pip install "deepfake-workbench[train]"' in result.err
+    # A plain install of the extra pulls PyPI's default CUDA wheel; the hint names the CPU
+    # index explicitly so a release-day install does not silently pull 6 GB of nvidia-* packages.
+    assert "--index-url https://download.pytorch.org/whl/cpu" in result.err
+    assert "pytorch.org/get-started/locally" in result.err
 
 
 def test_train_without_validation_says_so(run, toy):

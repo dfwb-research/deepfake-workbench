@@ -84,6 +84,23 @@ def test_doctor_datasets_is_empty_without_builders(run, monkeypatch):
     assert "no inventory builders are registered" in run("doctor").out
 
 
+def test_doctor_reports_a_broken_project_config_and_carries_on(run, tmp_path):
+    (tmp_path / "dfwb.toml").write_bytes(b'[roots]\ndatasets = "/x"  # caf\xe9\n')
+
+    result = run("doctor")
+    assert result.code == 0, result.err
+    assert "not valid UTF-8" in result.out
+    assert "hint: save the file as UTF-8" in result.out
+    assert "PLUGIN" in result.out  # everything else is still reported
+    assert "ROOT" not in result.out  # no empty ROOT/PATH/FROM table when roots couldn't be read
+
+    data = json.loads(run("doctor", "--json").out)
+    assert data["roots"] == {}
+    assert "not valid UTF-8" in data["roots_error"]["message"]
+    assert data["roots_error"]["hint"] == "save the file as UTF-8"
+    assert data["datasets"] == []
+
+
 def test_doctor_licences_section_is_empty_by_default(run):
     data = json.loads(run("doctor", "--json").out)
     assert data["licenses"] == {}

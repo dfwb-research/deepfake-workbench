@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `dfwb datasets unpack wilddeepfake --from <dir of archives> [--to <datasets root>]`: safely
+  unpacks WildDeepfake's released tar shards into the frame-directory tree its inventory builder
+  reads, at `<datasets root>/WildDeepfake` (by default under the first configured datasets root).
+  Every archive member is checked before anything is written -- an absolute path, a `..`
+  segment, a symlink, a hard link, or a device or FIFO file refuses the whole archive, naming the
+  first offending member -- as are two archives with the same shard id in one category, both
+  named. A frame's label comes from its category folder; an inner label folder that disagrees, a
+  folder that is not one of the four categories, and an archive below a category folder are each
+  reported as a warning. Unpacking is resumable: an already-complete sequence is left alone, and
+  any other sequence folder is removed and rewritten from scratch, so re-running after an
+  interrupted unpack never duplicates frames. Discovery then runs exactly where `dfwb inventory
+  build` will look, and its counts are reported, with a warning (and the setting to change) when
+  that is not the folder just written.
 - A documentation site (MkDocs Material): the six user journeys (a five-minute toyfake walkthrough,
   the same shape with real datasets, evaluating score files from your own code with no `torch`
   install, adding a dataset, adding a detector, and adding a plugin), plus concept pages for the
@@ -18,6 +31,19 @@ All notable changes to this project are documented here. The format follows
   inventory builder for.
 - `examples/`: runnable scripts mirroring the toyfake quickstart, importing foreign score files,
   and scoring a detector of your own -- each exercised by its own test, in a temporary directory.
+- `configs/`: runnable experiment configs at the repository root, each extending a shipped
+  template and passing `dfwb config validate` -- `toyfake-cpu.yaml` (end to end on CPU, tested),
+  a ViT-B/16 run on FaceForensics++ c23, one on Celeb-DF v2, and a cross-dataset evaluation
+  example; the last three need real, licensed data and say so in their header.
+- `scripts/setup.sh`: one command for a fresh clone -- installs the extras you need with
+  `uv sync --locked`, copies `.env.example` to `.env` (never overwriting one that already exists)
+  so every root defaults inside the clone (datasets, work and cache under `./data/`, runs in
+  `./runs`), creates those directories, and runs `dfwb doctor`. `--gpu` prints the CUDA build steps instead of guessing your driver; `--dry-run`
+  prints the rest.
+- The README's "Run it from a clone" section and a new "Reproduce a benchmark" guide
+  (`docs/guides/reproduce-a-benchmark.md`), covering the whole path from a fresh clone -- getting
+  the data under the owner's own terms, inventory, verification, preprocessing, training with
+  `configs/…`, scoring a suite, and evaluation.
 - **Recipe datasets without key lists.** A dataset whose card says `distribution: recipe` can be
   published with no key list at all: its pack ships only `dataset.yaml`, `labels.yaml`,
   `NOTICE.md` and `PROVENANCE.json`. `dfwb protocols materialize DATASET` rebuilds the video, pair
@@ -30,8 +56,9 @@ All notable changes to this project are documented here. The format follows
   its card holds everything materialising needs, and `dfwb protocols diff` compares its lists by
   hash. A recipe needs every video of the release in each compression the card lists (rows of
   other compressions are left out), and an inventory built by the builder version the pack's
-  `PROVENANCE.json` records (with the dfwb version the pack was built by, or a later one); a mismatch message gives the split counts, video count,
-  compressions and builder versions, and the hint the likely cause.
+  `PROVENANCE.json` records (with the dfwb version the pack was built by, or a later one); a
+  mismatch message gives the split counts, video count, compressions and builder versions, and
+  the hint the likely cause.
 - Three optional dataset card fields (contract C3, backward compatible: a card without them loads
   and lints as before): `videos_sha256` and `pairs_sha256`, the hashes of the video and pair lists,
   and `pairing_rule`, the rule the pairs are drawn by. `dfwb protocols build` records them for every
@@ -39,7 +66,8 @@ All notable changes to this project are documented here. The format follows
   rebuild rewrites NOTICE.md for a recipe. `dfwb protocols lint` checks them against the lists a
   dataset ships. `dfwb.core.records.records_sha256` computes the hashes: the sha256 of a list's
   JSONL lines, sorted. dfwb 0.1.0b2 and earlier reject a card with fields they do not know, so a
-  protocol pack whose cards carry these needs a dfwb at least this new.
+  protocol pack whose cards carry these needs a Deepfake Workbench newer than 0.1.0b2, one that
+  reads the recipe hash fields.
 - `dfwb protocols list` (a DISTRIBUTION column, and `distribution`/`materialized` in `--json`) and
   `dfwb datasets info` show each dataset's distribution, and for a recipe shipped without its key
   lists whether it is materialised here.
@@ -68,6 +96,65 @@ All notable changes to this project are documented here. The format follows
 - `dfwb protocols build` no longer publishes the `attrs.audio_relpath` of AV-Deepfake1M++ and
   TalkingHeadBench videos, which depended on the local copy; their builders declare it in
   `local_attrs`.
+
+### Fixed
+
+- A relative root (`DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT`, `DFWB_CACHE_ROOT`)
+  or per-dataset folder override (`DFWB_DATASET_<ID>`) set by a `.env` file now resolves against
+  that file's own directory, not against the current directory -- so a `.env` loaded from
+  elsewhere (`--env-file`/`DFWB_ENV_FILE`) with a value such as `./data/datasets` behaves the same
+  wherever `dfwb` is run from. A value already set in the real environment (not by `.env`) still
+  resolves against the current directory, as before.
+- A *relative* `--env-file`/`DFWB_ENV_FILE` itself (not just a relative root inside it) is now
+  resolved to an absolute path before it is applied, so a relative root inside that file in turn
+  resolves against the right directory instead of staying relative.
+- `dfwb eval`'s plain terminal output (the default `--format md`, without `--json`) now prints
+  every table the other output forms hold, beneath the usual per-file table: the breakdown (`--by`),
+  the seeds summary (files that are seeds of one run) and the suite's aggregate rows (`--suite`).
+- A directory named in `extends`, and a config file that is not valid UTF-8 (an experiment config
+  or an `extends` parent), are now a `ConfigError` (exit 2) naming the file, instead of an
+  unhandled exception (exit 1). An error while reading an `extends` parent now also names the file
+  that referenced it, alongside the parent itself.
+- A `dfwb.toml`/user `config.toml` that is not valid UTF-8 is now a `ConfigError` naming the file,
+  instead of an unhandled exception.
+- `dfwb doctor` on a broken `dfwb.toml`/user `config.toml` reports the problem as a failed check,
+  with its hint, and still reports everything else (torch, extras, plugins, licences), instead of
+  aborting the whole command.
+- A `.env` file starting with a UTF-8 byte-order mark no longer breaks parsing of its first line.
+  Text left over after a quoted value's closing quote is now a `ConfigError` with a hint instead of
+  being silently dropped, except a `` #`` comment there, which is dropped exactly like an unquoted
+  value's own trailing comment.
+- `dfwb datasets info <id>` now works for a dataset known only from an installed protocol pack --
+  one with no local inventory builder, the way `dfwb datasets list` already shows it -- reporting
+  what the pack knows (its card and schemes) and that no local builder is registered, instead of
+  failing with an unknown-key error.
+- A stored frame whose size does not match its processing profile's `crop.size` is now refused
+  with a clear error naming both sizes, instead of being scored or trained on silently, or
+  crashing later with a confusing shape-mismatch error from deep inside batch collation.
+- A corrupt stored frame (one Pillow cannot decode) or a missing one (reported as a missing
+  stored frame) no longer aborts the whole run. `dfwb score` marks only that one video's row
+  `error`, exactly as a detector failure already does, and keeps scoring every other video
+  normally, even one that happens to share a batch with it. Training and validation instead
+  repair it with a warning naming the file: the clip repeats its own nearest good frame, or, when
+  it has none (a one-frame clip, as in the `toy-cpu` template), the nearest good stored frame of
+  the same video. A video none of whose stored frames can be read is skipped, with a warning, in
+  training and validation alike, even when it is alone in its batch. `train/repaired_frames`,
+  `train/videos_skipped`, `val/repaired_frames` and `val/videos_skipped` count distinct frames and
+  distinct videos each epoch; `metrics.json` records the run's distinct totals, which the resume
+  state carries over to `dfwb train --resume`, and a one-line summary at the end of a run reports
+  both when either is non-zero.
+- A stored frame with more than 8 bits a channel (a 16-bit PNG) is refused with an error saying
+  so, instead of being clipped or truncated to 8 bits without a word.
+- `dfwb protocols lint`'s leak check now also catches a media, Users, scratch or data mount path,
+  and a bare `~` home-directory shorthand, alongside the two local-machine roots and the Windows
+  drive path it already caught -- a pack whose NOTICE, card, or video/pair rows mention one of
+  these newly-caught shapes now fails lint where it previously passed. A path segment inside an
+  `http://` or `https://` address (a download page with a `data` segment, say) is not a local
+  path, and is not reported.
+- `dfwb train`'s `InstallationError` hint for a missing `torch` now names the CPU wheel index
+  (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`) and
+  pytorch.org's selector for a CUDA build, alongside the extra to install -- installing the extra
+  on its own resolves PyPI's default torch wheel, which is the CUDA build, even with no GPU.
 
 ## [0.1.0b2] - 2026-09-26
 

@@ -35,6 +35,9 @@ from dfwb.protocols.writer import scheme_card_for, write_dataset_files
 # literal: this repository's own "no machine-specific absolute paths" hook scans committed text
 # for exactly that shape, and these tests need the real shape to exercise the check.
 _SLASH_HOME = "/" + "home/"
+_SLASH_MEDIA = "/" + "media/"
+_SLASH_USERS = "/" + "Users/"
+_SLASH_SCRATCH = "/" + "scratch/"
 
 
 def _videos(dataset_id: str) -> list[VideoRecord]:
@@ -565,6 +568,127 @@ def test_absolute_path_in_provenance_is_the_only_reported_error(tmp_path):
 def test_lint_issue_is_a_plain_frozen_record():
     issue = LintIssue("error", "toylint/dataset.yaml", "boom")
     assert (issue.severity, issue.where, issue.message) == ("error", "toylint/dataset.yaml", "boom")
+
+
+# ---------------------------------------------------------------- the wider set of leak patterns
+
+
+def test_a_media_path_leak_is_caught(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(f"backed up under drive{_SLASH_MEDIA}usb1\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert _SLASH_MEDIA in issues[0].message
+
+
+def test_a_users_path_leak_is_caught(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(f"exported from c{_SLASH_USERS}someone\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert _SLASH_USERS in issues[0].message
+
+
+def test_a_scratch_path_leak_is_caught(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(f"staged under node1{_SLASH_SCRATCH}job42\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert _SLASH_SCRATCH in issues[0].message
+
+
+def test_a_data_path_leak_is_caught(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text("mounted at drive/data/raw\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert "/data/" in issues[0].message
+
+
+def test_a_windows_drive_path_leak_is_caught(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text("originally exported to C:\\Users\\someone\\out\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert "C:\\" in issues[0].message
+
+
+def test_a_tilde_home_shorthand_leak_is_caught(tmp_path):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text("see notes~/luke/README for the source\n")
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert "~/" in issues[0].message
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Download it from https://www.kaggle.com/datasets/someone/release/data/files.\n",
+        f"Mirrored at [the archive](http://archive.example.org{_SLASH_MEDIA}release.zip).\n",
+    ],
+    ids=["data-in-https", "media-in-http"],
+)
+def test_a_path_shape_inside_a_url_is_not_a_leak(tmp_path, text):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(text)
+
+    assert lint_pack(root) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "copied from /data/x before release\n",
+        "copied from drive/data/x before release\n",
+        "see https://example.org/terms, then drive/data/x\n",  # a URL elsewhere on the line
+    ],
+    ids=["bare", "mid-word", "after-a-url"],
+)
+def test_a_bare_data_path_is_still_a_leak(tmp_path, text):
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(text)
+
+    issues = lint_pack(root)
+
+    assert len(issues) == 1
+    assert issues[0].where == "toylint/NOTICE.md"
+    assert "/data/x" in issues[0].message or "'/data/'" in issues[0].message
+
+
+def test_a_valid_pack_with_none_of_these_patterns_still_lints_clean(tmp_path):
+    # A regression guard for the widened set: ordinary NOTICE prose that happens to share a word
+    # with a flagged root (e.g. "metadata", "database") must not be flagged.
+    root = _write_pack(tmp_path, ["toylint"])
+    (root / "toylint" / "NOTICE.md").write_text(
+        "This dataset's metadata and database exports carry no machine-specific paths.\n"
+    )
+
+    assert lint_pack(root) == []
 
 
 # -------------------------------------------------------------------------------------------

@@ -44,9 +44,9 @@ Run `dfwb protocols lint --release` against the `packs` folder you publish befor
 
 This pack has no runtime dependencies, so its `pyproject.toml` pins no dfwb version; the
 requirement is stated here instead. Cards written by `dfwb protocols build` carry the recipe
-hash fields (`videos_sha256`, `pairs_sha256` and `pairing_rule`), which an earlier dfwb cannot
-read, so the pack needs a dfwb that reads the recipe hash fields: 0.1.0b3 or later, once
-released.
+hash fields (`videos_sha256`, `pairs_sha256` and `pairing_rule`), which 0.1.0b2 and earlier
+reject, so the pack needs a Deepfake Workbench newer than 0.1.0b2, one that reads the recipe hash
+fields.
 
 ## Licence
 
