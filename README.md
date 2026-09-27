@@ -24,9 +24,10 @@ uv run dfwb config validate -c configs/toyfake-cpu.yaml
 
 `scripts/setup.sh` is one command: it installs the `train` and `preprocess` extras with
 `uv sync --locked`, copies `.env.example` to `.env` (never overwriting one that is already there)
-so `DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT` and `DFWB_CACHE_ROOT` all default to
-`./data/{datasets,work,runs,cache}` inside the clone, creates those directories, and runs `dfwb
-doctor` to confirm it all worked. Run `./scripts/setup.sh --gpu` instead on a CUDA machine,
+so `DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT` and `DFWB_CACHE_ROOT` default to
+`./data/{datasets,work,cache}` inside the clone and `DFWB_RUNS_ROOT` to `./runs`, where the
+commands below look for runs and score files, creates those directories, and runs `dfwb doctor`
+to confirm it all worked. Run `./scripts/setup.sh --gpu` instead on a CUDA machine,
 `--help` for every flag.
 
 [`configs/`](https://github.com/dfwb-research/deepfake-workbench/tree/main/configs) holds

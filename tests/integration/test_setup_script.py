@@ -21,6 +21,7 @@ SETUP_SH = REPO / "scripts" / "setup.sh"
 ENV_EXAMPLE = REPO / ".env.example"
 INSTALL_MD = REPO / "docs" / "install.md"
 QUICKSTART_MD = REPO / "docs" / "quickstart.md"
+GUIDE_MD = REPO / "docs" / "guides" / "reproduce-a-benchmark.md"
 
 
 def _clone(tmp_path: Path) -> Path:
@@ -63,8 +64,25 @@ def test_dry_run_sets_up_env_and_the_data_directories_for_real(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (clone / ".env").is_file()
     assert (clone / ".env").read_text("utf-8") == ENV_EXAMPLE.read_text("utf-8")
-    for name in ("datasets", "work", "runs", "cache"):
+    for name in ("datasets", "work", "cache"):
         assert (clone / "data" / name).is_dir()
+    # Runs live in ./runs, where the README and the guides look for them, not under data/.
+    assert (clone / "runs").is_dir()
+    assert not (clone / "data" / "runs").exists()
+
+
+def test_env_example_puts_runs_in_the_clones_runs_folder_and_the_rest_under_data():
+    values = dict(
+        line.split("=", 1)
+        for line in ENV_EXAMPLE.read_text("utf-8").splitlines()
+        if line.startswith("DFWB_") and "=" in line
+    )
+    assert values == {
+        "DFWB_DATASETS_ROOT": "./data/datasets",
+        "DFWB_WORK_ROOT": "./data/work",
+        "DFWB_RUNS_ROOT": "./runs",
+        "DFWB_CACHE_ROOT": "./data/cache",
+    }
 
 
 def test_dry_run_is_idempotent_and_never_overwrites_an_existing_env(tmp_path):
@@ -120,6 +138,44 @@ def test_gpu_flag_reproduces_installs_own_cuda_recipe_exactly(tmp_path):
     assert "+ uv sync --locked --extra train" in result.stdout
     for line in manual_lines:
         assert line in result.stdout, f"missing from --gpu output: {line!r}"
+
+
+def _gpu_recipe_reinstall_line() -> str:
+    install_md = INSTALL_MD.read_text("utf-8")
+    match = re.search(r"To train on a GPU with `uv`.*?```bash\n(.*?)```", install_md, re.DOTALL)
+    assert match, "docs/install.md's GPU recipe code block moved or was reworded"
+    (line,) = [line for line in match.group(1).splitlines() if line.startswith("uv pip install")]
+    return line
+
+
+def test_the_benchmark_guides_gpu_steps_keep_installs_order(tmp_path):
+    # uv sync with the extras, then the CUDA reinstall, then `uv run --no-sync` for every later
+    # command: any later `uv sync` or plain `uv run` would put the CPU build back.
+    real = GUIDE_MD.read_text("utf-8").split("## A real benchmark", 1)[1]
+    commands = [
+        line
+        for block in re.findall(r"```bash\n(.*?)```", real, re.DOTALL)
+        for line in block.splitlines()
+        if line.startswith("uv ")
+    ]
+    reinstall = _gpu_recipe_reinstall_line()
+    assert reinstall in commands, "the guide's GPU steps do not reinstall the CUDA build"
+    at = commands.index(reinstall)
+    assert commands[at - 1].startswith("uv sync --locked --extra train"), commands[at - 1]
+    later = commands[at + 1 :]
+    assert later
+    for command in later:
+        assert command.startswith("uv run --no-sync dfwb "), command
+        if re.search(r"dfwb (train|score|preprocess run) ", command):
+            assert command.endswith("--device cuda:0"), command
+
+    # and `setup.sh --gpu` prints that same order
+    result = _run(_clone(tmp_path), "--dry-run", "--gpu")
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert out.index("+ uv sync --locked --extra train") < out.index(reinstall)
+    assert out.index(reinstall) < out.index("uv run --no-sync dfwb train")
+    assert "--device cuda:0" in out
 
 
 def test_unknown_flag_is_an_error(tmp_path):

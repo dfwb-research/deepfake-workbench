@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-command setup for a fresh clone of deepfake-workbench: installs the extras you need with
-# uv, sets up .env and the in-clone data layout, and runs `dfwb doctor` to confirm it all works.
+# uv, sets up .env and the in-clone data layout (data/ and runs/), and runs `dfwb doctor` to
+# confirm it all works.
 #
 # Usage: scripts/setup.sh [--cpu] [--gpu] [--preprocess] [--train] [--dry-run] [-h|--help]
 #
@@ -27,7 +28,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 usage() {
-  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 dry_run=0
@@ -125,7 +126,7 @@ else
   run_local cp .env.example .env
 fi
 
-for dir in data/datasets data/work data/runs data/cache; do
+for dir in data/datasets data/work data/cache runs; do
   run_local mkdir -p "$dir"
 done
 

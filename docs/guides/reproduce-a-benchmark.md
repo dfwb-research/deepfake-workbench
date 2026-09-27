@@ -25,21 +25,25 @@ uv run dfwb preprocess run toyfake --profile toy-64-center-8f
 
 uv run dfwb train -c configs/toyfake-cpu.yaml --device cpu
 
-uv run dfwb score --detector "run:data/runs/toy-cpu/latest#best" --suite toyfake
-uv run dfwb eval data/runs/scores/tiny-cnn-mean-linear/toyfake-*/*.scores.csv --suite toyfake
+uv run dfwb score --detector "run:runs/toy-cpu/latest#best" --suite toyfake
+uv run dfwb eval runs/scores/tiny-cnn-mean-linear/toyfake-*/*.scores.csv --suite toyfake
 ```
 
 `scripts/setup.sh` (see the [README](https://github.com/dfwb-research/deepfake-workbench#run-it-from-a-clone))
 installs the `train` and `preprocess` extras, copies `.env.example` to `.env` so
-`DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT`, `DFWB_RUNS_ROOT` and `DFWB_CACHE_ROOT` all default to
-`./data/{datasets,work,runs,cache}` inside the clone, and creates those directories -- `dfwb`
-itself loads `.env` and reads them from there, so every command above needs nothing exported by
-hand, **except** `datasets synth --out`: a plain file-write flag with no environment default, so
-it names the same path (`data/datasets`) directly, run from the clone's own root the way the whole
-block assumes. `dfwb score --suite toyfake` scores the trained run against the framework's own
-two-entry suite (an in-domain split and an identity-disjoint, cross-dataset one); `dfwb eval
---suite` prints the suite's aggregate rows (mean AUC per group) beneath the usual per-file table,
-in every output form including the plain terminal one. See
+`DFWB_DATASETS_ROOT`, `DFWB_WORK_ROOT` and `DFWB_CACHE_ROOT` default to
+`./data/{datasets,work,cache}` inside the clone and `DFWB_RUNS_ROOT` to `./runs`, and creates
+those directories -- `dfwb` itself loads `.env` and reads them from there, so every command above
+needs nothing exported by hand, **except** `datasets synth --out`: a plain file-write flag with no
+environment default, so it names the same path (`data/datasets`) directly, run from the clone's
+own root the way the whole block assumes. The run lands in `runs/toy-cpu/`, and `dfwb score`
+writes its score files under `runs/scores/`. `dfwb score --suite toyfake` scores the trained run
+against the framework's own two-entry suite: the in-domain test split (group `in-domain`) and the
+identity-disjoint split (group `cross`). toyfake is a single dataset, so that second entry only
+stands in for a cross-dataset one: it tests videos of identities the training split never saw,
+not a different dataset. `dfwb eval --suite` prints the suite's aggregate rows (the mean AUC of
+each group) beneath the usual per-file table, in every output form including the plain terminal
+one. See
 [Cross-dataset evaluation](cross-dataset-eval.md) for what a suite is and how the coverage policy
 and comparisons work, and the [quickstart](../quickstart.md) for a slower walk through each step.
 
@@ -99,25 +103,39 @@ failure instead of a clear coverage report.
 `face-256-1.3x-64f` profile, the `insightface` backend (`buffalo_l` weights, non-commercial
 research use only -- see [Install](../install.md#face-insightface-cpu-by-default-gpu-by-hand) for
 the extra and [Processing profiles](../concepts/processing-profiles.md#the-licence-gate) for
-the acknowledgement `--accept-license` records once per machine):
+the acknowledgement `--accept-license` records once per machine).
+
+A ViT-B/16 wants a GPU. Set the environment up in this order, the one
+[Install](../install.md#training-a-cuda-build-with-uv) gives and `./scripts/setup.sh --gpu` prints:
+first `uv sync` with every extra you need, then reinstall a CUDA build of `torch` over the CPU
+build the lock pins, then run every later command with `uv run --no-sync`. Any later `uv sync`, or
+a `uv run` without `--no-sync`, puts the CPU build back.
 
 ```bash
-uv sync --extra train --extra face-insightface
+uv sync --locked --extra train --extra face-insightface
 
-uv run dfwb preprocess run ffpp --profile face-256-1.3x-64f --accept-license
-uv run dfwb preprocess run celebdf-v2 --profile face-256-1.3x-64f
-uv run dfwb preprocess status ffpp --profile face-256-1.3x-64f
-uv run dfwb preprocess status celebdf-v2 --profile face-256-1.3x-64f
+# Pick the index for your driver from the official selector at
+# https://pytorch.org/get-started/locally/ -- cu121 here is an example.
+uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+uv run --no-sync dfwb preprocess run ffpp --profile face-256-1.3x-64f --accept-license --device cuda:0
+uv run --no-sync dfwb preprocess run celebdf-v2 --profile face-256-1.3x-64f --device cuda:0
+uv run --no-sync dfwb preprocess status ffpp --profile face-256-1.3x-64f
+uv run --no-sync dfwb preprocess status celebdf-v2 --profile face-256-1.3x-64f
 ```
+
+The face detector itself runs on the GPU only with `onnxruntime-gpu` installed in place of
+`onnxruntime` ([Install](../install.md#face-insightface-cpu-by-default-gpu-by-hand) says how);
+without it, `--device cuda:0` runs the detector on the CPU, with a warning.
 
 ### 5. Train with `configs/…`
 
 ```bash
-uv run dfwb config validate -c configs/ffpp-c23-vit-b16.yaml
-uv run dfwb train -c configs/ffpp-c23-vit-b16.yaml
+uv run --no-sync dfwb config validate -c configs/ffpp-c23-vit-b16.yaml
+uv run --no-sync dfwb train -c configs/ffpp-c23-vit-b16.yaml --device cuda:0
 
-uv run dfwb config validate -c configs/celebdf-v2-vit-b16.yaml
-uv run dfwb train -c configs/celebdf-v2-vit-b16.yaml
+uv run --no-sync dfwb config validate -c configs/celebdf-v2-vit-b16.yaml
+uv run --no-sync dfwb train -c configs/celebdf-v2-vit-b16.yaml --device cuda:0
 ```
 
 `config validate` needs no data at all: it checks the config's shape and every component
@@ -131,8 +149,8 @@ in-domain (FaceForensics++'s own val split) and cross-dataset (Celeb-DF v2's val
 epoch, once both datasets above are processed:
 
 ```bash
-uv run dfwb config validate -c configs/cross-dataset-ffpp-celebdf.yaml
-uv run dfwb train -c configs/cross-dataset-ffpp-celebdf.yaml
+uv run --no-sync dfwb config validate -c configs/cross-dataset-ffpp-celebdf.yaml
+uv run --no-sync dfwb train -c configs/cross-dataset-ffpp-celebdf.yaml --device cuda:0
 ```
 
 That training-time validation is for watching generalisation as training goes; it is not the
@@ -140,34 +158,43 @@ final cross-dataset numbers -- those come from scoring and evaluating a suite, s
 
 ### 6. Score the suite
 
-Once [dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols) registers a real
-cross-dataset panel (see [Ecosystem](../ecosystem.md)), score a trained run against it in one
-command, exactly as the toyfake walkthrough above scores against the framework's own `toyfake`
-suite:
+[dfwb-protocols](https://github.com/dfwb-research/dfwb-protocols) registers a cross-dataset suite,
+`cross-dataset-v1` (see [Ecosystem](../ecosystem.md)): seventeen test splits, FaceForensics++'s
+own held-out FaceShifter subset and sixteen other datasets, all in one group, `cross-dataset`.
+Score a trained run against it in one command, exactly as the toyfake walkthrough above scores
+against the framework's own `toyfake` suite:
 
 ```bash
-uv run dfwb score --detector "run:data/runs/ffpp-c23-vit-b16/latest#best" --suite cross-dataset-v1
+uv run --no-sync dfwb score --detector "run:runs/ffpp-c23-vit-b16/latest#best" --suite cross-dataset-v1 --out runs/scores/ffpp-c23-vit-b16 --device cuda:0
 ```
 
-Until then, score cross-dataset one split at a time:
+`dfwb score` writes one file per entry of the suite, at
+`<out>/<detector>/<protocol>/<split>-<key>.scores.csv`: here
+`runs/scores/ffpp-c23-vit-b16/timm-mean-linear/ffpp-official/test-….scores.csv`,
+`…/celebdf-v2-official-ident-80-20/test-….scores.csv`, and so on, one folder per protocol of the
+suite. `<detector>` is named after the model's parts (`timm-mean-linear` for every ViT-B/16 run
+above), so `--out` keeps this run's files apart from any other run's. Scoring the suite needs
+every dataset it names inventoried and processed locally; to score one dataset at a time
+instead:
 
 ```bash
-uv run dfwb score --detector "run:data/runs/ffpp-c23-vit-b16/latest#best" --protocol celebdf-v2 --split test
+uv run --no-sync dfwb score --detector "run:runs/ffpp-c23-vit-b16/latest#best" --protocol celebdf-v2 --split test --out runs/scores/ffpp-c23-vit-b16 --device cuda:0
 ```
 
 ### 7. Eval
 
 ```bash
-uv run dfwb eval data/runs/scores/*/cross-dataset-v1-*/*.scores.csv --suite cross-dataset-v1 --bootstrap 2000
+uv run --no-sync dfwb eval runs/scores/ffpp-c23-vit-b16/*/*/*.scores.csv --suite cross-dataset-v1 --bootstrap 2000
 ```
 
-`dfwb eval --suite` reports the usual per-file, coverage-aware metrics with confidence intervals,
-plus the suite's aggregate rows (mean per group, e.g. `in-domain` and `cross`) beneath them, in
-every output form including the plain terminal one. Without a real suite yet, evaluate the
-one-split file from step 6 directly instead:
+The glob matches every file step 6 wrote, one per protocol folder. `dfwb eval --suite` reports
+the usual per-file, coverage-aware metrics with confidence intervals, plus the suite's aggregate
+row beneath them: `cross-dataset-v1` has one, the mean AUC over the entries of its one group,
+`cross-dataset`. It is printed in every output form, including the plain terminal one. To
+evaluate the one-split file from step 6 on its own instead:
 
 ```bash
-uv run dfwb eval data/runs/scores/*/celebdf-v2-*/*.scores.csv --bootstrap 2000
+uv run --no-sync dfwb eval runs/scores/ffpp-c23-vit-b16/*/celebdf-v2-*/*.scores.csv --bootstrap 2000
 ```
 
 See [Cross-dataset evaluation](cross-dataset-eval.md) for `--by`, the coverage policy

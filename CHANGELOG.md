@@ -32,8 +32,8 @@ All notable changes to this project are documented here. The format follows
   example; the last three need real, licensed data and say so in their header.
 - `scripts/setup.sh`: one command for a fresh clone -- installs the extras you need with
   `uv sync --locked`, copies `.env.example` to `.env` (never overwriting one that already exists)
-  so every root defaults inside the clone under `./data/`, creates those directories, and runs
-  `dfwb doctor`. `--gpu` prints the CUDA build steps instead of guessing your driver; `--dry-run`
+  so every root defaults inside the clone (datasets, work and cache under `./data/`, runs in
+  `./runs`), creates those directories, and runs `dfwb doctor`. `--gpu` prints the CUDA build steps instead of guessing your driver; `--dry-run`
   prints the rest.
 - The README's "Run it from a clone" section and a new "Reproduce a benchmark" guide
   (`docs/guides/reproduce-a-benchmark.md`), covering the whole path from a fresh clone -- getting

@@ -53,3 +53,19 @@ def test_configs_needing_real_data_say_so_in_their_header(path):
 def test_every_config_passes_dfwb_config_validate(path, run, requires_torch):
     result = run("config", "validate", "-c", str(path))
     assert result.code == 0, result.err
+
+
+def test_the_toyfake_headers_commands_are_the_guides_own():
+    # The header's build steps are run from the clone's root, like the guide's toyfake block: the
+    # synth command writes to the in-clone datasets root by its path, not a shell variable that
+    # only the .env file dfwb loads itself ever defines.
+    header = [
+        line.removeprefix("#").strip()
+        for line in (CONFIGS_DIR / "toyfake-cpu.yaml").read_text("utf-8").splitlines()
+        if line.startswith("#   dfwb ")
+    ]
+    guide = (REPO / "docs" / "guides" / "reproduce-a-benchmark.md").read_text("utf-8")
+    assert header, "the header lists the commands that build the data"
+    for command in header:
+        assert f"uv run {command}" in guide, command
+    assert "dfwb datasets synth toyfake --out data/datasets" in header
