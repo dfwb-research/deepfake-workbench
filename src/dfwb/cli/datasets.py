@@ -417,3 +417,70 @@ def synth(dataset: str, out: Path, videos: int, seed: int, no_media: bool, as_js
         click.echo(f"  {command}")
     if note is not None:
         click.echo(f"note: {note}")
+
+
+@datasets.command("unpack")
+@click.argument("dataset", type=click.Choice(["wilddeepfake"]))
+@click.option(
+    "--from",
+    "from_dir",
+    required=True,
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Directory holding the release's real_train/real_test/fake_train/fake_test tar shards.",
+)
+@click.option(
+    "--to",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Where to write the unpacked dataset folder (default: DATASET's expected folder, e.g. "
+    "WildDeepfake, under the first configured datasets root -- see DFWB_DATASETS_ROOT and "
+    "`dfwb doctor`).",
+)
+@json_option
+def unpack(dataset: str, from_dir: Path, to: Path | None, as_json: bool) -> None:
+    """Safely unpack DATASET's release tar shards into the layout its inventory builder reads.
+
+    Every archive member is checked before anything is written: an absolute path, a '..'
+    segment, a symlink, a hard link, or a device or FIFO file refuses the whole archive, naming
+    the first offending member. Unpacking is resumable: a sequence already holding exactly its
+    expected frames is left alone, and any other sequence folder is removed and rewritten from
+    scratch, so re-running after an interrupted unpack is always safe and never duplicates
+    frames. Discovery is then run on the result and its counts are reported.
+    """
+    from dfwb.core.paths import absolute, require_root, resolve_roots
+    from dfwb.preprocess.inventory.runner import get_builder
+    from dfwb.preprocess.wilddeepfake_unpack import unpack_wilddeepfake
+
+    builder = get_builder(dataset)
+    source = absolute(from_dir)
+    if to is not None:
+        target = absolute(to)
+    else:
+        target = require_root("datasets", resolve_roots()) / builder.expected_folder
+
+    result = unpack_wilddeepfake(builder, source, target)
+
+    if as_json:
+        emit_json(
+            {
+                "dataset_id": result.dataset_id,
+                "from": str(result.from_dir),
+                "to": str(result.to),
+                "categories": list(result.categories),
+                "shards_found": result.shards_found,
+                "sequences_total": result.sequences_total,
+                "sequences_written": result.sequences_written,
+                "sequences_skipped": result.sequences_skipped,
+                "frames_written": result.frames_written,
+                "by_task": result.by_task,
+            }
+        )
+        return
+
+    click.echo(
+        f"unpacked {result.sequences_written} sequence(s) ({result.sequences_skipped} already "
+        f"complete) from {result.shards_found} shard(s) in {', '.join(result.categories)} into "
+        f"{result.to}"
+    )
+    counts = ", ".join(f"{task} {count}" for task, count in result.by_task.items())
+    click.echo(f"discovery now finds {sum(result.by_task.values())} record(s) ({counts})")

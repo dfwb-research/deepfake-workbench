@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `dfwb datasets unpack wilddeepfake --from <dir of archives> [--to <datasets root>]`: safely
+  unpacks WildDeepfake's released tar shards into the frame-directory tree its inventory builder
+  reads. Every archive member is checked before anything is written -- an absolute path, a `..`
+  segment, a symlink, a hard link, or a device or FIFO file refuses the whole archive, naming the
+  first offending member -- and unpacking is resumable: an already-complete sequence is left
+  alone, and any other sequence folder is removed and rewritten from scratch, so re-running after
+  an interrupted unpack never duplicates frames. Discovery is run on the result afterwards and its
+  counts are reported.
 - A documentation site (MkDocs Material): the six user journeys (a five-minute toyfake walkthrough,
   the same shape with real datasets, evaluating score files from your own code with no `torch`
   install, adding a dataset, adding a detector, and adding a plugin), plus concept pages for the
