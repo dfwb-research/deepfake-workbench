@@ -83,3 +83,25 @@ def test_toyfake_suite_round_trips_through_score_and_eval(cli, score_roots):
         assert row["metric"] == "auc"
         assert row["n_entries"] == row["n_expected"] == 1
         assert 0.0 <= row["value"] <= 1.0
+
+
+def test_the_default_terminal_output_also_prints_the_suite_aggregate(cli, score_roots):
+    """``dfwb eval --suite`` with no ``--json``/``--out``/``--format``: the plain terminal table
+    used to show only the per-file rows, dropping the suite aggregate that every other output
+    format (json, csv, latex, --out) already includes."""
+    profile = toy_profile("toy-face")
+    _write_real_toyfake_store(score_roots, profile)
+
+    scored = cli("score", "--detector", "fake:", "--suite", "toyfake", "--json")
+    assert scored.code == 0, scored.err
+    files = [r["csv"] for r in json.loads(scored.out)["results"]]
+
+    evaluated = cli("eval", *files, "--suite", "toyfake", "--bootstrap", "20")
+    assert evaluated.code == 0, evaluated.err
+    out = evaluated.out
+    assert "FILE" in out  # the usual per-file table is still there
+    assert "COVERAGE" in out
+    assert "GROUP" in out  # the suite aggregate now prints too
+    assert "N_ENTRIES" in out
+    assert "in-domain" in out
+    assert "cross" in out

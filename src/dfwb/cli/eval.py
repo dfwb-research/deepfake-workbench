@@ -318,6 +318,10 @@ def run(
             for r in result.tables["files"]
         ]
         click.echo(table(headers, rows))
+        if result.tables.get("suite"):
+            _, suite_headers, suite_rows = _suite_block(result.tables["suite"])
+            click.echo()
+            click.echo(table([h.upper() for h in suite_headers], suite_rows))
     else:
         click.echo(_render(effective_fmt, result.tables, result.metrics))
     if result.exit_code:
