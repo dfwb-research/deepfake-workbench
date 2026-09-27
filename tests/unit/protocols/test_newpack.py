@@ -230,7 +230,10 @@ def test_the_readme_describes_list_and_recipe_datasets_and_the_dfwb_they_need(tm
     assert "`distribution: recipe`" in readme
     assert "dfwb protocols materialize <dataset_id>" in readme
     assert "dfwb protocols lint --release" in readme
-    assert "a dfwb that reads the recipe hash fields: 0.1.0b3 or later, once released" in readme
+    assert (
+        "needs a Deepfake Workbench newer than 0.1.0b2, one that reads the recipe hash fields"
+        in readme
+    )
     assert "its `pyproject.toml` pins no dfwb version" in readme
     # The scaffold stays dependency-free; the requirement lives in the README instead.
     pyproject = tomllib.loads((directory / "pyproject.toml").read_text("utf-8"))

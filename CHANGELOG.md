@@ -66,7 +66,8 @@ All notable changes to this project are documented here. The format follows
   rebuild rewrites NOTICE.md for a recipe. `dfwb protocols lint` checks them against the lists a
   dataset ships. `dfwb.core.records.records_sha256` computes the hashes: the sha256 of a list's
   JSONL lines, sorted. dfwb 0.1.0b2 and earlier reject a card with fields they do not know, so a
-  protocol pack whose cards carry these needs a dfwb at least this new.
+  protocol pack whose cards carry these needs a Deepfake Workbench newer than 0.1.0b2, one that
+  reads the recipe hash fields.
 - `dfwb protocols list` (a DISTRIBUTION column, and `distribution`/`materialized` in `--json`) and
   `dfwb datasets info` show each dataset's distribution, and for a recipe shipped without its key
   lists whether it is materialised here.

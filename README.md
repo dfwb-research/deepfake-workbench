@@ -337,7 +337,9 @@ uv run dfwb protocols list
 ```
 
 dfwb-protocols adds the protocols of the public datasets, which `dfwb protocols list` shows, and
-three evaluation suites; it needs this framework at 0.1.0b2 or later.
+three evaluation suites. Its dataset cards carry the recipe hash fields (`videos_sha256`,
+`pairs_sha256` and `pairing_rule`), which 0.1.0b2 and earlier reject, so it needs a Deepfake
+Workbench newer than 0.1.0b2, one that reads the recipe hash fields.
 
 `dfwb-torch-srm` depends on PyTorch, so install it after the quickstart, once the environment
 holds the `train` extra's CPU build of PyTorch:
@@ -401,6 +403,13 @@ once the repository is public.
 
 Contributions are welcome; see the organisation's
 [contributing guidelines](https://github.com/dfwb-research/.github/blob/main/CONTRIBUTING.md).
+
+**Releasing.** A release is the tag `v<version>` of the commit whose `src/dfwb/_version.py` holds
+that version; the release workflow checks the two agree before it builds anything. The commit
+that bumps the version to a final release (no `a`, `b`, `rc` or `dev` segment) also rewrites the
+status lines that describe a pre-release: the one at the top of this README, the note at the top
+of `docs/index.md` and the "Not on PyPI yet" note in `docs/install.md`.
+`tests/unit/docs/test_release_status.py` fails on that commit's pull request until it has.
 
 ## Acknowledgments
 
