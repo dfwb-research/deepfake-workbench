@@ -253,7 +253,7 @@ class ClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
         repaired = sorted(item.frame_indices[position] for position in failures)
         return frames, repaired
 
-    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override]
+    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override, unused-ignore]
         if not 0 <= i < len(self):
             raise IndexError(i)
         item_index, clip_index = divmod(i, self._clips_per_video)
@@ -331,7 +331,7 @@ class MultiSource(Dataset[ClipSample]):  # type: ignore[misc, unused-ignore]  # 
             raise IndexError(i)
         return bisect.bisect_right(self._offsets, i) - 1
 
-    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override]
+    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override, unused-ignore]
         source = self.source_of(i)
         sample = self.datasets[source][i - self._offsets[source]]
         if isinstance(sample, SkippedVideo):

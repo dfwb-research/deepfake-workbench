@@ -132,7 +132,7 @@ class PairedClipDataset(Dataset[ClipSample]):  # type: ignore[misc, unused-ignor
             for p in range(self.pair_count)
         ]
 
-    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override]
+    def __getitem__(self, i: int) -> ClipSample | SkippedVideo:  # type: ignore[override, unused-ignore]
         if not 0 <= i < len(self):
             raise IndexError(i)
         if i < len(self._real):
